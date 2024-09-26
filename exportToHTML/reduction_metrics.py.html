@@ -1,0 +1,244 @@
+<html>
+<head>
+<title>reduction_metrics.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #7a7e85;}
+.s5 { color: #2aacb8;}
+.s6 { color: #5f826b; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+reduction_metrics.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">initializers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">losses</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">.</span><span class="s1">metric </span><span class="s0">import </span><span class="s1">Metric</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+
+
+<span class="s0">def </span><span class="s1">reduce_to_samplewise_values</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">reduce_fn</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+    <span class="s1">dtype </span><span class="s2">= </span><span class="s1">dtype </span><span class="s0">or </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+    <span class="s1">mask </span><span class="s2">= </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s3">&quot;_keras_mask&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+    <span class="s1">values </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">sample_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">losses</span><span class="s2">.</span><span class="s1">loss</span><span class="s2">.</span><span class="s1">apply_mask</span><span class="s2">(</span>
+                <span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">reduction</span><span class="s2">=</span><span class="s3">&quot;sum&quot;</span>
+            <span class="s2">)</span>
+        <span class="s4"># Update dimensions of weights to match with values if possible.</span>
+        <span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">losses</span><span class="s2">.</span><span class="s1">loss</span><span class="s2">.</span><span class="s1">squeeze_or_expand_to_same_rank</span><span class="s2">(</span>
+            <span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span>
+        <span class="s2">)</span>
+        <span class="s4"># Reduce values to same ndim as weight array.</span>
+        <span class="s1">weight_ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s1">values_ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">values</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">values_ndim </span><span class="s2">&gt; </span><span class="s1">weight_ndim</span><span class="s2">:</span>
+            <span class="s1">values </span><span class="s2">= </span><span class="s1">reduce_fn</span><span class="s2">(</span>
+                <span class="s1">values</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">weight_ndim</span><span class="s2">, </span><span class="s1">values_ndim</span><span class="s2">))</span>
+            <span class="s2">)</span>
+        <span class="s4"># Broadcast sample_weight. It doesn't change the multiplication below</span>
+        <span class="s4"># but changes the sample_weight reduction applied later.</span>
+        <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">broadcast_to</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">values</span><span class="s2">))</span>
+        <span class="s1">values </span><span class="s2">= </span><span class="s1">values </span><span class="s2">* </span><span class="s1">sample_weight</span>
+        <span class="s0">if </span><span class="s1">weight_ndim </span><span class="s2">&gt; </span><span class="s5">1</span><span class="s2">:</span>
+            <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">reduce_fn</span><span class="s2">(</span>
+                <span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">weight_ndim</span><span class="s2">))</span>
+            <span class="s2">)</span>
+
+    <span class="s1">values_ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">values</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">values_ndim </span><span class="s2">&gt; </span><span class="s5">1</span><span class="s2">:</span>
+        <span class="s1">values </span><span class="s2">= </span><span class="s1">reduce_fn</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">values_ndim</span><span class="s2">)))</span>
+    <span class="s0">return </span><span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.metrics.Sum&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">Sum</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Compute the (weighted) sum of the given values. 
+ 
+    For example, if `values` is `[1, 3, 5, 7]` then their sum is 16. 
+    If `sample_weight` was specified as `[1, 1, 0, 0]` then the sum would be 4. 
+ 
+    This metric creates one variable, `total`. 
+    This is ultimately returned as the sum value. 
+ 
+    Args: 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = metrics.Sum() 
+    &gt;&gt;&gt; m.update_state([1, 3, 5, 7]) 
+    &gt;&gt;&gt; m.result() 
+    16.0 
+ 
+    &gt;&gt;&gt; m = metrics.Sum() 
+    &gt;&gt;&gt; m.update_state([1, 3, 5, 7], sample_weight=[1, 1, 0, 0]) 
+    &gt;&gt;&gt; m.result() 
+    4.0 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;sum&quot;</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">total </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;total&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">values</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">reduce_to_samplewise_values</span><span class="s2">(</span>
+            <span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">reduce_fn</span><span class="s2">=</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">total</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">values</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">total</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">total</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.metrics.Mean&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">Mean</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Compute the (weighted) mean of the given values. 
+ 
+    For example, if values is `[1, 3, 5, 7]` then the mean is 4. 
+    If `sample_weight` was specified as `[1, 1, 0, 0]` then the mean would be 2. 
+ 
+    This metric creates two variables, `total` and `count`. 
+    The mean value returned is simply `total` divided by `count`. 
+ 
+    Args: 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = Mean() 
+    &gt;&gt;&gt; m.update_state([1, 3, 5, 7]) 
+    &gt;&gt;&gt; m.result() 
+    4.0 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([1, 3, 5, 7], sample_weight=[1, 1, 0, 0]) 
+    &gt;&gt;&gt; m.result() 
+    2.0 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;mean&quot;</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">total </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;total&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">count </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;count&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">reduce_to_samplewise_values</span><span class="s2">(</span>
+            <span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">reduce_fn</span><span class="s2">=</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">mean</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">total</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">values</span><span class="s2">))</span>
+        <span class="s0">if </span><span class="s1">sample_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">num_samples </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">len</span><span class="s2">(</span><span class="s1">values</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) &gt;= </span><span class="s5">1</span><span class="s2">:</span>
+            <span class="s1">num_samples </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">values</span><span class="s2">)[</span><span class="s5">0</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">num_samples </span><span class="s2">= </span><span class="s5">1</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">count</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">num_samples</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">total</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">count</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">total</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">count</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.metrics.MeanMetricWrapper&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">MeanMetricWrapper</span><span class="s2">(</span><span class="s1">Mean</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Wrap a stateless metric function with the `Mean` metric. 
+ 
+    You could use this class to quickly build a mean metric from a function. The 
+    function needs to have the signature `fn(y_true, y_pred)` and return a 
+    per-sample loss array. `MeanMetricWrapper.result()` will return 
+    the average metric value across all samples seen so far. 
+ 
+    For example: 
+ 
+    ```python 
+    def mse(y_true, y_pred): 
+        return (y_true - y_pred) ** 2 
+ 
+    mse_metric = MeanMetricWrapper(fn=mse) 
+    ``` 
+ 
+    Args: 
+        fn: The metric function to wrap, with signature 
+            `fn(y_true, y_pred, **kwargs)`. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+        **kwargs: Keyword arguments to pass on to `fn`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">fn</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_fn </span><span class="s2">= </span><span class="s1">fn</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_fn_kwargs </span><span class="s2">= </span><span class="s1">kwargs</span>
+
+        <span class="s4"># If we are wrapping a Keras loss, register the metric's</span>
+        <span class="s4"># direction as &quot;down&quot; (needs to be minimized during training).</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_fn </span><span class="s0">in </span><span class="s1">losses</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span>
+            <span class="s0">or </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fn</span><span class="s2">, </span><span class="s3">&quot;__class__&quot;</span><span class="s2">)</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fn</span><span class="s2">.</span><span class="s1">__class__ </span><span class="s0">in </span><span class="s1">losses</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span>
+        <span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_direction </span><span class="s2">= </span><span class="s3">&quot;down&quot;</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">mask </span><span class="s2">= </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, </span><span class="s3">&quot;_keras_mask&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s1">values </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fn</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, **</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fn_kwargs</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">sample_weight </span><span class="s0">is not None and </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">losses</span><span class="s2">.</span><span class="s1">loss</span><span class="s2">.</span><span class="s1">apply_mask</span><span class="s2">(</span>
+                <span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">reduction</span><span class="s2">=</span><span class="s3">&quot;sum&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">super</span><span class="s2">().</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s1">config </span><span class="s2">= {</span><span class="s3">&quot;fn&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fn</span><span class="s2">)}</span>
+        <span class="s1">config</span><span class="s2">.</span><span class="s1">update</span><span class="s2">(</span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fn_kwargs</span><span class="s2">))</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s3">&quot;fn&quot; </span><span class="s0">in </span><span class="s1">config</span><span class="s2">:</span>
+            <span class="s1">config </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

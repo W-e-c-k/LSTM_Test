@@ -1,0 +1,296 @@
+<html>
+<head>
+<title>base_depthwise_conv.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+base_depthwise_conv.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Keras base class for depthwise convolution layers.&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">activations</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">constraints</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">initializers</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">ops</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">regularizers</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">backend </span><span class="s2">import </span><span class="s1">standardize_data_format</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers</span><span class="s3">.</span><span class="s1">input_spec </span><span class="s2">import </span><span class="s1">InputSpec</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers</span><span class="s3">.</span><span class="s1">layer </span><span class="s2">import </span><span class="s1">Layer</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">ops</span><span class="s3">.</span><span class="s1">operation_utils </span><span class="s2">import </span><span class="s1">compute_conv_output_shape</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils</span><span class="s3">.</span><span class="s1">argument_validation </span><span class="s2">import </span><span class="s1">standardize_padding</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils</span><span class="s3">.</span><span class="s1">argument_validation </span><span class="s2">import </span><span class="s1">standardize_tuple</span>
+
+
+<span class="s2">class </span><span class="s1">BaseDepthwiseConv</span><span class="s3">(</span><span class="s1">Layer</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Abstract N-D depthwise convolution layer. 
+ 
+    Depthwise convolution is a type of convolution in which each input channel 
+    is convolved with a different kernel (called a depthwise kernel). You can 
+    understand depthwise convolution as the first step in a depthwise separable 
+    convolution. 
+ 
+    It is implemented via the following steps: 
+ 
+    - Split the input into individual channels. 
+    - Convolve each channel with an individual depthwise kernel with 
+      `depth_multiplier` output channels. 
+    - Concatenate the convolved outputs along the channels axis. 
+ 
+    Unlike a regular convolution, depthwise convolution does not mix information 
+    across different input channels. 
+ 
+    The `depth_multiplier` argument determines how many filter are applied to 
+    one input channel. As such, it controls the amount of output channels that 
+    are generated per input channel in the depthwise step. 
+ 
+ 
+    Args: 
+        rank: int, the rank of the convolution, e.g. 2 for 2D convolution. 
+        depth_multiplier: The number of depthwise convolution output channels 
+            for each input channel. The total number of depthwise convolution 
+            output channels will be equal to `input_channel * depth_multiplier`. 
+        kernel_size: int or tuple/list of `rank` integers, specifying the size 
+            of the depthwise convolution window. 
+        strides: int or tuple/list of `rank` integers, specifying the stride 
+            length of the depthwise convolution. If only one int is specified, 
+            the same stride size will be used for all dimensions. 
+            `strides &gt; 1` is incompatible with `dilation_rate &gt; 1`. 
+        padding: string, either `&quot;valid&quot;` or `&quot;same&quot;` (case-insensitive). 
+            `&quot;valid&quot;` means no padding. `&quot;same&quot;` results in padding evenly to 
+            the left/right or up/down of the input. When `padding=&quot;same&quot;` and 
+            `strides=1`, the output has the same size as the input. 
+        data_format: string, either `&quot;channels_last&quot;` or `&quot;channels_first&quot;`. 
+            The ordering of the dimensions in the inputs. `&quot;channels_last&quot;` 
+            corresponds to inputs with shape `(batch, steps, features)` 
+            while `&quot;channels_first&quot;` corresponds to inputs with shape 
+            `(batch, features, steps)`. It defaults to the `image_data_format` 
+            value found in your Keras config file at `~/.keras/keras.json`. 
+            If you never set it, then it will be `&quot;channels_last&quot;`. 
+        dilation_rate: int or tuple/list of `rank` integers, specifying the 
+            dilation rate to use for dilated convolution. If only one int is 
+            specified, the same dilation rate will be used for all dimensions. 
+        activation: Activation function. If `None`, no activation is applied. 
+        use_bias: bool, if `True`, bias will be added to the output. 
+        depthwise_initializer: Initializer for the depthwsie convolution 
+            kernel. If `None`, the default initializer (`&quot;glorot_uniform&quot;`) 
+            will be used. 
+        bias_initializer: Initializer for the bias vector. If `None`, the 
+            default initializer (`&quot;zeros&quot;`) will be used. 
+        depthwise_regularizer: Optional regularizer for the convolution kernel. 
+        bias_regularizer: Optional regularizer for the bias vector. 
+        activity_regularizer: Optional regularizer function for the output. 
+        depthwise_constraint: Optional projection function to be applied to the 
+            kernel after being updated by an `Optimizer` (e.g. used to implement 
+            norm constraints or value constraints for layer weights). The 
+            function must take as input the unprojected variable and must return 
+            the projected variable (which must have the same shape). Constraints 
+            are not safe to use when doing asynchronous distributed training. 
+        bias_constraint: Optional projection function to be applied to the 
+            bias after being updated by an `Optimizer`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">rank</span><span class="s3">,</span>
+        <span class="s1">depth_multiplier</span><span class="s3">,</span>
+        <span class="s1">kernel_size</span><span class="s3">,</span>
+        <span class="s1">strides</span><span class="s3">=</span><span class="s4">1</span><span class="s3">,</span>
+        <span class="s1">padding</span><span class="s3">=</span><span class="s5">&quot;valid&quot;</span><span class="s3">,</span>
+        <span class="s1">data_format</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">dilation_rate</span><span class="s3">=</span><span class="s4">1</span><span class="s3">,</span>
+        <span class="s1">activation</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">use_bias</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s1">depthwise_initializer</span><span class="s3">=</span><span class="s5">&quot;glorot_uniform&quot;</span><span class="s3">,</span>
+        <span class="s1">bias_initializer</span><span class="s3">=</span><span class="s5">&quot;zeros&quot;</span><span class="s3">,</span>
+        <span class="s1">depthwise_regularizer</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">bias_regularizer</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">activity_regularizer</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">depthwise_constraint</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">bias_constraint</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">trainable</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s1">name</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s3">**</span><span class="s1">kwargs</span><span class="s3">,</span>
+    <span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">().</span><span class="s1">__init__</span><span class="s3">(</span>
+            <span class="s1">trainable</span><span class="s3">=</span><span class="s1">trainable</span><span class="s3">,</span>
+            <span class="s1">name</span><span class="s3">=</span><span class="s1">name</span><span class="s3">,</span>
+            <span class="s1">activity_regularizer</span><span class="s3">=</span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">activity_regularizer</span><span class="s3">),</span>
+            <span class="s3">**</span><span class="s1">kwargs</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">= </span><span class="s1">rank</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s3">= </span><span class="s1">depth_multiplier</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size </span><span class="s3">= </span><span class="s1">standardize_tuple</span><span class="s3">(</span><span class="s1">kernel_size</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s5">&quot;kernel_size&quot;</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">strides </span><span class="s3">= </span><span class="s1">standardize_tuple</span><span class="s3">(</span><span class="s1">strides</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s5">&quot;strides&quot;</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate </span><span class="s3">= </span><span class="s1">standardize_tuple</span><span class="s3">(</span>
+            <span class="s1">dilation_rate</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s5">&quot;dilation_rate&quot;</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">padding </span><span class="s3">= </span><span class="s1">standardize_padding</span><span class="s3">(</span><span class="s1">padding</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">= </span><span class="s1">standardize_data_format</span><span class="s3">(</span><span class="s1">data_format</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">activation </span><span class="s3">= </span><span class="s1">activations</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">activation</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias </span><span class="s3">= </span><span class="s1">use_bias</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_initializer </span><span class="s3">= </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">depthwise_initializer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_initializer </span><span class="s3">= </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">bias_initializer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_regularizer </span><span class="s3">= </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">depthwise_regularizer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_regularizer </span><span class="s3">= </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">bias_regularizer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_constraint </span><span class="s3">= </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">depthwise_constraint</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_constraint </span><span class="s3">= </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">bias_constraint</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">input_spec </span><span class="s3">= </span><span class="s1">InputSpec</span><span class="s3">(</span><span class="s1">min_ndim</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">+ </span><span class="s4">2</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s2">is not None and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s3">&lt;= </span><span class="s4">0</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;Invalid value for argument `depth_multiplier`. Expected a &quot;</span>
+                <span class="s5">&quot;strictly positive value. Received &quot;</span>
+                <span class="s5">f&quot;depth_multiplier=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier</span><span class="s2">}</span><span class="s5">.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if not </span><span class="s1">all</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The argument `kernel_size` cannot contain 0. Received &quot;</span>
+                <span class="s5">f&quot;kernel_size=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s2">}</span><span class="s5">.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if not </span><span class="s1">all</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The argument `strides` cannot contains 0. Received &quot;</span>
+                <span class="s5">f&quot;strides=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">max</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">) &gt; </span><span class="s4">1 </span><span class="s2">and </span><span class="s1">max</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">) &gt; </span><span class="s4">1</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;`strides &gt; 1` not supported in conjunction with &quot;</span>
+                <span class="s5">f&quot;`dilation_rate &gt; 1`. Received: strides=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s2">} </span><span class="s5">and &quot;</span>
+                <span class="s5">f&quot;dilation_rate=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">build</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_shape</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s3">:</span>
+            <span class="s1">channel_axis </span><span class="s3">= -</span><span class="s4">1</span>
+            <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">input_shape</span><span class="s3">[-</span><span class="s4">1</span><span class="s3">]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">channel_axis </span><span class="s3">= </span><span class="s4">1</span>
+            <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">input_shape</span><span class="s3">[</span><span class="s4">1</span><span class="s3">]</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">input_spec </span><span class="s3">= </span><span class="s1">InputSpec</span><span class="s3">(</span>
+            <span class="s1">min_ndim</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">+ </span><span class="s4">2</span><span class="s3">, </span><span class="s1">axes</span><span class="s3">={</span><span class="s1">channel_axis</span><span class="s3">: </span><span class="s1">input_channel</span><span class="s3">}</span>
+        <span class="s3">)</span>
+        <span class="s1">depthwise_shape </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size </span><span class="s3">+ (</span>
+            <span class="s1">input_channel</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">add_weight</span><span class="s3">(</span>
+            <span class="s1">name</span><span class="s3">=</span><span class="s5">&quot;kernel&quot;</span><span class="s3">,</span>
+            <span class="s1">shape</span><span class="s3">=</span><span class="s1">depthwise_shape</span><span class="s3">,</span>
+            <span class="s1">initializer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_initializer</span><span class="s3">,</span>
+            <span class="s1">regularizer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_regularizer</span><span class="s3">,</span>
+            <span class="s1">constraint</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_constraint</span><span class="s3">,</span>
+            <span class="s1">trainable</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+            <span class="s1">dtype</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">bias </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">add_weight</span><span class="s3">(</span>
+                <span class="s1">name</span><span class="s3">=</span><span class="s5">&quot;bias&quot;</span><span class="s3">,</span>
+                <span class="s1">shape</span><span class="s3">=(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s3">* </span><span class="s1">input_channel</span><span class="s3">,),</span>
+                <span class="s1">initializer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_initializer</span><span class="s3">,</span>
+                <span class="s1">regularizer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_regularizer</span><span class="s3">,</span>
+                <span class="s1">constraint</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_constraint</span><span class="s3">,</span>
+                <span class="s1">trainable</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+                <span class="s1">dtype</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">,</span>
+            <span class="s3">)</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">bias </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">built </span><span class="s3">= </span><span class="s2">True</span>
+
+    <span class="s2">def </span><span class="s1">_get_input_channel</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_shape</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s3">:</span>
+            <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">input_shape</span><span class="s3">[-</span><span class="s4">1</span><span class="s3">]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">input_shape</span><span class="s3">[</span><span class="s4">1</span><span class="s3">]</span>
+        <span class="s2">return </span><span class="s1">input_channel</span>
+
+    <span class="s2">def </span><span class="s1">call</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">inputs</span><span class="s3">):</span>
+        <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_input_channel</span><span class="s3">(</span><span class="s1">inputs</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">)</span>
+        <span class="s1">outputs </span><span class="s3">= </span><span class="s1">ops</span><span class="s3">.</span><span class="s1">depthwise_conv</span><span class="s3">(</span>
+            <span class="s1">inputs</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel</span><span class="s3">,</span>
+            <span class="s1">strides</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">,</span>
+            <span class="s1">padding</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">padding</span><span class="s3">,</span>
+            <span class="s1">dilation_rate</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">,</span>
+            <span class="s1">data_format</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s3">:</span>
+                <span class="s1">bias_shape </span><span class="s3">= (</span><span class="s4">1</span><span class="s3">,) * (</span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">) + (</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s3">* </span><span class="s1">input_channel</span><span class="s3">,</span>
+                <span class="s3">)</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s1">bias_shape </span><span class="s3">= (</span><span class="s4">1</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s3">* </span><span class="s1">input_channel</span><span class="s3">) + (</span>
+                    <span class="s4">1</span><span class="s3">,</span>
+                <span class="s3">) * </span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank</span>
+            <span class="s1">bias </span><span class="s3">= </span><span class="s1">ops</span><span class="s3">.</span><span class="s1">reshape</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias</span><span class="s3">, </span><span class="s1">bias_shape</span><span class="s3">)</span>
+            <span class="s1">outputs </span><span class="s3">+= </span><span class="s1">bias</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">activation </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">activation</span><span class="s3">(</span><span class="s1">outputs</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">outputs</span>
+
+    <span class="s2">def </span><span class="s1">compute_output_shape</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_shape</span><span class="s3">):</span>
+        <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_input_channel</span><span class="s3">(</span><span class="s1">input_shape</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">compute_conv_output_shape</span><span class="s3">(</span>
+            <span class="s1">input_shape</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier </span><span class="s3">* </span><span class="s1">input_channel</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s3">,</span>
+            <span class="s1">strides</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">,</span>
+            <span class="s1">padding</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">padding</span><span class="s3">,</span>
+            <span class="s1">data_format</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span><span class="s3">,</span>
+            <span class="s1">dilation_rate</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">get_config</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">config </span><span class="s3">= </span><span class="s1">super</span><span class="s3">().</span><span class="s1">get_config</span><span class="s3">()</span>
+        <span class="s1">config</span><span class="s3">.</span><span class="s1">update</span><span class="s3">(</span>
+            <span class="s3">{</span>
+                <span class="s5">&quot;depth_multiplier&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">depth_multiplier</span><span class="s3">,</span>
+                <span class="s5">&quot;kernel_size&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s3">,</span>
+                <span class="s5">&quot;strides&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">,</span>
+                <span class="s5">&quot;padding&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">padding</span><span class="s3">,</span>
+                <span class="s5">&quot;data_format&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span><span class="s3">,</span>
+                <span class="s5">&quot;dilation_rate&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">,</span>
+                <span class="s5">&quot;activation&quot;</span><span class="s3">: </span><span class="s1">activations</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">activation</span><span class="s3">),</span>
+                <span class="s5">&quot;use_bias&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">,</span>
+                <span class="s5">&quot;depthwise_initializer&quot;</span><span class="s3">: </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_initializer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;bias_initializer&quot;</span><span class="s3">: </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_initializer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;depthwise_regularizer&quot;</span><span class="s3">: </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_regularizer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;bias_regularizer&quot;</span><span class="s3">: </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_regularizer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;activity_regularizer&quot;</span><span class="s3">: </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">activity_regularizer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;depthwise_constraint&quot;</span><span class="s3">: </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">depthwise_constraint</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;bias_constraint&quot;</span><span class="s3">: </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_constraint</span><span class="s3">),</span>
+            <span class="s3">}</span>
+        <span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">config</span>
+</pre>
+</body>
+</html>

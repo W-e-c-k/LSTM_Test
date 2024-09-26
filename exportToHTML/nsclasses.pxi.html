@@ -1,0 +1,298 @@
+<html>
+<head>
+<title>nsclasses.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+nsclasses.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># module-level API for namespace implementations</span>
+
+<span class="s0">cdef class LxmlRegistryError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;Base class of lxml registry errors.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class NamespaceRegistryError(LxmlRegistryError):</span>
+    <span class="s0">&quot;&quot;&quot;Error registering a namespace extension.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _NamespaceRegistry:</span>
+    <span class="s0">&quot;Dictionary-like namespace registry&quot;</span>
+    <span class="s0">cdef object _ns_uri</span>
+    <span class="s0">cdef bytes _ns_uri_utf</span>
+    <span class="s0">cdef dict _entries</span>
+    <span class="s0">cdef char* _c_ns_uri_utf</span>
+    <span class="s0">def __cinit__(self, ns_uri):</span>
+        <span class="s0">self._ns_uri = ns_uri</span>
+        <span class="s0">if ns_uri is None:</span>
+            <span class="s0">self._ns_uri_utf = None</span>
+            <span class="s0">self._c_ns_uri_utf = NULL</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._ns_uri_utf = _utf8(ns_uri)</span>
+            <span class="s0">self._c_ns_uri_utf = _cstr(self._ns_uri_utf)</span>
+        <span class="s0">self._entries = {}</span>
+
+    <span class="s0">def update(self, class_dict_iterable):</span>
+        <span class="s0">&quot;&quot;&quot;update(self, class_dict_iterable)</span>
+
+        <span class="s0">Forgivingly update the registry.</span>
+
+        <span class="s0">``class_dict_iterable`` may be a dict or some other iterable</span>
+        <span class="s0">that yields (name, value) pairs.</span>
+
+        <span class="s0">If a value does not match the required type for this registry,</span>
+        <span class="s0">or if the name starts with '_', it will be silently discarded.</span>
+        <span class="s0">This allows registrations at the module or class level using</span>
+        <span class="s0">vars(), globals() etc.&quot;&quot;&quot;</span>
+        <span class="s0">if hasattr(class_dict_iterable, 'items'):</span>
+            <span class="s0">class_dict_iterable = class_dict_iterable.items()</span>
+        <span class="s0">for name, item in class_dict_iterable:</span>
+            <span class="s0">if (name is None or name[:1] != '_') and callable(item):</span>
+                <span class="s0">self[name] = item</span>
+
+    <span class="s0">def __getitem__(self, name):</span>
+        <span class="s0">if name is not None:</span>
+            <span class="s0">name = _utf8(name)</span>
+        <span class="s0">return self._get(name)</span>
+
+    <span class="s0">def __delitem__(self, name):</span>
+        <span class="s0">if name is not None:</span>
+            <span class="s0">name = _utf8(name)</span>
+        <span class="s0">del self._entries[name]</span>
+
+    <span class="s0">cdef object _get(self, object name):</span>
+        <span class="s0">cdef python.PyObject* dict_result</span>
+        <span class="s0">dict_result = python.PyDict_GetItem(self._entries, name)</span>
+        <span class="s0">if dict_result is NULL:</span>
+            <span class="s0">raise KeyError, &quot;Name not registered.&quot;</span>
+        <span class="s0">return &lt;object&gt;dict_result</span>
+
+    <span class="s0">cdef object _getForString(self, char* name):</span>
+        <span class="s0">cdef python.PyObject* dict_result</span>
+        <span class="s0">dict_result = python.PyDict_GetItem(self._entries, name)</span>
+        <span class="s0">if dict_result is NULL:</span>
+            <span class="s0">raise KeyError, &quot;Name not registered.&quot;</span>
+        <span class="s0">return &lt;object&gt;dict_result</span>
+
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">return iter(self._entries)</span>
+
+    <span class="s0">def items(self):</span>
+        <span class="s0">return list(self._entries.items())</span>
+
+    <span class="s0">def iteritems(self):</span>
+        <span class="s0">return iter(self._entries.items())</span>
+
+    <span class="s0">def clear(self):</span>
+        <span class="s0">self._entries.clear()</span>
+
+    <span class="s0">def __call__(self, obj):</span>
+        <span class="s0"># Usage as decorator:</span>
+        <span class="s0">#   ns = lookup.get_namespace(&quot;...&quot;)</span>
+        <span class="s0">#   @ns('abc')</span>
+        <span class="s0">#   class element(ElementBase): pass</span>
+        <span class="s0">#</span>
+        <span class="s0">#   @ns</span>
+        <span class="s0">#   class elementname(ElementBase): pass</span>
+
+        <span class="s0">if obj is None or python._isString(obj):</span>
+            <span class="s0"># @ns(None) or @ns('tag')</span>
+            <span class="s0">return partial(self.__deco, obj)</span>
+        <span class="s0"># plain @ns decorator</span>
+        <span class="s0">self[obj.__name__] = obj</span>
+        <span class="s0">return obj</span>
+
+    <span class="s0">def __deco(self, name, obj):</span>
+        <span class="s0">self[name] = obj</span>
+        <span class="s0">return obj</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ClassNamespaceRegistry(_NamespaceRegistry):</span>
+    <span class="s0">&quot;Dictionary-like registry for namespace implementation classes&quot;</span>
+    <span class="s0">def __setitem__(self, name, item):</span>
+        <span class="s0">if not isinstance(item, type) or not issubclass(item, ElementBase):</span>
+            <span class="s0">raise NamespaceRegistryError, \</span>
+                <span class="s0">&quot;Registered element classes must be subtypes of ElementBase&quot;</span>
+        <span class="s0">if name is not None:</span>
+            <span class="s0">name = _utf8(name)</span>
+        <span class="s0">self._entries[name] = item</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return &quot;Namespace(%r)&quot; % self._ns_uri</span>
+
+
+<span class="s0">cdef class ElementNamespaceClassLookup(FallbackElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;ElementNamespaceClassLookup(self, fallback=None)</span>
+
+    <span class="s0">Element class lookup scheme that searches the Element class in the</span>
+    <span class="s0">Namespace registry.</span>
+
+    <span class="s0">Usage:</span>
+
+    <span class="s0">&gt;&gt;&gt; lookup = ElementNamespaceClassLookup()</span>
+    <span class="s0">&gt;&gt;&gt; ns_elements = lookup.get_namespace(&quot;http://schema.org/Movie&quot;)</span>
+
+    <span class="s0">&gt;&gt;&gt; @ns_elements</span>
+    <span class="s0">... class movie(ElementBase):</span>
+    <span class="s0">...     &quot;Element implementation for 'movie' tag (using class name) in schema namespace.&quot;</span>
+
+    <span class="s0">&gt;&gt;&gt; @ns_elements(&quot;movie&quot;)</span>
+    <span class="s0">... class MovieElement(ElementBase):</span>
+    <span class="s0">...     &quot;Element implementation for 'movie' tag (explicit tag name) in schema namespace.&quot;</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef dict _namespace_registries</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._namespace_registries = {}</span>
+
+    <span class="s0">def __init__(self, ElementClassLookup fallback=None):</span>
+        <span class="s0">FallbackElementClassLookup.__init__(self, fallback)</span>
+        <span class="s0">self._lookup_function = _find_nselement_class</span>
+
+    <span class="s0">def get_namespace(self, ns_uri):</span>
+        <span class="s0">&quot;&quot;&quot;get_namespace(self, ns_uri)</span>
+
+        <span class="s0">Retrieve the namespace object associated with the given URI.</span>
+        <span class="s0">Pass None for the empty namespace.</span>
+
+        <span class="s0">Creates a new namespace object if it does not yet exist.&quot;&quot;&quot;</span>
+        <span class="s0">if ns_uri:</span>
+            <span class="s0">ns_utf = _utf8(ns_uri)</span>
+        <span class="s0">else:</span>
+            <span class="s0">ns_utf = None</span>
+        <span class="s0">try:</span>
+            <span class="s0">return self._namespace_registries[ns_utf]</span>
+        <span class="s0">except KeyError:</span>
+            <span class="s0">registry = self._namespace_registries[ns_utf] = \</span>
+                       <span class="s0">_ClassNamespaceRegistry(ns_uri)</span>
+            <span class="s0">return registry</span>
+
+<span class="s0">cdef object _find_nselement_class(state, _Document doc, xmlNode* c_node):</span>
+    <span class="s0">cdef python.PyObject* dict_result</span>
+    <span class="s0">cdef ElementNamespaceClassLookup lookup</span>
+    <span class="s0">cdef _NamespaceRegistry registry</span>
+    <span class="s0">if state is None:</span>
+        <span class="s0">return _lookupDefaultElementClass(None, doc, c_node)</span>
+
+    <span class="s0">lookup = &lt;ElementNamespaceClassLookup&gt;state</span>
+    <span class="s0">if c_node.type != tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">return _callLookupFallback(lookup, doc, c_node)</span>
+
+    <span class="s0">c_namespace_utf = _getNs(c_node)</span>
+    <span class="s0">if c_namespace_utf is not NULL:</span>
+        <span class="s0">dict_result = python.PyDict_GetItem(</span>
+            <span class="s0">lookup._namespace_registries, &lt;unsigned char*&gt;c_namespace_utf)</span>
+    <span class="s0">else:</span>
+        <span class="s0">dict_result = python.PyDict_GetItem(</span>
+            <span class="s0">lookup._namespace_registries, None)</span>
+    <span class="s0">if dict_result is not NULL:</span>
+        <span class="s0">registry = &lt;_NamespaceRegistry&gt;dict_result</span>
+        <span class="s0">classes = registry._entries</span>
+
+        <span class="s0">if c_node.name is not NULL:</span>
+            <span class="s0">dict_result = python.PyDict_GetItem(</span>
+                <span class="s0">classes, &lt;unsigned char*&gt;c_node.name)</span>
+        <span class="s0">else:</span>
+            <span class="s0">dict_result = NULL</span>
+
+        <span class="s0">if dict_result is NULL:</span>
+            <span class="s0">dict_result = python.PyDict_GetItem(classes, None)</span>
+
+        <span class="s0">if dict_result is not NULL:</span>
+            <span class="s0">return &lt;object&gt;dict_result</span>
+    <span class="s0">return _callLookupFallback(lookup, doc, c_node)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XPath extension functions</span>
+
+<span class="s0">cdef dict __FUNCTION_NAMESPACE_REGISTRIES</span>
+<span class="s0">__FUNCTION_NAMESPACE_REGISTRIES = {}</span>
+
+<span class="s0">def FunctionNamespace(ns_uri):</span>
+    <span class="s0">&quot;&quot;&quot;FunctionNamespace(ns_uri)</span>
+
+    <span class="s0">Retrieve the function namespace object associated with the given</span>
+    <span class="s0">URI.</span>
+
+    <span class="s0">Creates a new one if it does not yet exist. A function namespace</span>
+    <span class="s0">can only be used to register extension functions.</span>
+
+    <span class="s0">Usage:</span>
+
+    <span class="s0">&gt;&gt;&gt; ns_functions = FunctionNamespace(&quot;http://schema.org/Movie&quot;)</span>
+
+    <span class="s0">&gt;&gt;&gt; @ns_functions  # uses function name</span>
+    <span class="s0">... def add2(x):</span>
+    <span class="s0">...     return x + 2</span>
+
+    <span class="s0">&gt;&gt;&gt; @ns_functions(&quot;add3&quot;)  # uses explicit name</span>
+    <span class="s0">... def add_three(x):</span>
+    <span class="s0">...     return x + 3</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">ns_utf = _utf8(ns_uri) if ns_uri else None</span>
+    <span class="s0">try:</span>
+        <span class="s0">return __FUNCTION_NAMESPACE_REGISTRIES[ns_utf]</span>
+    <span class="s0">except KeyError:</span>
+        <span class="s0">registry = __FUNCTION_NAMESPACE_REGISTRIES[ns_utf] = \</span>
+                   <span class="s0">_XPathFunctionNamespaceRegistry(ns_uri)</span>
+        <span class="s0">return registry</span>
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _FunctionNamespaceRegistry(_NamespaceRegistry):</span>
+    <span class="s0">def __setitem__(self, name, item):</span>
+        <span class="s0">if not callable(item):</span>
+            <span class="s0">raise NamespaceRegistryError, \</span>
+                <span class="s0">&quot;Registered functions must be callable.&quot;</span>
+        <span class="s0">if not name:</span>
+            <span class="s0">raise ValueError, \</span>
+                <span class="s0">&quot;extensions must have non empty names&quot;</span>
+        <span class="s0">self._entries[_utf8(name)] = item</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return &quot;FunctionNamespace(%r)&quot; % self._ns_uri</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _XPathFunctionNamespaceRegistry(_FunctionNamespaceRegistry):</span>
+    <span class="s0">cdef object _prefix</span>
+    <span class="s0">cdef bytes _prefix_utf</span>
+
+    <span class="s0">property prefix:</span>
+        <span class="s0">&quot;Namespace prefix for extension functions.&quot;</span>
+        <span class="s0">def __del__(self):</span>
+            <span class="s0">self._prefix = None # no prefix configured</span>
+            <span class="s0">self._prefix_utf = None</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">if self._prefix is None:</span>
+                <span class="s0">return ''</span>
+            <span class="s0">else:</span>
+                <span class="s0">return self._prefix</span>
+        <span class="s0">def __set__(self, prefix):</span>
+            <span class="s0">if prefix == '':</span>
+                <span class="s0">prefix = None # empty prefix</span>
+            <span class="s0">self._prefix_utf = _utf8(prefix) if prefix is not None else None</span>
+            <span class="s0">self._prefix = prefix</span>
+
+<span class="s0">cdef list _find_all_extension_prefixes():</span>
+    <span class="s0">&quot;Internal lookup function to find all function prefixes for XSLT/XPath.&quot;</span>
+    <span class="s0">cdef _XPathFunctionNamespaceRegistry registry</span>
+    <span class="s0">cdef list ns_prefixes = []</span>
+    <span class="s0">for registry in __FUNCTION_NAMESPACE_REGISTRIES.itervalues():</span>
+        <span class="s0">if registry._prefix_utf is not None:</span>
+            <span class="s0">if registry._ns_uri_utf is not None:</span>
+                <span class="s0">ns_prefixes.append(</span>
+                    <span class="s0">(registry._prefix_utf, registry._ns_uri_utf))</span>
+    <span class="s0">return ns_prefixes</span>
+</pre>
+</body>
+</html>

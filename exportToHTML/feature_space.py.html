@@ -1,0 +1,839 @@
+<html>
+<head>
+<title>feature_space.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+feature_space.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">layers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">preprocessing</span><span class="s2">.</span><span class="s1">tf_data_layer </span><span class="s0">import </span><span class="s1">TFDataLayer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">saving_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">backend_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">naming </span><span class="s0">import </span><span class="s1">auto_name</span>
+
+
+<span class="s0">class </span><span class="s1">Cross</span><span class="s2">:</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">feature_names</span><span class="s2">, </span><span class="s1">crossing_dim</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s0">not in </span><span class="s2">{</span><span class="s3">&quot;int&quot;</span><span class="s2">, </span><span class="s3">&quot;one_hot&quot;</span><span class="s2">}:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Invalid value for argument `output_mode`. &quot;</span>
+                <span class="s3">&quot;Expected one of {'int', 'one_hot'}. &quot;</span>
+                <span class="s3">f&quot;Received: output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">feature_names </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">feature_names</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">crossing_dim </span><span class="s2">= </span><span class="s1">crossing_dim</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">= </span><span class="s1">output_mode</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">name</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s3">&quot;_X_&quot;</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">feature_names</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s3">&quot;feature_names&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">feature_names</span><span class="s2">,</span>
+            <span class="s3">&quot;crossing_dim&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crossing_dim</span><span class="s2">,</span>
+            <span class="s3">&quot;output_mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s2">,</span>
+        <span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">Feature</span><span class="s2">:</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s0">not in </span><span class="s2">{</span><span class="s3">&quot;int&quot;</span><span class="s2">, </span><span class="s3">&quot;one_hot&quot;</span><span class="s2">, </span><span class="s3">&quot;float&quot;</span><span class="s2">}:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Invalid value for argument `output_mode`. &quot;</span>
+                <span class="s3">&quot;Expected one of {'int', 'one_hot', 'float'}. &quot;</span>
+                <span class="s3">f&quot;Received: output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dtype </span><span class="s2">= </span><span class="s1">dtype</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+            <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+                <span class="s1">preprocessor</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">preprocessor</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">= </span><span class="s1">output_mode</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s3">&quot;dtype&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+            <span class="s3">&quot;preprocessor&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessor</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;output_mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s2">,</span>
+        <span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.utils.FeatureSpace&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">FeatureSpace</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;One-stop utility for preprocessing and encoding structured data. 
+ 
+    Arguments: 
+        feature_names: Dict mapping the names of your features to their 
+            type specification, e.g. `{&quot;my_feature&quot;: &quot;integer_categorical&quot;}` 
+            or `{&quot;my_feature&quot;: FeatureSpace.integer_categorical()}`. 
+            For a complete list of all supported types, see 
+            &quot;Available feature types&quot; paragraph below. 
+        output_mode: One of `&quot;concat&quot;` or `&quot;dict&quot;`. In concat mode, all 
+            features get concatenated together into a single vector. 
+            In dict mode, the FeatureSpace returns a dict of individually 
+            encoded features (with the same keys as the input dict keys). 
+        crosses: List of features to be crossed together, e.g. 
+            `crosses=[(&quot;feature_1&quot;, &quot;feature_2&quot;)]`. The features will be 
+            &quot;crossed&quot; by hashing their combined value into 
+            a fixed-length vector. 
+        crossing_dim: Default vector size for hashing crossed features. 
+            Defaults to `32`. 
+        hashing_dim: Default vector size for hashing features of type 
+            `&quot;integer_hashed&quot;` and `&quot;string_hashed&quot;`. Defaults to `32`. 
+        num_discretization_bins: Default number of bins to be used for 
+            discretizing features of type `&quot;float_discretized&quot;`. 
+            Defaults to `32`. 
+ 
+    **Available feature types:** 
+ 
+    Note that all features can be referred to by their string name, 
+    e.g. `&quot;integer_categorical&quot;`. When using the string name, the default 
+    argument values are used. 
+ 
+    ```python 
+    # Plain float values. 
+    FeatureSpace.float(name=None) 
+ 
+    # Float values to be preprocessed via featurewise standardization 
+    # (i.e. via a `keras.layers.Normalization` layer). 
+    FeatureSpace.float_normalized(name=None) 
+ 
+    # Float values to be preprocessed via linear rescaling 
+    # (i.e. via a `keras.layers.Rescaling` layer). 
+    FeatureSpace.float_rescaled(scale=1., offset=0., name=None) 
+ 
+    # Float values to be discretized. By default, the discrete 
+    # representation will then be one-hot encoded. 
+    FeatureSpace.float_discretized( 
+        num_bins, bin_boundaries=None, output_mode=&quot;one_hot&quot;, name=None) 
+ 
+    # Integer values to be indexed. By default, the discrete 
+    # representation will then be one-hot encoded. 
+    FeatureSpace.integer_categorical( 
+        max_tokens=None, num_oov_indices=1, output_mode=&quot;one_hot&quot;, name=None) 
+ 
+    # String values to be indexed. By default, the discrete 
+    # representation will then be one-hot encoded. 
+    FeatureSpace.string_categorical( 
+        max_tokens=None, num_oov_indices=1, output_mode=&quot;one_hot&quot;, name=None) 
+ 
+    # Integer values to be hashed into a fixed number of bins. 
+    # By default, the discrete representation will then be one-hot encoded. 
+    FeatureSpace.integer_hashed(num_bins, output_mode=&quot;one_hot&quot;, name=None) 
+ 
+    # String values to be hashed into a fixed number of bins. 
+    # By default, the discrete representation will then be one-hot encoded. 
+    FeatureSpace.string_hashed(num_bins, output_mode=&quot;one_hot&quot;, name=None) 
+    ``` 
+ 
+    Examples: 
+ 
+    **Basic usage with a dict of input data:** 
+ 
+    ```python 
+    raw_data = { 
+        &quot;float_values&quot;: [0.0, 0.1, 0.2, 0.3], 
+        &quot;string_values&quot;: [&quot;zero&quot;, &quot;one&quot;, &quot;two&quot;, &quot;three&quot;], 
+        &quot;int_values&quot;: [0, 1, 2, 3], 
+    } 
+    dataset = tf.data.Dataset.from_tensor_slices(raw_data) 
+ 
+    feature_space = FeatureSpace( 
+        features={ 
+            &quot;float_values&quot;: &quot;float_normalized&quot;, 
+            &quot;string_values&quot;: &quot;string_categorical&quot;, 
+            &quot;int_values&quot;: &quot;integer_categorical&quot;, 
+        }, 
+        crosses=[(&quot;string_values&quot;, &quot;int_values&quot;)], 
+        output_mode=&quot;concat&quot;, 
+    ) 
+    # Before you start using the FeatureSpace, 
+    # you must `adapt()` it on some data. 
+    feature_space.adapt(dataset) 
+ 
+    # You can call the FeatureSpace on a dict of data (batched or unbatched). 
+    output_vector = feature_space(raw_data) 
+    ``` 
+ 
+    **Basic usage with `tf.data`:** 
+ 
+    ```python 
+    # Unlabeled data 
+    preprocessed_ds = unlabeled_dataset.map(feature_space) 
+ 
+    # Labeled data 
+    preprocessed_ds = labeled_dataset.map(lambda x, y: (feature_space(x), y)) 
+    ``` 
+ 
+    **Basic usage with the Keras Functional API:** 
+ 
+    ```python 
+    # Retrieve a dict Keras Input objects 
+    inputs = feature_space.get_inputs() 
+    # Retrieve the corresponding encoded Keras tensors 
+    encoded_features = feature_space.get_encoded_features() 
+    # Build a Functional model 
+    outputs = keras.layers.Dense(1, activation=&quot;sigmoid&quot;)(encoded_features) 
+    model = keras.Model(inputs, outputs) 
+    ``` 
+ 
+    **Customizing each feature or feature cross:** 
+ 
+    ```python 
+    feature_space = FeatureSpace( 
+        features={ 
+            &quot;float_values&quot;: FeatureSpace.float_normalized(), 
+            &quot;string_values&quot;: FeatureSpace.string_categorical(max_tokens=10), 
+            &quot;int_values&quot;: FeatureSpace.integer_categorical(max_tokens=10), 
+        }, 
+        crosses=[ 
+            FeatureSpace.cross((&quot;string_values&quot;, &quot;int_values&quot;), crossing_dim=32) 
+        ], 
+        output_mode=&quot;concat&quot;, 
+    ) 
+    ``` 
+ 
+    **Returning a dict of integer-encoded features:** 
+ 
+    ```python 
+    feature_space = FeatureSpace( 
+        features={ 
+            &quot;string_values&quot;: FeatureSpace.string_categorical(output_mode=&quot;int&quot;), 
+            &quot;int_values&quot;: FeatureSpace.integer_categorical(output_mode=&quot;int&quot;), 
+        }, 
+        crosses=[ 
+            FeatureSpace.cross( 
+                feature_names=(&quot;string_values&quot;, &quot;int_values&quot;), 
+                crossing_dim=32, 
+                output_mode=&quot;int&quot;, 
+            ) 
+        ], 
+        output_mode=&quot;dict&quot;, 
+    ) 
+    ``` 
+ 
+    **Specifying your own Keras preprocessing layer:** 
+ 
+    ```python 
+    # Let's say that one of the features is a short text paragraph that 
+    # we want to encode as a vector (one vector per paragraph) via TF-IDF. 
+    data = { 
+        &quot;text&quot;: [&quot;1st string&quot;, &quot;2nd string&quot;, &quot;3rd string&quot;], 
+    } 
+ 
+    # There's a Keras layer for this: TextVectorization. 
+    custom_layer = layers.TextVectorization(output_mode=&quot;tf_idf&quot;) 
+ 
+    # We can use FeatureSpace.feature to create a custom feature 
+    # that will use our preprocessing layer. 
+    feature_space = FeatureSpace( 
+        features={ 
+            &quot;text&quot;: FeatureSpace.feature( 
+                preprocessor=custom_layer, dtype=&quot;string&quot;, output_mode=&quot;float&quot; 
+            ), 
+        }, 
+        output_mode=&quot;concat&quot;, 
+    ) 
+    feature_space.adapt(tf.data.Dataset.from_tensor_slices(data)) 
+    output_vector = feature_space(data) 
+    ``` 
+ 
+    **Retrieving the underlying Keras preprocessing layers:** 
+ 
+    ```python 
+    # The preprocessing layer of each feature is available in `.preprocessors`. 
+    preprocessing_layer = feature_space.preprocessors[&quot;feature1&quot;] 
+ 
+    # The crossing layer of each feature cross is available in `.crossers`. 
+    # It's an instance of keras.layers.HashedCrossing. 
+    crossing_layer = feature_space.crossers[&quot;feature1_X_feature2&quot;] 
+    ``` 
+ 
+    **Saving and reloading a FeatureSpace:** 
+ 
+    ```python 
+    feature_space.save(&quot;featurespace.keras&quot;) 
+    reloaded_feature_space = keras.models.load_model(&quot;featurespace.keras&quot;) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">cross</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">feature_names</span><span class="s2">, </span><span class="s1">crossing_dim</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">Cross</span><span class="s2">(</span><span class="s1">feature_names</span><span class="s2">, </span><span class="s1">crossing_dim</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">feature</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">float</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;float&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">TFDIdentity</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;float&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">float_rescaled</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">=</span><span class="s5">1.0</span><span class="s2">, </span><span class="s1">offset</span><span class="s2">=</span><span class="s5">0.0</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;float_rescaled&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Rescaling</span><span class="s2">(</span>
+            <span class="s1">scale</span><span class="s2">=</span><span class="s1">scale</span><span class="s2">, </span><span class="s1">offset</span><span class="s2">=</span><span class="s1">offset</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;float&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">float_normalized</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;float_normalized&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Normalization</span><span class="s2">(</span>
+            <span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;float&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">float_discretized</span><span class="s2">(</span>
+        <span class="s1">cls</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">, </span><span class="s1">bin_boundaries</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;float_discretized&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Discretization</span><span class="s2">(</span>
+            <span class="s1">num_bins</span><span class="s2">=</span><span class="s1">num_bins</span><span class="s2">,</span>
+            <span class="s1">bin_boundaries</span><span class="s2">=</span><span class="s1">bin_boundaries</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">integer_categorical</span><span class="s2">(</span>
+        <span class="s1">cls</span><span class="s2">,</span>
+        <span class="s1">max_tokens</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">num_oov_indices</span><span class="s2">=</span><span class="s5">1</span><span class="s2">,</span>
+        <span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;integer_categorical&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">IntegerLookup</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span><span class="s2">,</span>
+            <span class="s1">max_tokens</span><span class="s2">=</span><span class="s1">max_tokens</span><span class="s2">,</span>
+            <span class="s1">num_oov_indices</span><span class="s2">=</span><span class="s1">num_oov_indices</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;int32&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">string_categorical</span><span class="s2">(</span>
+        <span class="s1">cls</span><span class="s2">,</span>
+        <span class="s1">max_tokens</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">num_oov_indices</span><span class="s2">=</span><span class="s5">1</span><span class="s2">,</span>
+        <span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;string_categorical&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">StringLookup</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span><span class="s2">,</span>
+            <span class="s1">max_tokens</span><span class="s2">=</span><span class="s1">max_tokens</span><span class="s2">,</span>
+            <span class="s1">num_oov_indices</span><span class="s2">=</span><span class="s1">num_oov_indices</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;string&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">string_hashed</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;string_hashed&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Hashing</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">=</span><span class="s1">num_bins</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;string&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">integer_hashed</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;one_hot&quot;</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">name </span><span class="s0">or </span><span class="s1">auto_name</span><span class="s2">(</span><span class="s3">&quot;integer_hashed&quot;</span><span class="s2">)</span>
+        <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Hashing</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">_preprocessor&quot;</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">=</span><span class="s1">num_bins</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">Feature</span><span class="s2">(</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;int32&quot;</span><span class="s2">, </span><span class="s1">preprocessor</span><span class="s2">=</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">features</span><span class="s2">,</span>
+        <span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;concat&quot;</span><span class="s2">,</span>
+        <span class="s1">crosses</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">crossing_dim</span><span class="s2">=</span><span class="s5">32</span><span class="s2">,</span>
+        <span class="s1">hashing_dim</span><span class="s2">=</span><span class="s5">32</span><span class="s2">,</span>
+        <span class="s1">num_discretization_bins</span><span class="s2">=</span><span class="s5">32</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">features</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">&quot;The `features` argument cannot be None or empty.&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">crossing_dim </span><span class="s2">= </span><span class="s1">crossing_dim</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">hashing_dim </span><span class="s2">= </span><span class="s1">hashing_dim</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_discretization_bins </span><span class="s2">= </span><span class="s1">num_discretization_bins</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">features </span><span class="s2">= {</span>
+            <span class="s1">name</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize_feature</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">features</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()</span>
+        <span class="s2">}</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">crosses </span><span class="s2">= []</span>
+        <span class="s0">if </span><span class="s1">crosses</span><span class="s2">:</span>
+            <span class="s1">feature_set </span><span class="s2">= </span><span class="s1">set</span><span class="s2">(</span><span class="s1">features</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span>
+            <span class="s0">for </span><span class="s1">cross </span><span class="s0">in </span><span class="s1">crosses</span><span class="s2">:</span>
+                <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+                    <span class="s1">cross </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">, </span><span class="s1">Cross</span><span class="s2">):</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">crosses</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s0">if not </span><span class="s1">crossing_dim</span><span class="s2">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                            <span class="s3">&quot;When specifying `crosses`, the argument &quot;</span>
+                            <span class="s3">&quot;`crossing_dim` &quot;</span>
+                            <span class="s3">&quot;(dimensionality of the crossing space) &quot;</span>
+                            <span class="s3">&quot;should be specified as well.&quot;</span>
+                        <span class="s2">)</span>
+                    <span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">cross</span><span class="s2">:</span>
+                        <span class="s0">if </span><span class="s1">key </span><span class="s0">not in </span><span class="s1">feature_set</span><span class="s2">:</span>
+                            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                                <span class="s3">&quot;All features referenced &quot;</span>
+                                <span class="s3">&quot;in the `crosses` argument &quot;</span>
+                                <span class="s3">&quot;should be present in the `features` dict. &quot;</span>
+                                <span class="s3">f&quot;Received unknown features: </span><span class="s0">{</span><span class="s1">cross</span><span class="s0">}</span><span class="s3">&quot;</span>
+                            <span class="s2">)</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">crosses</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">Cross</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">, </span><span class="s1">crossing_dim</span><span class="s2">=</span><span class="s1">crossing_dim</span><span class="s2">))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">crosses_by_name </span><span class="s2">= {</span><span class="s1">cross</span><span class="s2">.</span><span class="s1">name</span><span class="s2">: </span><span class="s1">cross </span><span class="s0">for </span><span class="s1">cross </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crosses</span><span class="s2">}</span>
+
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s0">not in </span><span class="s2">{</span><span class="s3">&quot;dict&quot;</span><span class="s2">, </span><span class="s3">&quot;concat&quot;</span><span class="s2">}:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Invalid value for argument `output_mode`. &quot;</span>
+                <span class="s3">&quot;Expected one of {'dict', 'concat'}. &quot;</span>
+                <span class="s3">f&quot;Received: output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">= </span><span class="s1">output_mode</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inputs </span><span class="s2">= {</span>
+            <span class="s1">name</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_feature_to_input</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()</span>
+        <span class="s2">}</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessors </span><span class="s2">= {</span>
+            <span class="s1">name</span><span class="s2">: </span><span class="s1">value</span><span class="s2">.</span><span class="s1">preprocessor </span><span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()</span>
+        <span class="s2">}</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">encoded_features </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">crossers </span><span class="s2">= {</span>
+            <span class="s1">cross</span><span class="s2">.</span><span class="s1">name</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cross_to_crosser</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">) </span><span class="s0">for </span><span class="s1">cross </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crosses</span>
+        <span class="s2">}</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">one_hot_encoders </span><span class="s2">= {}</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_adapted </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">concat </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocessed_features_names </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_crossed_features_names </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_sublayers_built </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">_feature_to_input</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Input</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">=(</span><span class="s5">1</span><span class="s2">,), </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">feature</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_standardize_feature</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">, </span><span class="s1">Feature</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">feature</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;float&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">float</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;float_normalized&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">float_normalized</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;float_rescaled&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">float_rescaled</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;float_discretized&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">float_discretized</span><span class="s2">(</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_discretization_bins</span>
+            <span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;integer_categorical&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">integer_categorical</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;string_categorical&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">string_categorical</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;integer_hashed&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">integer_hashed</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">hashing_dim</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">feature </span><span class="s2">== </span><span class="s3">&quot;string_hashed&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">string_hashed</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">hashing_dim</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">f&quot;Invalid feature type: </span><span class="s0">{</span><span class="s1">feature</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_cross_to_crosser</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">cross</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">HashedCrossing</span><span class="s2">(</span><span class="s1">cross</span><span class="s2">.</span><span class="s1">crossing_dim</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">cross</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_list_adaptable_preprocessors</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">adaptable_preprocessors </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">():</span>
+            <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessors</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+            <span class="s6"># Special case: a Normalization layer with preset mean/variance.</span>
+            <span class="s6"># Not adaptable.</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Normalization</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">input_mean </span><span class="s0">is not None</span><span class="s2">:</span>
+                    <span class="s0">continue</span>
+            <span class="s6"># Special case: a TextVectorization layer with provided vocabulary.</span>
+            <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">TextVectorization</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">_has_input_vocabulary</span><span class="s2">:</span>
+                    <span class="s0">continue</span>
+            <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s3">&quot;adapt&quot;</span><span class="s2">):</span>
+                <span class="s1">adaptable_preprocessors</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">adaptable_preprocessors</span>
+
+    <span class="s0">def </span><span class="s1">adapt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">dataset</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`adapt()` can only be called on a tf.data.Dataset. &quot;</span>
+                <span class="s3">f&quot;Received instead: </span><span class="s0">{</span><span class="s1">dataset</span><span class="s0">} </span><span class="s3">(of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span><span class="s0">}</span><span class="s3">)&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_list_adaptable_preprocessors</span><span class="s2">():</span>
+            <span class="s6"># Call adapt() on each individual adaptable layer.</span>
+
+            <span class="s6"># TODO: consider rewriting this to instead iterate on the</span>
+            <span class="s6"># dataset once, split each batch into individual features,</span>
+            <span class="s6"># and call the layer's `_adapt_function` on each batch</span>
+            <span class="s6"># to simulate the behavior of adapt() in a more performant fashion.</span>
+
+            <span class="s1">feature_dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span><span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">x</span><span class="s2">[</span><span class="s1">name</span><span class="s2">])</span>
+            <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessors</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+            <span class="s6"># TODO: consider adding an adapt progress bar.</span>
+            <span class="s6"># Sample 1 element to check the rank</span>
+            <span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">feature_dataset</span><span class="s2">.</span><span class="s1">take</span><span class="s2">(</span><span class="s5">1</span><span class="s2">):</span>
+                <span class="s0">pass</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">0</span><span class="s2">:</span>
+                <span class="s6"># The dataset yields unbatched scalars; batch it.</span>
+                <span class="s1">feature_dataset </span><span class="s2">= </span><span class="s1">feature_dataset</span><span class="s2">.</span><span class="s1">batch</span><span class="s2">(</span><span class="s5">32</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) </span><span class="s0">in </span><span class="s2">{</span><span class="s5">0</span><span class="s2">, </span><span class="s5">1</span><span class="s2">}:</span>
+                <span class="s6"># If the rank is 1, add a dimension</span>
+                <span class="s6"># so we can reduce on axis=-1.</span>
+                <span class="s6"># Note: if rank was previously 0, it is now 1.</span>
+                <span class="s1">feature_dataset </span><span class="s2">= </span><span class="s1">feature_dataset</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+                    <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, -</span><span class="s5">1</span><span class="s2">)</span>
+                <span class="s2">)</span>
+            <span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">adapt</span><span class="s2">(</span><span class="s1">feature_dataset</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_adapted </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">get_encoded_features</span><span class="s2">()  </span><span class="s6"># Finish building the layer</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_sublayers_built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">get_inputs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_if_built</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs</span>
+
+    <span class="s0">def </span><span class="s1">get_encoded_features</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_if_adapted</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">encoded_features </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">preprocessed_features </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocess_features</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs</span><span class="s2">)</span>
+            <span class="s1">crossed_features </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cross_features</span><span class="s2">(</span><span class="s1">preprocessed_features</span><span class="s2">)</span>
+            <span class="s1">merged_features </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_merge_features</span><span class="s2">(</span>
+                <span class="s1">preprocessed_features</span><span class="s2">, </span><span class="s1">crossed_features</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">encoded_features </span><span class="s2">= </span><span class="s1">merged_features</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">encoded_features</span>
+
+    <span class="s0">def </span><span class="s1">_preprocess_features</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">features</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s1">name</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessors</span><span class="s2">[</span><span class="s1">name</span><span class="s2">](</span><span class="s1">features</span><span class="s2">[</span><span class="s1">name</span><span class="s2">])</span>
+            <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">features</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()</span>
+        <span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">_cross_features</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">features</span><span class="s2">):</span>
+        <span class="s1">all_outputs </span><span class="s2">= {}</span>
+        <span class="s0">for </span><span class="s1">cross </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crosses</span><span class="s2">:</span>
+            <span class="s1">inputs </span><span class="s2">= [</span><span class="s1">features</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] </span><span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">cross</span><span class="s2">.</span><span class="s1">feature_names</span><span class="s2">]</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crossers</span><span class="s2">[</span><span class="s1">cross</span><span class="s2">.</span><span class="s1">name</span><span class="s2">](</span><span class="s1">inputs</span><span class="s2">)</span>
+            <span class="s1">all_outputs</span><span class="s2">[</span><span class="s1">cross</span><span class="s2">.</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">outputs</span>
+        <span class="s0">return </span><span class="s1">all_outputs</span>
+
+    <span class="s0">def </span><span class="s1">_merge_features</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">preprocessed_features</span><span class="s2">, </span><span class="s1">crossed_features</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocessed_features_names</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocessed_features_names </span><span class="s2">= </span><span class="s1">sorted</span><span class="s2">(</span>
+                <span class="s1">preprocessed_features</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_crossed_features_names </span><span class="s2">= </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">crossed_features</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span>
+
+        <span class="s1">all_names </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocessed_features_names </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_crossed_features_names</span>
+        <span class="s2">)</span>
+        <span class="s1">all_features </span><span class="s2">= [</span>
+            <span class="s1">preprocessed_features</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+            <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocessed_features_names</span>
+        <span class="s2">] + [</span><span class="s1">crossed_features</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] </span><span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_crossed_features_names</span><span class="s2">]</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;dict&quot;</span><span class="s2">:</span>
+            <span class="s1">output_dict </span><span class="s2">= {}</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">features_to_concat </span><span class="s2">= []</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_sublayers_built</span><span class="s2">:</span>
+            <span class="s6"># Fast mode.</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">feature </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">all_names</span><span class="s2">, </span><span class="s1">all_features</span><span class="s2">):</span>
+                <span class="s1">encoder </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">one_hot_encoders</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">encoder</span><span class="s2">:</span>
+                    <span class="s1">feature </span><span class="s2">= </span><span class="s1">encoder</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;dict&quot;</span><span class="s2">:</span>
+                    <span class="s1">output_dict</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">feature</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">features_to_concat</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;dict&quot;</span><span class="s2">:</span>
+                <span class="s0">return </span><span class="s1">output_dict</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">(</span><span class="s1">features_to_concat</span><span class="s2">)</span>
+
+        <span class="s6"># If the object isn't built,</span>
+        <span class="s6"># we create the encoder and concat layers below</span>
+        <span class="s1">all_specs </span><span class="s2">= [</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] </span><span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocessed_features_names</span>
+        <span class="s2">] + [</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">crosses_by_name</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] </span><span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_crossed_features_names</span>
+        <span class="s2">]</span>
+
+        <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">feature</span><span class="s2">, </span><span class="s1">spec </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">all_names</span><span class="s2">, </span><span class="s1">all_features</span><span class="s2">, </span><span class="s1">all_specs</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">is_nested</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">):</span>
+                <span class="s1">dtype </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">)[</span><span class="s5">0</span><span class="s2">].</span><span class="s1">dtype</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">dtype </span><span class="s2">= </span><span class="s1">feature</span><span class="s2">.</span><span class="s1">dtype</span>
+            <span class="s1">dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">)</span>
+
+            <span class="s0">if </span><span class="s1">spec</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;one_hot&quot;</span><span class="s2">:</span>
+                <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">preprocessors</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span>
+                    <span class="s1">name</span>
+                <span class="s2">) </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crossers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span>
+
+                <span class="s1">cardinality </span><span class="s2">= </span><span class="s0">None</span>
+                <span class="s0">if not </span><span class="s1">dtype</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;int&quot;</span><span class="s2">):</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">f&quot;Feature '</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has `output_mode='one_hot'`. &quot;</span>
+                        <span class="s3">&quot;Thus its preprocessor should return an integer dtype. &quot;</span>
+                        <span class="s3">f&quot;Instead it returns a </span><span class="s0">{</span><span class="s1">dtype</span><span class="s0">} </span><span class="s3">dtype.&quot;</span>
+                    <span class="s2">)</span>
+
+                <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span>
+                    <span class="s1">preprocessor</span><span class="s2">, (</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">IntegerLookup</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">StringLookup</span><span class="s2">)</span>
+                <span class="s2">):</span>
+                    <span class="s1">cardinality </span><span class="s2">= </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">vocabulary_size</span><span class="s2">()</span>
+                <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">CategoryEncoding</span><span class="s2">):</span>
+                    <span class="s1">cardinality </span><span class="s2">= </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">num_tokens</span>
+                <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">preprocessor</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Discretization</span><span class="s2">):</span>
+                    <span class="s1">cardinality </span><span class="s2">= </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">num_bins</span>
+                <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span>
+                    <span class="s1">preprocessor</span><span class="s2">, (</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">HashedCrossing</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Hashing</span><span class="s2">)</span>
+                <span class="s2">):</span>
+                    <span class="s1">cardinality </span><span class="s2">= </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">num_bins</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">f&quot;Feature '</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has `output_mode='one_hot'`. &quot;</span>
+                        <span class="s3">&quot;However it isn't a standard feature and the &quot;</span>
+                        <span class="s3">&quot;dimensionality of its output space is not known, &quot;</span>
+                        <span class="s3">&quot;thus it cannot be one-hot encoded. &quot;</span>
+                        <span class="s3">&quot;Try using `output_mode='int'`.&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">cardinality </span><span class="s0">is not None</span><span class="s2">:</span>
+                    <span class="s1">encoder </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">CategoryEncoding</span><span class="s2">(</span>
+                        <span class="s1">num_tokens</span><span class="s2">=</span><span class="s1">cardinality</span><span class="s2">, </span><span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;multi_hot&quot;</span>
+                    <span class="s2">)</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">one_hot_encoders</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">encoder</span>
+                    <span class="s1">feature </span><span class="s2">= </span><span class="s1">encoder</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">)</span>
+
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;concat&quot;</span><span class="s2">:</span>
+                <span class="s1">dtype </span><span class="s2">= </span><span class="s1">feature</span><span class="s2">.</span><span class="s1">dtype</span>
+                <span class="s0">if </span><span class="s1">dtype</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;int&quot;</span><span class="s2">) </span><span class="s0">or </span><span class="s1">dtype </span><span class="s2">== </span><span class="s3">&quot;string&quot;</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">f&quot;Cannot concatenate features because feature '</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' &quot;</span>
+                        <span class="s3">f&quot;has not been encoded (it has dtype </span><span class="s0">{</span><span class="s1">dtype</span><span class="s0">}</span><span class="s3">). &quot;</span>
+                        <span class="s3">&quot;Consider using `output_mode='dict'`.&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s1">features_to_concat</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">feature</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">output_dict</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">feature</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;concat&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">concat </span><span class="s2">= </span><span class="s1">TFDConcat</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">(</span><span class="s1">features_to_concat</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">output_dict</span>
+
+    <span class="s0">def </span><span class="s1">_check_if_adapted</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_is_adapted</span><span class="s2">:</span>
+            <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_list_adaptable_preprocessors</span><span class="s2">():</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_adapted </span><span class="s2">= </span><span class="s0">True</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;You need to call `.adapt(dataset)` on the FeatureSpace &quot;</span>
+                    <span class="s3">&quot;before you can start using it.&quot;</span>
+                <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_check_if_built</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_sublayers_built</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_if_adapted</span><span class="s2">()</span>
+            <span class="s6"># Finishes building</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">get_encoded_features</span><span class="s2">()</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_sublayers_built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">_convert_input</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, (</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Tensor</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">SparseTensor</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">)):</span>
+            <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">int</span><span class="s2">, </span><span class="s1">float</span><span class="s2">)):</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s0">def </span><span class="s1">__call__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_if_built</span><span class="s2">()</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;A FeatureSpace can only be called with a dict. &quot;</span>
+                <span class="s3">f&quot;Received: data=</span><span class="s0">{</span><span class="s1">data</span><span class="s0">} </span><span class="s3">(of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s6"># Many preprocessing layers support all backends but many do not.</span>
+        <span class="s6"># Switch to TF to make FeatureSpace work universally.</span>
+        <span class="s1">data </span><span class="s2">= {</span><span class="s1">key</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_convert_input</span><span class="s2">(</span><span class="s1">value</span><span class="s2">) </span><span class="s0">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">data</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()}</span>
+        <span class="s1">rebatched </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">x </span><span class="s0">in </span><span class="s1">data</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">0</span><span class="s2">:</span>
+                <span class="s1">data</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, (</span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">))</span>
+                <span class="s1">rebatched </span><span class="s2">= </span><span class="s0">True</span>
+            <span class="s0">elif </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">1</span><span class="s2">:</span>
+                <span class="s1">data</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, -</span><span class="s5">1</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend_utils</span><span class="s2">.</span><span class="s1">TFGraphScope</span><span class="s2">():</span>
+            <span class="s6"># This scope is to make sure that inner TFDataLayers</span>
+            <span class="s6"># will not convert outputs back to backend-native --</span>
+            <span class="s6"># they should be TF tensors throughout</span>
+            <span class="s1">preprocessed_data </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocess_features</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span>
+            <span class="s1">preprocessed_data </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+                <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_convert_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">), </span><span class="s1">preprocessed_data</span>
+            <span class="s2">)</span>
+
+            <span class="s1">crossed_data </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cross_features</span><span class="s2">(</span><span class="s1">preprocessed_data</span><span class="s2">)</span>
+            <span class="s1">crossed_data </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+                <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_convert_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">), </span><span class="s1">crossed_data</span>
+            <span class="s2">)</span>
+
+            <span class="s1">merged_data </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_merge_features</span><span class="s2">(</span><span class="s1">preprocessed_data</span><span class="s2">, </span><span class="s1">crossed_data</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">rebatched</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;concat&quot;</span><span class="s2">:</span>
+                <span class="s0">assert </span><span class="s1">merged_data</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] == </span><span class="s5">1</span>
+                <span class="s0">if </span><span class="s2">(</span>
+                    <span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;tensorflow&quot;</span>
+                    <span class="s0">and not </span><span class="s1">backend_utils</span><span class="s2">.</span><span class="s1">in_tf_graph</span><span class="s2">()</span>
+                <span class="s2">):</span>
+                    <span class="s1">merged_data </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">merged_data</span><span class="s2">)</span>
+                <span class="s1">merged_data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">merged_data</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">x </span><span class="s0">in </span><span class="s1">merged_data</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+                    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">2 </span><span class="s0">and </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] == </span><span class="s5">1</span><span class="s2">:</span>
+                        <span class="s1">merged_data</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;tensorflow&quot;</span>
+            <span class="s0">and not </span><span class="s1">backend_utils</span><span class="s2">.</span><span class="s1">in_tf_graph</span><span class="s2">()</span>
+        <span class="s2">):</span>
+            <span class="s1">merged_data </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+                <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">),</span>
+                <span class="s1">merged_data</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">merged_data</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s3">&quot;features&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">),</span>
+            <span class="s3">&quot;output_mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s3">&quot;crosses&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">crosses</span><span class="s2">),</span>
+            <span class="s3">&quot;crossing_dim&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">crossing_dim</span><span class="s2">,</span>
+            <span class="s3">&quot;hashing_dim&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">hashing_dim</span><span class="s2">,</span>
+            <span class="s3">&quot;num_discretization_bins&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_discretization_bins</span><span class="s2">,</span>
+        <span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_build_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s1">name</span><span class="s2">: </span><span class="s1">feature</span><span class="s2">.</span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">get_build_config</span><span class="s2">()</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">feature </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()</span>
+        <span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">build_from_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">config</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">():</span>
+            <span class="s1">preprocessor </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">features</span><span class="s2">[</span><span class="s1">name</span><span class="s2">].</span><span class="s1">preprocessor</span>
+            <span class="s0">if not </span><span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+                <span class="s1">preprocessor</span><span class="s2">.</span><span class="s1">build_from_config</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s1">name</span><span class="s2">])</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_adapted </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">save</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Save the `FeatureSpace` instance to a `.keras` file. 
+ 
+        You can reload it via `keras.models.load_model()`: 
+ 
+        ```python 
+        feature_space.save(&quot;featurespace.keras&quot;) 
+        reloaded_fs = keras.models.load_model(&quot;featurespace.keras&quot;) 
+        ``` 
+        &quot;&quot;&quot;</span>
+        <span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">save_model</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">save_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s0">return</span>
+
+    <span class="s0">def </span><span class="s1">load_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s0">return</span>
+
+
+<span class="s0">class </span><span class="s1">TFDConcat</span><span class="s2">(</span><span class="s1">TFDataLayer</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(**</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">axis </span><span class="s2">= </span><span class="s1">axis</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">xs</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">(</span><span class="s1">xs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">TFDIdentity</span><span class="s2">(</span><span class="s1">TFDataLayer</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">x</span>
+</pre>
+</body>
+</html>

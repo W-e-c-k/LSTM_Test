@@ -1,0 +1,245 @@
+<html>
+<head>
+<title>_utilities.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_utilities.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2015 gRPC authors.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+<span class="s2">&quot;&quot;&quot;Internal utilities for gRPC Python.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">collections</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">import </span><span class="s1">threading</span>
+<span class="s3">import </span><span class="s1">time</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Callable</span><span class="s4">, </span><span class="s1">Dict</span><span class="s4">, </span><span class="s1">Optional</span><span class="s4">, </span><span class="s1">Sequence</span>
+
+<span class="s3">import </span><span class="s1">grpc  </span><span class="s0"># pytype: disable=pyi-error</span>
+<span class="s3">from </span><span class="s1">grpc </span><span class="s3">import </span><span class="s1">_common  </span><span class="s0"># pytype: disable=pyi-error</span>
+<span class="s3">from </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">_typing </span><span class="s3">import </span><span class="s1">DoneCallbackType</span>
+
+<span class="s1">_LOGGER </span><span class="s4">= </span><span class="s1">logging</span><span class="s4">.</span><span class="s1">getLogger</span><span class="s4">(</span><span class="s1">__name__</span><span class="s4">)</span>
+
+<span class="s1">_DONE_CALLBACK_EXCEPTION_LOG_MESSAGE </span><span class="s4">= (</span>
+    <span class="s5">'Exception calling connectivity future &quot;done&quot; callback!'</span>
+<span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">RpcMethodHandler</span><span class="s4">(</span>
+    <span class="s1">collections</span><span class="s4">.</span><span class="s1">namedtuple</span><span class="s4">(</span>
+        <span class="s5">&quot;_RpcMethodHandler&quot;</span><span class="s4">,</span>
+        <span class="s4">(</span>
+            <span class="s5">&quot;request_streaming&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;response_streaming&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;request_deserializer&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;response_serializer&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;unary_unary&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;unary_stream&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;stream_unary&quot;</span><span class="s4">,</span>
+            <span class="s5">&quot;stream_stream&quot;</span><span class="s4">,</span>
+        <span class="s4">),</span>
+    <span class="s4">),</span>
+    <span class="s1">grpc</span><span class="s4">.</span><span class="s1">RpcMethodHandler</span><span class="s4">,</span>
+<span class="s4">):</span>
+    <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">DictionaryGenericHandler</span><span class="s4">(</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ServiceRpcHandler</span><span class="s4">):</span>
+    <span class="s1">_name</span><span class="s4">: </span><span class="s1">str</span>
+    <span class="s1">_method_handlers</span><span class="s4">: </span><span class="s1">Dict</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">RpcMethodHandler</span><span class="s4">]</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span>
+        <span class="s1">self</span><span class="s4">, </span><span class="s1">service</span><span class="s4">: </span><span class="s1">str</span><span class="s4">, </span><span class="s1">method_handlers</span><span class="s4">: </span><span class="s1">Dict</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">RpcMethodHandler</span><span class="s4">]</span>
+    <span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_name </span><span class="s4">= </span><span class="s1">service</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_method_handlers </span><span class="s4">= {</span>
+            <span class="s1">_common</span><span class="s4">.</span><span class="s1">fully_qualified_method</span><span class="s4">(</span><span class="s1">service</span><span class="s4">, </span><span class="s1">method</span><span class="s4">): </span><span class="s1">method_handler</span>
+            <span class="s3">for </span><span class="s1">method</span><span class="s4">, </span><span class="s1">method_handler </span><span class="s3">in </span><span class="s1">method_handlers</span><span class="s4">.</span><span class="s1">items</span><span class="s4">()</span>
+        <span class="s4">}</span>
+
+    <span class="s3">def </span><span class="s1">service_name</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_name</span>
+
+    <span class="s3">def </span><span class="s1">service</span><span class="s4">(</span>
+        <span class="s1">self</span><span class="s4">, </span><span class="s1">handler_call_details</span><span class="s4">: </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">HandlerCallDetails</span>
+    <span class="s4">) </span><span class="s1">-&gt; Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">RpcMethodHandler</span><span class="s4">]:</span>
+        <span class="s1">details_method </span><span class="s4">= </span><span class="s1">handler_call_details</span><span class="s4">.</span><span class="s1">method</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_method_handlers</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span>
+            <span class="s1">details_method</span>
+        <span class="s4">)  </span><span class="s0"># pytype: disable=attribute-error</span>
+
+
+<span class="s3">class </span><span class="s1">_ChannelReadyFuture</span><span class="s4">(</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Future</span><span class="s4">):</span>
+    <span class="s1">_condition</span><span class="s4">: </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Condition</span>
+    <span class="s1">_channel</span><span class="s4">: </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Channel</span>
+    <span class="s1">_matured</span><span class="s4">: </span><span class="s1">bool</span>
+    <span class="s1">_cancelled</span><span class="s4">: </span><span class="s1">bool</span>
+    <span class="s1">_done_callbacks</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">]</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">channel</span><span class="s4">: </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Channel</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_condition </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Condition</span><span class="s4">()</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_channel </span><span class="s4">= </span><span class="s1">channel</span>
+
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_matured </span><span class="s4">= </span><span class="s3">False</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled </span><span class="s4">= </span><span class="s3">False</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_done_callbacks </span><span class="s4">= []</span>
+
+    <span class="s3">def </span><span class="s1">_block</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">]) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s1">until </span><span class="s4">= </span><span class="s3">None if </span><span class="s1">timeout </span><span class="s3">is None else </span><span class="s1">time</span><span class="s4">.</span><span class="s1">time</span><span class="s4">() + </span><span class="s1">timeout</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">while True</span><span class="s4">:</span>
+                <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">FutureCancelledError</span><span class="s4">()</span>
+                <span class="s3">elif </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_matured</span><span class="s4">:</span>
+                    <span class="s3">return</span>
+                <span class="s3">else</span><span class="s4">:</span>
+                    <span class="s3">if </span><span class="s1">until </span><span class="s3">is None</span><span class="s4">:</span>
+                        <span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">wait</span><span class="s4">()</span>
+                    <span class="s3">else</span><span class="s4">:</span>
+                        <span class="s1">remaining </span><span class="s4">= </span><span class="s1">until </span><span class="s4">- </span><span class="s1">time</span><span class="s4">.</span><span class="s1">time</span><span class="s4">()</span>
+                        <span class="s3">if </span><span class="s1">remaining </span><span class="s4">&lt; </span><span class="s6">0</span><span class="s4">:</span>
+                            <span class="s3">raise </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">FutureTimeoutError</span><span class="s4">()</span>
+                        <span class="s3">else</span><span class="s4">:</span>
+                            <span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">wait</span><span class="s4">(</span><span class="s1">timeout</span><span class="s4">=</span><span class="s1">remaining</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">_update</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">connectivity</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelConnectivity</span><span class="s4">]) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s4">(</span>
+                <span class="s3">not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled</span>
+                <span class="s3">and </span><span class="s1">connectivity </span><span class="s3">is </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelConnectivity</span><span class="s4">.</span><span class="s1">READY</span>
+            <span class="s4">):</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_matured </span><span class="s4">= </span><span class="s3">True</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_channel</span><span class="s4">.</span><span class="s1">unsubscribe</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_update</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">notify_all</span><span class="s4">()</span>
+                <span class="s1">done_callbacks </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_done_callbacks</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_done_callbacks </span><span class="s4">= </span><span class="s3">None</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s3">return</span>
+
+        <span class="s3">for </span><span class="s1">done_callback </span><span class="s3">in </span><span class="s1">done_callbacks</span><span class="s4">:</span>
+            <span class="s3">try</span><span class="s4">:</span>
+                <span class="s1">done_callback</span><span class="s4">(</span><span class="s1">self</span><span class="s4">)</span>
+            <span class="s3">except </span><span class="s1">Exception</span><span class="s4">:  </span><span class="s0"># pylint: disable=broad-except</span>
+                <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">exception</span><span class="s4">(</span><span class="s1">_DONE_CALLBACK_EXCEPTION_LOG_MESSAGE</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">cancel</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_matured</span><span class="s4">:</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled </span><span class="s4">= </span><span class="s3">True</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_channel</span><span class="s4">.</span><span class="s1">unsubscribe</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_update</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">notify_all</span><span class="s4">()</span>
+                <span class="s1">done_callbacks </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_done_callbacks</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_done_callbacks </span><span class="s4">= </span><span class="s3">None</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s3">return False</span>
+
+        <span class="s3">for </span><span class="s1">done_callback </span><span class="s3">in </span><span class="s1">done_callbacks</span><span class="s4">:</span>
+            <span class="s3">try</span><span class="s4">:</span>
+                <span class="s1">done_callback</span><span class="s4">(</span><span class="s1">self</span><span class="s4">)</span>
+            <span class="s3">except </span><span class="s1">Exception</span><span class="s4">:  </span><span class="s0"># pylint: disable=broad-except</span>
+                <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">exception</span><span class="s4">(</span><span class="s1">_DONE_CALLBACK_EXCEPTION_LOG_MESSAGE</span><span class="s4">)</span>
+
+        <span class="s3">return True</span>
+
+    <span class="s3">def </span><span class="s1">cancelled</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled</span>
+
+    <span class="s3">def </span><span class="s1">running</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">return not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled </span><span class="s3">and not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_matured</span>
+
+    <span class="s3">def </span><span class="s1">done</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled </span><span class="s3">or </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_matured</span>
+
+    <span class="s3">def </span><span class="s1">result</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_block</span><span class="s4">(</span><span class="s1">timeout</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">exception</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_block</span><span class="s4">(</span><span class="s1">timeout</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">traceback</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_block</span><span class="s4">(</span><span class="s1">timeout</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">add_done_callback</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">fn</span><span class="s4">: </span><span class="s1">DoneCallbackType</span><span class="s4">):</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled </span><span class="s3">and not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_matured</span><span class="s4">:</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_done_callbacks</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">fn</span><span class="s4">)</span>
+                <span class="s3">return</span>
+
+        <span class="s1">fn</span><span class="s4">(</span><span class="s1">self</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">start</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_channel</span><span class="s4">.</span><span class="s1">subscribe</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_update</span><span class="s4">, </span><span class="s1">try_to_connect</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__del__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">:</span>
+            <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cancelled </span><span class="s3">and not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_matured</span><span class="s4">:</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_channel</span><span class="s4">.</span><span class="s1">unsubscribe</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_update</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">channel_ready_future</span><span class="s4">(</span><span class="s1">channel</span><span class="s4">: </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Channel</span><span class="s4">) </span><span class="s1">-&gt; _ChannelReadyFuture</span><span class="s4">:</span>
+    <span class="s1">ready_future </span><span class="s4">= </span><span class="s1">_ChannelReadyFuture</span><span class="s4">(</span><span class="s1">channel</span><span class="s4">)</span>
+    <span class="s1">ready_future</span><span class="s4">.</span><span class="s1">start</span><span class="s4">()</span>
+    <span class="s3">return </span><span class="s1">ready_future</span>
+
+
+<span class="s3">def </span><span class="s1">first_version_is_lower</span><span class="s4">(</span><span class="s1">version1</span><span class="s4">: </span><span class="s1">str</span><span class="s4">, </span><span class="s1">version2</span><span class="s4">: </span><span class="s1">str</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Compares two versions in the format '1.60.1' or '1.60.1.dev0'. 
+ 
+    This method will be used in all stubs generated by grpcio-tools to check whether 
+    the stub version is compatible with the runtime grpcio. 
+ 
+    Args: 
+        version1: The first version string. 
+        version2: The second version string. 
+ 
+    Returns: 
+        True if version1 is lower, False otherwise. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">version1_list </span><span class="s4">= </span><span class="s1">version1</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s5">&quot;.&quot;</span><span class="s4">)</span>
+    <span class="s1">version2_list </span><span class="s4">= </span><span class="s1">version2</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s5">&quot;.&quot;</span><span class="s4">)</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s6">3</span><span class="s4">):</span>
+            <span class="s3">if </span><span class="s1">int</span><span class="s4">(</span><span class="s1">version1_list</span><span class="s4">[</span><span class="s1">i</span><span class="s4">]) &lt; </span><span class="s1">int</span><span class="s4">(</span><span class="s1">version2_list</span><span class="s4">[</span><span class="s1">i</span><span class="s4">]):</span>
+                <span class="s3">return True</span>
+            <span class="s3">elif </span><span class="s1">int</span><span class="s4">(</span><span class="s1">version1_list</span><span class="s4">[</span><span class="s1">i</span><span class="s4">]) &gt; </span><span class="s1">int</span><span class="s4">(</span><span class="s1">version2_list</span><span class="s4">[</span><span class="s1">i</span><span class="s4">]):</span>
+                <span class="s3">return False</span>
+    <span class="s3">except </span><span class="s1">ValueError</span><span class="s4">:</span>
+        <span class="s0"># Return false in case we can't convert version to int.</span>
+        <span class="s3">return False</span>
+
+    <span class="s0"># The version without dev0 will be considered lower.</span>
+    <span class="s3">return </span><span class="s1">len</span><span class="s4">(</span><span class="s1">version1_list</span><span class="s4">) &lt; </span><span class="s1">len</span><span class="s4">(</span><span class="s1">version2_list</span><span class="s4">)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,1798 @@
+<html>
+<head>
+<title>serializer.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+serializer.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># XML serialization and output functions</span>
+
+<span class="s0">cdef object GzipFile</span>
+<span class="s0">from gzip import GzipFile</span>
+
+
+<span class="s0">cdef class SerialisationError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;A libxml2 error that occurred during serialisation.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0">cdef enum _OutputMethods:</span>
+    <span class="s0">OUTPUT_METHOD_XML</span>
+    <span class="s0">OUTPUT_METHOD_HTML</span>
+    <span class="s0">OUTPUT_METHOD_TEXT</span>
+
+
+<span class="s0">cdef int _findOutputMethod(method) except -1:</span>
+    <span class="s0">if method is None:</span>
+        <span class="s0">return OUTPUT_METHOD_XML</span>
+    <span class="s0">method = method.lower()</span>
+    <span class="s0">if method == &quot;xml&quot;:</span>
+        <span class="s0">return OUTPUT_METHOD_XML</span>
+    <span class="s0">if method == &quot;html&quot;:</span>
+        <span class="s0">return OUTPUT_METHOD_HTML</span>
+    <span class="s0">if method == &quot;text&quot;:</span>
+        <span class="s0">return OUTPUT_METHOD_TEXT</span>
+    <span class="s0">raise ValueError(f&quot;unknown output method {method!r}&quot;)</span>
+
+
+<span class="s0">cdef _textToString(xmlNode* c_node, encoding, bint with_tail):</span>
+    <span class="s0">cdef bint needs_conversion</span>
+    <span class="s0">cdef const_xmlChar* c_text</span>
+    <span class="s0">cdef xmlNode* c_text_node</span>
+    <span class="s0">cdef tree.xmlBuffer* c_buffer</span>
+    <span class="s0">cdef int error_result</span>
+
+    <span class="s0">c_buffer = tree.xmlBufferCreate()</span>
+    <span class="s0">if c_buffer is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0">error_result = tree.xmlNodeBufGetContent(c_buffer, c_node)</span>
+        <span class="s0">if with_tail:</span>
+            <span class="s0">c_text_node = _textNodeOrSkip(c_node.next)</span>
+            <span class="s0">while c_text_node is not NULL:</span>
+                <span class="s0">tree.xmlBufferWriteChar(c_buffer, &lt;const_char*&gt;c_text_node.content)</span>
+                <span class="s0">c_text_node = _textNodeOrSkip(c_text_node.next)</span>
+        <span class="s0">c_text = tree.xmlBufferContent(c_buffer)</span>
+
+    <span class="s0">if error_result &lt; 0 or c_text is NULL:</span>
+        <span class="s0">tree.xmlBufferFree(c_buffer)</span>
+        <span class="s0">raise SerialisationError, &quot;Error during serialisation (out of memory?)&quot;</span>
+
+    <span class="s0">try:</span>
+        <span class="s0">needs_conversion = 0</span>
+        <span class="s0">if encoding is unicode:</span>
+            <span class="s0">needs_conversion = 1</span>
+        <span class="s0">elif encoding is not None:</span>
+            <span class="s0"># Python prefers lower case encoding names</span>
+            <span class="s0">encoding = encoding.lower()</span>
+            <span class="s0">if encoding not in ('utf8', 'utf-8'):</span>
+                <span class="s0">if encoding == 'ascii':</span>
+                    <span class="s0">if isutf8l(c_text, tree.xmlBufferLength(c_buffer)):</span>
+                        <span class="s0"># will raise a decode error below</span>
+                        <span class="s0">needs_conversion = 1</span>
+                <span class="s0">else:</span>
+                    <span class="s0">needs_conversion = 1</span>
+
+        <span class="s0">if needs_conversion:</span>
+            <span class="s0">text = (&lt;const_char*&gt;c_text)[:tree.xmlBufferLength(c_buffer)].decode('utf8')</span>
+            <span class="s0">if encoding is not unicode:</span>
+                <span class="s0">encoding = _utf8(encoding)</span>
+                <span class="s0">text = python.PyUnicode_AsEncodedString(</span>
+                    <span class="s0">text, encoding, 'strict')</span>
+        <span class="s0">else:</span>
+            <span class="s0">text = (&lt;unsigned char*&gt;c_text)[:tree.xmlBufferLength(c_buffer)]</span>
+    <span class="s0">finally:</span>
+        <span class="s0">tree.xmlBufferFree(c_buffer)</span>
+    <span class="s0">return text</span>
+
+
+<span class="s0">cdef _tostring(_Element element, encoding, doctype, method,</span>
+               <span class="s0">bint write_xml_declaration, bint write_complete_document,</span>
+               <span class="s0">bint pretty_print, bint with_tail, int standalone):</span>
+    <span class="s0">&quot;&quot;&quot;Serialize an element to an encoded string representation of its XML</span>
+    <span class="s0">tree.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef tree.xmlOutputBuffer* c_buffer</span>
+    <span class="s0">cdef tree.xmlBuf* c_result_buffer</span>
+    <span class="s0">cdef tree.xmlCharEncodingHandler* enchandler</span>
+    <span class="s0">cdef const_char* c_enc</span>
+    <span class="s0">cdef const_xmlChar* c_version</span>
+    <span class="s0">cdef const_xmlChar* c_doctype</span>
+    <span class="s0">cdef int c_method</span>
+    <span class="s0">cdef int error_result</span>
+    <span class="s0">if element is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">_assertValidNode(element)</span>
+    <span class="s0">c_method = _findOutputMethod(method)</span>
+    <span class="s0">if c_method == OUTPUT_METHOD_TEXT:</span>
+        <span class="s0">return _textToString(element._c_node, encoding, with_tail)</span>
+    <span class="s0">if encoding is None or encoding is unicode:</span>
+        <span class="s0">c_enc = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">encoding = _utf8(encoding)</span>
+        <span class="s0">c_enc = _cstr(encoding)</span>
+    <span class="s0">if doctype is None:</span>
+        <span class="s0">c_doctype = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">doctype = _utf8(doctype)</span>
+        <span class="s0">c_doctype = _xcstr(doctype)</span>
+    <span class="s0"># it is necessary to *and* find the encoding handler *and* use</span>
+    <span class="s0"># encoding during output</span>
+    <span class="s0">enchandler = tree.xmlFindCharEncodingHandler(c_enc)</span>
+    <span class="s0">if enchandler is NULL and c_enc is not NULL:</span>
+        <span class="s0">if encoding is not None:</span>
+            <span class="s0">encoding = encoding.decode('UTF-8')</span>
+        <span class="s0">raise LookupError, f&quot;unknown encoding: '{encoding}'&quot;</span>
+    <span class="s0">c_buffer = tree.xmlAllocOutputBuffer(enchandler)</span>
+    <span class="s0">if c_buffer is NULL:</span>
+        <span class="s0">tree.xmlCharEncCloseFunc(enchandler)</span>
+        <span class="s0">raise MemoryError()</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0">_writeNodeToBuffer(c_buffer, element._c_node, c_enc, c_doctype, c_method,</span>
+                           <span class="s0">write_xml_declaration, write_complete_document,</span>
+                           <span class="s0">pretty_print, with_tail, standalone)</span>
+        <span class="s0">tree.xmlOutputBufferFlush(c_buffer)</span>
+        <span class="s0">if c_buffer.conv is not NULL:</span>
+            <span class="s0">c_result_buffer = c_buffer.conv</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_result_buffer = c_buffer.buffer</span>
+
+    <span class="s0">error_result = c_buffer.error</span>
+    <span class="s0">if error_result != xmlerror.XML_ERR_OK:</span>
+        <span class="s0">tree.xmlOutputBufferClose(c_buffer)</span>
+        <span class="s0">_raiseSerialisationError(error_result)</span>
+
+    <span class="s0">try:</span>
+        <span class="s0">if encoding is unicode:</span>
+            <span class="s0">result = (&lt;unsigned char*&gt;tree.xmlBufContent(</span>
+                <span class="s0">c_result_buffer))[:tree.xmlBufUse(c_result_buffer)].decode('UTF-8')</span>
+        <span class="s0">else:</span>
+            <span class="s0">result = &lt;bytes&gt;(&lt;unsigned char*&gt;tree.xmlBufContent(</span>
+                <span class="s0">c_result_buffer))[:tree.xmlBufUse(c_result_buffer)]</span>
+    <span class="s0">finally:</span>
+        <span class="s0">error_result = tree.xmlOutputBufferClose(c_buffer)</span>
+    <span class="s0">if error_result == -1:</span>
+        <span class="s0">_raiseSerialisationError(error_result)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef bytes _tostringC14N(element_or_tree, bint exclusive, bint with_comments, inclusive_ns_prefixes):</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">cdef xmlChar* c_buffer = NULL</span>
+    <span class="s0">cdef int byte_count = -1</span>
+    <span class="s0">cdef bytes result</span>
+    <span class="s0">cdef _Document doc</span>
+    <span class="s0">cdef _Element element</span>
+    <span class="s0">cdef xmlChar **c_inclusive_ns_prefixes</span>
+
+    <span class="s0">if isinstance(element_or_tree, _Element):</span>
+        <span class="s0">_assertValidNode(&lt;_Element&gt;element_or_tree)</span>
+        <span class="s0">doc = (&lt;_Element&gt;element_or_tree)._doc</span>
+        <span class="s0">c_doc = _plainFakeRootDoc(doc._c_doc, (&lt;_Element&gt;element_or_tree)._c_node, 0)</span>
+    <span class="s0">else:</span>
+        <span class="s0">doc = _documentOrRaise(element_or_tree)</span>
+        <span class="s0">_assertValidDoc(doc)</span>
+        <span class="s0">c_doc = doc._c_doc</span>
+
+    <span class="s0">c_inclusive_ns_prefixes = _convert_ns_prefixes(c_doc.dict, inclusive_ns_prefixes) if inclusive_ns_prefixes else NULL</span>
+    <span class="s0">try:</span>
+         <span class="s0">with nogil:</span>
+             <span class="s0">byte_count = c14n.xmlC14NDocDumpMemory(</span>
+                 <span class="s0">c_doc, NULL, exclusive, c_inclusive_ns_prefixes, with_comments, &amp;c_buffer)</span>
+
+    <span class="s0">finally:</span>
+         <span class="s0">_destroyFakeDoc(doc._c_doc, c_doc)</span>
+         <span class="s0">if c_inclusive_ns_prefixes is not NULL:</span>
+            <span class="s0">python.lxml_free(c_inclusive_ns_prefixes)</span>
+
+    <span class="s0">if byte_count &lt; 0 or c_buffer is NULL:</span>
+        <span class="s0">if c_buffer is not NULL:</span>
+            <span class="s0">tree.xmlFree(c_buffer)</span>
+        <span class="s0">raise C14NError, &quot;C14N failed&quot;</span>
+    <span class="s0">try:</span>
+        <span class="s0">result = c_buffer[:byte_count]</span>
+    <span class="s0">finally:</span>
+        <span class="s0">tree.xmlFree(c_buffer)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef _raiseSerialisationError(int error_result):</span>
+    <span class="s0">if error_result == xmlerror.XML_ERR_NO_MEMORY:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">message = ErrorTypes._getName(error_result)</span>
+    <span class="s0">if message is None:</span>
+        <span class="s0">message = f&quot;unknown error {error_result}&quot;</span>
+    <span class="s0">raise SerialisationError, message</span>
+
+<span class="s0">############################################################</span>
+<span class="s0"># low-level serialisation functions</span>
+
+<span class="s0">cdef void _writeDoctype(tree.xmlOutputBuffer* c_buffer,</span>
+                        <span class="s0">const_xmlChar* c_doctype) noexcept nogil:</span>
+    <span class="s0">tree.xmlOutputBufferWrite(c_buffer, tree.xmlStrlen(c_doctype),</span>
+                              <span class="s0">&lt;const_char*&gt;c_doctype)</span>
+    <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &quot;\n&quot;)</span>
+
+<span class="s0">cdef void _writeNodeToBuffer(tree.xmlOutputBuffer* c_buffer,</span>
+                             <span class="s0">xmlNode* c_node, const_char* encoding, const_xmlChar* c_doctype,</span>
+                             <span class="s0">int c_method, bint write_xml_declaration,</span>
+                             <span class="s0">bint write_complete_document,</span>
+                             <span class="s0">bint pretty_print, bint with_tail,</span>
+                             <span class="s0">int standalone) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_nsdecl_node</span>
+    <span class="s0">cdef xmlDoc* c_doc = c_node.doc</span>
+    <span class="s0">if write_xml_declaration and c_method == OUTPUT_METHOD_XML:</span>
+        <span class="s0">_writeDeclarationToBuffer(c_buffer, c_doc.version, encoding, standalone)</span>
+
+    <span class="s0"># comments/processing instructions before doctype declaration</span>
+    <span class="s0">if write_complete_document and not c_buffer.error and c_doc.intSubset:</span>
+        <span class="s0">_writePrevSiblings(c_buffer, &lt;xmlNode*&gt;c_doc.intSubset, encoding, pretty_print)</span>
+
+    <span class="s0">if c_doctype:</span>
+        <span class="s0">_writeDoctype(c_buffer, c_doctype)</span>
+    <span class="s0"># write internal DTD subset, preceding PIs/comments, etc.</span>
+    <span class="s0">if write_complete_document and not c_buffer.error:</span>
+        <span class="s0">if c_doctype is NULL:</span>
+            <span class="s0">_writeDtdToBuffer(c_buffer, c_doc, c_node.name, c_method, encoding)</span>
+        <span class="s0">_writePrevSiblings(c_buffer, c_node, encoding, pretty_print)</span>
+
+    <span class="s0">c_nsdecl_node = c_node</span>
+    <span class="s0">if not c_node.parent or c_node.parent.type != tree.XML_DOCUMENT_NODE:</span>
+        <span class="s0"># copy the node and add namespaces from parents</span>
+        <span class="s0"># this is required to make libxml write them</span>
+        <span class="s0">c_nsdecl_node = tree.xmlCopyNode(c_node, 2)</span>
+        <span class="s0">if not c_nsdecl_node:</span>
+            <span class="s0">c_buffer.error = xmlerror.XML_ERR_NO_MEMORY</span>
+            <span class="s0">return</span>
+        <span class="s0">_copyParentNamespaces(c_node, c_nsdecl_node)</span>
+
+        <span class="s0">c_nsdecl_node.parent = c_node.parent</span>
+        <span class="s0">c_nsdecl_node.children = c_node.children</span>
+        <span class="s0">c_nsdecl_node.last = c_node.last</span>
+
+    <span class="s0"># write node</span>
+    <span class="s0">if c_method == OUTPUT_METHOD_HTML:</span>
+        <span class="s0">tree.htmlNodeDumpFormatOutput(</span>
+            <span class="s0">c_buffer, c_doc, c_nsdecl_node, encoding, pretty_print)</span>
+    <span class="s0">else:</span>
+        <span class="s0">tree.xmlNodeDumpOutput(</span>
+            <span class="s0">c_buffer, c_doc, c_nsdecl_node, 0, pretty_print, encoding)</span>
+
+    <span class="s0">if c_nsdecl_node is not c_node:</span>
+        <span class="s0"># clean up</span>
+        <span class="s0">c_nsdecl_node.children = c_nsdecl_node.last = NULL</span>
+        <span class="s0">tree.xmlFreeNode(c_nsdecl_node)</span>
+
+    <span class="s0">if c_buffer.error:</span>
+        <span class="s0">return</span>
+
+    <span class="s0"># write tail, trailing comments, etc.</span>
+    <span class="s0">if with_tail:</span>
+        <span class="s0">_writeTail(c_buffer, c_node, encoding, c_method, pretty_print)</span>
+    <span class="s0">if write_complete_document:</span>
+        <span class="s0">_writeNextSiblings(c_buffer, c_node, encoding, pretty_print)</span>
+    <span class="s0">if pretty_print:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 1, &quot;\n&quot;)</span>
+
+<span class="s0">cdef void _writeDeclarationToBuffer(tree.xmlOutputBuffer* c_buffer,</span>
+                                    <span class="s0">const_xmlChar* version, const_char* encoding,</span>
+                                    <span class="s0">int standalone) noexcept nogil:</span>
+    <span class="s0">if version is NULL:</span>
+        <span class="s0">version = &lt;unsigned char*&gt;&quot;1.0&quot;</span>
+    <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 15, &quot;&lt;?xml version='&quot;)</span>
+    <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &lt;const_char*&gt;version)</span>
+    <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 12, &quot;' encoding='&quot;)</span>
+    <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, encoding)</span>
+    <span class="s0">if standalone == 0:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 20, &quot;' standalone='no'?&gt;\n&quot;)</span>
+    <span class="s0">elif standalone == 1:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 21, &quot;' standalone='yes'?&gt;\n&quot;)</span>
+    <span class="s0">else:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 4, &quot;'?&gt;\n&quot;)</span>
+
+<span class="s0">cdef void _writeDtdToBuffer(tree.xmlOutputBuffer* c_buffer,</span>
+                            <span class="s0">xmlDoc* c_doc, const_xmlChar* c_root_name,</span>
+                            <span class="s0">int c_method, const_char* encoding) noexcept nogil:</span>
+    <span class="s0">cdef tree.xmlDtd* c_dtd</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef char* quotechar</span>
+    <span class="s0">c_dtd = c_doc.intSubset</span>
+    <span class="s0">if not c_dtd or not c_dtd.name:</span>
+        <span class="s0">return</span>
+
+    <span class="s0"># Name in document type declaration must match the root element tag.</span>
+    <span class="s0"># For XML, case sensitive match, for HTML insensitive.</span>
+    <span class="s0">if c_method == OUTPUT_METHOD_HTML:</span>
+        <span class="s0">if tree.xmlStrcasecmp(c_root_name, c_dtd.name) != 0:</span>
+            <span class="s0">return</span>
+    <span class="s0">else:</span>
+        <span class="s0">if tree.xmlStrcmp(c_root_name, c_dtd.name) != 0:</span>
+            <span class="s0">return</span>
+
+    <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 10, &quot;&lt;!DOCTYPE &quot;)</span>
+    <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &lt;const_char*&gt;c_dtd.name)</span>
+
+    <span class="s0">cdef const_xmlChar* public_id = c_dtd.ExternalID</span>
+    <span class="s0">cdef const_xmlChar* sys_url = c_dtd.SystemID</span>
+    <span class="s0">if public_id and public_id[0] == b'\0':</span>
+        <span class="s0">public_id = NULL</span>
+    <span class="s0">if sys_url and sys_url[0] == b'\0':</span>
+        <span class="s0">sys_url = NULL</span>
+
+    <span class="s0">if public_id:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 9, ' PUBLIC &quot;')</span>
+        <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &lt;const_char*&gt;public_id)</span>
+        <span class="s0">if sys_url:</span>
+            <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 2, '&quot; ')</span>
+        <span class="s0">else:</span>
+            <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 1, '&quot;')</span>
+    <span class="s0">elif sys_url:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 8, ' SYSTEM ')</span>
+
+    <span class="s0">if sys_url:</span>
+        <span class="s0">if tree.xmlStrchr(sys_url, b'&quot;'):</span>
+            <span class="s0">quotechar = '\''</span>
+        <span class="s0">else:</span>
+            <span class="s0">quotechar = '&quot;'</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 1, quotechar)</span>
+        <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &lt;const_char*&gt;sys_url)</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 1, quotechar)</span>
+
+    <span class="s0">if (not c_dtd.entities and not c_dtd.elements and</span>
+           <span class="s0">not c_dtd.attributes and not c_dtd.notations and</span>
+           <span class="s0">not c_dtd.pentities):</span>
+        <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 2, '&gt;\n')</span>
+        <span class="s0">return</span>
+
+    <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 3, ' [\n')</span>
+    <span class="s0">if c_dtd.notations and not c_buffer.error:</span>
+        <span class="s0">c_buf = tree.xmlBufferCreate()</span>
+        <span class="s0">if not c_buf:</span>
+            <span class="s0">c_buffer.error = xmlerror.XML_ERR_NO_MEMORY</span>
+            <span class="s0">return</span>
+        <span class="s0">tree.xmlDumpNotationTable(c_buf, &lt;tree.xmlNotationTable*&gt;c_dtd.notations)</span>
+        <span class="s0">tree.xmlOutputBufferWrite(</span>
+            <span class="s0">c_buffer, tree.xmlBufferLength(c_buf),</span>
+            <span class="s0">&lt;const_char*&gt;tree.xmlBufferContent(c_buf))</span>
+        <span class="s0">tree.xmlBufferFree(c_buf)</span>
+    <span class="s0">c_node = c_dtd.children</span>
+    <span class="s0">while c_node and not c_buffer.error:</span>
+        <span class="s0">tree.xmlNodeDumpOutput(c_buffer, c_node.doc, c_node, 0, 0, encoding)</span>
+        <span class="s0">c_node = c_node.next</span>
+    <span class="s0">tree.xmlOutputBufferWrite(c_buffer, 3, &quot;]&gt;\n&quot;)</span>
+
+<span class="s0">cdef void _writeTail(tree.xmlOutputBuffer* c_buffer, xmlNode* c_node,</span>
+                     <span class="s0">const_char* encoding, int c_method, bint pretty_print) noexcept nogil:</span>
+    <span class="s0">&quot;Write the element tail.&quot;</span>
+    <span class="s0">c_node = c_node.next</span>
+    <span class="s0">while c_node and not c_buffer.error and c_node.type in (</span>
+            <span class="s0">tree.XML_TEXT_NODE, tree.XML_CDATA_SECTION_NODE):</span>
+        <span class="s0">if c_method == OUTPUT_METHOD_HTML:</span>
+            <span class="s0">tree.htmlNodeDumpFormatOutput(</span>
+                <span class="s0">c_buffer, c_node.doc, c_node, encoding, pretty_print)</span>
+        <span class="s0">else:</span>
+            <span class="s0">tree.xmlNodeDumpOutput(</span>
+                <span class="s0">c_buffer, c_node.doc, c_node, 0, pretty_print, encoding)</span>
+        <span class="s0">c_node = c_node.next</span>
+
+<span class="s0">cdef void _writePrevSiblings(tree.xmlOutputBuffer* c_buffer, xmlNode* c_node,</span>
+                             <span class="s0">const_char* encoding, bint pretty_print) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_sibling</span>
+    <span class="s0">if c_node.parent and _isElement(c_node.parent):</span>
+        <span class="s0">return</span>
+    <span class="s0"># we are at a root node, so add PI and comment siblings</span>
+    <span class="s0">c_sibling = c_node</span>
+    <span class="s0">while c_sibling.prev and \</span>
+            <span class="s0">(c_sibling.prev.type == tree.XML_PI_NODE or</span>
+             <span class="s0">c_sibling.prev.type == tree.XML_COMMENT_NODE):</span>
+        <span class="s0">c_sibling = c_sibling.prev</span>
+    <span class="s0">while c_sibling is not c_node and not c_buffer.error:</span>
+        <span class="s0">tree.xmlNodeDumpOutput(c_buffer, c_node.doc, c_sibling, 0,</span>
+                               <span class="s0">pretty_print, encoding)</span>
+        <span class="s0">if pretty_print:</span>
+            <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &quot;\n&quot;)</span>
+        <span class="s0">c_sibling = c_sibling.next</span>
+
+<span class="s0">cdef void _writeNextSiblings(tree.xmlOutputBuffer* c_buffer, xmlNode* c_node,</span>
+                             <span class="s0">const_char* encoding, bint pretty_print) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_sibling</span>
+    <span class="s0">if c_node.parent and _isElement(c_node.parent):</span>
+        <span class="s0">return</span>
+    <span class="s0"># we are at a root node, so add PI and comment siblings</span>
+    <span class="s0">c_sibling = c_node.next</span>
+    <span class="s0">while not c_buffer.error and c_sibling and \</span>
+            <span class="s0">(c_sibling.type == tree.XML_PI_NODE or</span>
+             <span class="s0">c_sibling.type == tree.XML_COMMENT_NODE):</span>
+        <span class="s0">if pretty_print:</span>
+            <span class="s0">tree.xmlOutputBufferWriteString(c_buffer, &quot;\n&quot;)</span>
+        <span class="s0">tree.xmlNodeDumpOutput(c_buffer, c_node.doc, c_sibling, 0,</span>
+                               <span class="s0">pretty_print, encoding)</span>
+        <span class="s0">c_sibling = c_sibling.next</span>
+
+
+<span class="s0"># copied and adapted from libxml2 (xmlBufAttrSerializeTxtContent())</span>
+<span class="s0">cdef _write_attr_string(tree.xmlOutputBuffer* buf, const char *string):</span>
+    <span class="s0">cdef const char *base</span>
+    <span class="s0">cdef const char *cur</span>
+
+    <span class="s0">if string == NULL:</span>
+        <span class="s0">return</span>
+
+    <span class="s0">base = cur = &lt;const char*&gt;string</span>
+    <span class="s0">while cur[0] != 0:</span>
+        <span class="s0">if cur[0] == b'\n':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 5, &quot;&amp;#10;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+
+        <span class="s0">elif cur[0] == b'\r':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 5, &quot;&amp;#13;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+
+        <span class="s0">elif cur[0] == b'\t':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 4, &quot;&amp;#9;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+
+        <span class="s0">elif cur[0] == b'&quot;':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 6, &quot;&amp;quot;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+
+        <span class="s0">elif cur[0] == b'&lt;':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 4, &quot;&amp;lt;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+
+        <span class="s0">elif cur[0] == b'&gt;':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 4, &quot;&amp;gt;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+        <span class="s0">elif cur[0] == b'&amp;':</span>
+            <span class="s0">if base != cur:</span>
+                <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(buf, 5, &quot;&amp;amp;&quot;)</span>
+            <span class="s0">cur += 1</span>
+            <span class="s0">base = cur</span>
+
+        <span class="s0">else:</span>
+            <span class="s0"># Leave further encoding and escaping to the buffer encoder.</span>
+            <span class="s0">cur += 1</span>
+
+    <span class="s0">if base != cur:</span>
+        <span class="s0">tree.xmlOutputBufferWrite(buf, cur - base, base)</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0"># output to file-like objects</span>
+
+<span class="s0">cdef object io_open</span>
+<span class="s0">from io import open as io_open</span>
+
+<span class="s0">cdef object gzip</span>
+<span class="s0">import gzip</span>
+
+<span class="s0">cdef object getwriter</span>
+<span class="s0">from codecs import getwriter</span>
+<span class="s0">cdef object utf8_writer = getwriter('utf8')</span>
+
+<span class="s0">cdef object contextmanager</span>
+<span class="s0">from contextlib import contextmanager</span>
+
+<span class="s0">cdef object _open_utf8_file</span>
+
+<span class="s0">@contextmanager</span>
+<span class="s0">def _open_utf8_file(file, compression=0):</span>
+    <span class="s0">file = _getFSPathOrObject(file)</span>
+    <span class="s0">if _isString(file):</span>
+        <span class="s0">if compression:</span>
+            <span class="s0">with gzip.GzipFile(file, mode='wb', compresslevel=compression) as zf:</span>
+                <span class="s0">yield utf8_writer(zf)</span>
+        <span class="s0">else:</span>
+            <span class="s0">with io_open(file, 'w', encoding='utf8') as f:</span>
+                <span class="s0">yield f</span>
+    <span class="s0">else:</span>
+        <span class="s0">if compression:</span>
+            <span class="s0">with gzip.GzipFile(fileobj=file, mode='wb', compresslevel=compression) as zf:</span>
+                <span class="s0">yield utf8_writer(zf)</span>
+        <span class="s0">else:</span>
+            <span class="s0">yield utf8_writer(file)</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _FilelikeWriter:</span>
+    <span class="s0">cdef object _filelike</span>
+    <span class="s0">cdef object _close_filelike</span>
+    <span class="s0">cdef _ExceptionContext _exc_context</span>
+    <span class="s0">cdef _ErrorLog error_log</span>
+    <span class="s0">def __cinit__(self, filelike, exc_context=None, compression=None, close=False):</span>
+        <span class="s0">if compression is not None and compression &gt; 0:</span>
+            <span class="s0">filelike = GzipFile(</span>
+                <span class="s0">fileobj=filelike, mode='wb', compresslevel=compression)</span>
+            <span class="s0">self._close_filelike = filelike.close</span>
+        <span class="s0">elif close:</span>
+            <span class="s0">self._close_filelike = filelike.close</span>
+        <span class="s0">self._filelike = filelike</span>
+        <span class="s0">if exc_context is None:</span>
+            <span class="s0">self._exc_context = _ExceptionContext()</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._exc_context = exc_context</span>
+        <span class="s0">self.error_log = _ErrorLog()</span>
+
+    <span class="s0">cdef tree.xmlOutputBuffer* _createOutputBuffer(</span>
+        <span class="s0">self, tree.xmlCharEncodingHandler* enchandler) except NULL:</span>
+        <span class="s0">cdef tree.xmlOutputBuffer* c_buffer</span>
+        <span class="s0">c_buffer = tree.xmlOutputBufferCreateIO(</span>
+            <span class="s0">&lt;tree.xmlOutputWriteCallback&gt;_writeFilelikeWriter, _closeFilelikeWriter,</span>
+            <span class="s0">&lt;python.PyObject*&gt;self, enchandler)</span>
+        <span class="s0">if c_buffer is NULL:</span>
+            <span class="s0">raise IOError, &quot;Could not create I/O writer context.&quot;</span>
+        <span class="s0">return c_buffer</span>
+
+    <span class="s0">cdef int write(self, char* c_buffer, int size) noexcept:</span>
+        <span class="s0">try:</span>
+            <span class="s0">if self._filelike is None:</span>
+                <span class="s0">raise IOError, &quot;File is already closed&quot;</span>
+            <span class="s0">py_buffer = &lt;bytes&gt;c_buffer[:size]</span>
+            <span class="s0">self._filelike.write(py_buffer)</span>
+        <span class="s0">except:</span>
+            <span class="s0">size = -1</span>
+            <span class="s0">self._exc_context._store_raised()</span>
+        <span class="s0">finally:</span>
+            <span class="s0">return size  # and swallow any further exceptions</span>
+
+    <span class="s0">cdef int close(self) noexcept:</span>
+        <span class="s0">retval = 0</span>
+        <span class="s0">try:</span>
+            <span class="s0">if self._close_filelike is not None:</span>
+                <span class="s0">self._close_filelike()</span>
+            <span class="s0"># we should not close the file here as we didn't open it</span>
+            <span class="s0">self._filelike = None</span>
+        <span class="s0">except:</span>
+            <span class="s0">retval = -1</span>
+            <span class="s0">self._exc_context._store_raised()</span>
+        <span class="s0">finally:</span>
+            <span class="s0">return retval  # and swallow any further exceptions</span>
+
+<span class="s0">cdef int _writeFilelikeWriter(void* ctxt, char* c_buffer, int length) noexcept:</span>
+    <span class="s0">return (&lt;_FilelikeWriter&gt;ctxt).write(c_buffer, length)</span>
+
+<span class="s0">cdef int _closeFilelikeWriter(void* ctxt) noexcept:</span>
+    <span class="s0">return (&lt;_FilelikeWriter&gt;ctxt).close()</span>
+
+<span class="s0">cdef _tofilelike(f, _Element element, encoding, doctype, method,</span>
+                 <span class="s0">bint write_xml_declaration, bint write_doctype,</span>
+                 <span class="s0">bint pretty_print, bint with_tail, int standalone,</span>
+                 <span class="s0">int compression):</span>
+    <span class="s0">cdef _FilelikeWriter writer = None</span>
+    <span class="s0">cdef tree.xmlOutputBuffer* c_buffer</span>
+    <span class="s0">cdef tree.xmlCharEncodingHandler* enchandler</span>
+    <span class="s0">cdef const_char* c_enc</span>
+    <span class="s0">cdef const_xmlChar* c_doctype</span>
+    <span class="s0">cdef int error_result</span>
+
+    <span class="s0">c_method = _findOutputMethod(method)</span>
+    <span class="s0">if c_method == OUTPUT_METHOD_TEXT:</span>
+        <span class="s0">data = _textToString(element._c_node, encoding, with_tail)</span>
+        <span class="s0">if compression:</span>
+            <span class="s0">bytes_out = BytesIO()</span>
+            <span class="s0">with GzipFile(fileobj=bytes_out, mode='wb', compresslevel=compression) as gzip_file:</span>
+                <span class="s0">gzip_file.write(data)</span>
+            <span class="s0">data = bytes_out.getvalue()</span>
+        <span class="s0">f = _getFSPathOrObject(f)</span>
+        <span class="s0">if _isString(f):</span>
+            <span class="s0">filename8 = _encodeFilename(f)</span>
+            <span class="s0">with open(filename8, 'wb') as f:</span>
+                <span class="s0">f.write(data)</span>
+        <span class="s0">else:</span>
+            <span class="s0">f.write(data)</span>
+        <span class="s0">return</span>
+
+    <span class="s0">if encoding is None:</span>
+        <span class="s0">c_enc = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">encoding = _utf8(encoding)</span>
+        <span class="s0">c_enc = _cstr(encoding)</span>
+    <span class="s0">if doctype is None:</span>
+        <span class="s0">c_doctype = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">doctype = _utf8(doctype)</span>
+        <span class="s0">c_doctype = _xcstr(doctype)</span>
+
+    <span class="s0">writer = _create_output_buffer(f, c_enc, compression, &amp;c_buffer, close=False)</span>
+    <span class="s0">if writer is None:</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">error_result = _serialise_node(</span>
+                <span class="s0">c_buffer, c_doctype, c_enc, element._c_node, c_method,</span>
+                <span class="s0">write_xml_declaration, write_doctype, pretty_print, with_tail, standalone)</span>
+    <span class="s0">else:</span>
+        <span class="s0">error_result = _serialise_node(</span>
+            <span class="s0">c_buffer, c_doctype, c_enc, element._c_node, c_method,</span>
+            <span class="s0">write_xml_declaration, write_doctype, pretty_print, with_tail, standalone)</span>
+
+    <span class="s0">if writer is not None:</span>
+        <span class="s0">writer._exc_context._raise_if_stored()</span>
+    <span class="s0">if error_result != xmlerror.XML_ERR_OK:</span>
+        <span class="s0">_raiseSerialisationError(error_result)</span>
+
+
+<span class="s0">cdef int _serialise_node(tree.xmlOutputBuffer* c_buffer, const_xmlChar* c_doctype,</span>
+                         <span class="s0">const_char* c_enc, xmlNode* c_node, int c_method,</span>
+                         <span class="s0">bint write_xml_declaration, bint write_doctype, bint pretty_print,</span>
+                         <span class="s0">bint with_tail, int standalone) noexcept nogil:</span>
+    <span class="s0">_writeNodeToBuffer(</span>
+        <span class="s0">c_buffer, c_node, c_enc, c_doctype, c_method,</span>
+        <span class="s0">write_xml_declaration, write_doctype, pretty_print, with_tail, standalone)</span>
+    <span class="s0">error_result = c_buffer.error</span>
+    <span class="s0">if error_result == xmlerror.XML_ERR_OK:</span>
+        <span class="s0">error_result = tree.xmlOutputBufferClose(c_buffer)</span>
+        <span class="s0">if error_result != -1:</span>
+            <span class="s0">error_result = xmlerror.XML_ERR_OK</span>
+    <span class="s0">else:</span>
+        <span class="s0">tree.xmlOutputBufferClose(c_buffer)</span>
+    <span class="s0">return error_result</span>
+
+
+<span class="s0">cdef _FilelikeWriter _create_output_buffer(</span>
+        <span class="s0">f, const_char* c_enc, int c_compression,</span>
+        <span class="s0">tree.xmlOutputBuffer** c_buffer_ret, bint close):</span>
+    <span class="s0">cdef tree.xmlOutputBuffer* c_buffer</span>
+    <span class="s0">cdef _FilelikeWriter writer</span>
+    <span class="s0">cdef bytes filename8</span>
+    <span class="s0">enchandler = tree.xmlFindCharEncodingHandler(c_enc)</span>
+    <span class="s0">if enchandler is NULL:</span>
+        <span class="s0">raise LookupError(</span>
+            <span class="s0">f&quot;unknown encoding: '{c_enc.decode('UTF-8') if c_enc is not NULL else u''}'&quot;)</span>
+    <span class="s0">try:</span>
+        <span class="s0">f = _getFSPathOrObject(f)</span>
+        <span class="s0">if _isString(f):</span>
+            <span class="s0">filename8 = _encodeFilename(f)</span>
+            <span class="s0">if b'%' in filename8 and (</span>
+                    <span class="s0"># Exclude absolute Windows paths and file:// URLs.</span>
+                    <span class="s0">_isFilePath(&lt;const xmlChar*&gt;filename8) not in (NO_FILE_PATH, ABS_WIN_FILE_PATH)</span>
+                    <span class="s0">or filename8[:7].lower() == b'file://'):</span>
+                <span class="s0"># A file path (not a URL) containing the '%' URL escape character.</span>
+                <span class="s0"># libxml2 uses URL-unescaping on these, so escape the path before passing it in.</span>
+                <span class="s0">filename8 = filename8.replace(b'%', b'%25')</span>
+            <span class="s0">c_buffer = tree.xmlOutputBufferCreateFilename(</span>
+                <span class="s0">_cstr(filename8), enchandler, c_compression)</span>
+            <span class="s0">if c_buffer is NULL:</span>
+                <span class="s0">python.PyErr_SetFromErrno(IOError)  # raises IOError</span>
+            <span class="s0">writer = None</span>
+        <span class="s0">elif hasattr(f, 'write'):</span>
+            <span class="s0">writer = _FilelikeWriter(f, compression=c_compression, close=close)</span>
+            <span class="s0">c_buffer = writer._createOutputBuffer(enchandler)</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError(</span>
+                <span class="s0">f&quot;File or filename expected, got '{python._fqtypename(f).decode('UTF-8')}'&quot;)</span>
+    <span class="s0">except:</span>
+        <span class="s0">tree.xmlCharEncCloseFunc(enchandler)</span>
+        <span class="s0">raise</span>
+    <span class="s0">c_buffer_ret[0] = c_buffer</span>
+    <span class="s0">return writer</span>
+
+<span class="s0">cdef xmlChar **_convert_ns_prefixes(tree.xmlDict* c_dict, ns_prefixes) except NULL:</span>
+    <span class="s0">cdef size_t i, num_ns_prefixes = len(ns_prefixes)</span>
+    <span class="s0"># Need to allocate one extra memory block to handle last NULL entry</span>
+    <span class="s0">c_ns_prefixes = &lt;xmlChar **&gt;python.lxml_malloc(num_ns_prefixes + 1, sizeof(xmlChar*))</span>
+    <span class="s0">if not c_ns_prefixes:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">i = 0</span>
+    <span class="s0">try:</span>
+        <span class="s0">for prefix in ns_prefixes:</span>
+             <span class="s0">prefix_utf = _utf8(prefix)</span>
+             <span class="s0">c_prefix = tree.xmlDictExists(c_dict, _xcstr(prefix_utf), len(prefix_utf))</span>
+             <span class="s0">if c_prefix:</span>
+                 <span class="s0"># unknown prefixes do not need to get serialised</span>
+                 <span class="s0">c_ns_prefixes[i] = &lt;xmlChar*&gt;c_prefix</span>
+                 <span class="s0">i += 1</span>
+    <span class="s0">except:</span>
+        <span class="s0">python.lxml_free(c_ns_prefixes)</span>
+        <span class="s0">raise</span>
+
+    <span class="s0">c_ns_prefixes[i] = NULL  # append end marker</span>
+    <span class="s0">return c_ns_prefixes</span>
+
+<span class="s0">cdef _tofilelikeC14N(f, _Element element, bint exclusive, bint with_comments,</span>
+                     <span class="s0">int compression, inclusive_ns_prefixes):</span>
+    <span class="s0">cdef _FilelikeWriter writer = None</span>
+    <span class="s0">cdef tree.xmlOutputBuffer* c_buffer</span>
+    <span class="s0">cdef xmlChar **c_inclusive_ns_prefixes = NULL</span>
+    <span class="s0">cdef char* c_filename</span>
+    <span class="s0">cdef xmlDoc* c_base_doc</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">cdef int bytes_count, error = 0</span>
+
+    <span class="s0">c_base_doc = element._c_node.doc</span>
+    <span class="s0">c_doc = _fakeRootDoc(c_base_doc, element._c_node)</span>
+    <span class="s0">try:</span>
+        <span class="s0">c_inclusive_ns_prefixes = (</span>
+            <span class="s0">_convert_ns_prefixes(c_doc.dict, inclusive_ns_prefixes)</span>
+            <span class="s0">if inclusive_ns_prefixes else NULL)</span>
+
+        <span class="s0">f = _getFSPathOrObject(f)</span>
+        <span class="s0">if _isString(f):</span>
+            <span class="s0">filename8 = _encodeFilename(f)</span>
+            <span class="s0">c_filename = _cstr(filename8)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">error = c14n.xmlC14NDocSave(</span>
+                    <span class="s0">c_doc, NULL, exclusive, c_inclusive_ns_prefixes,</span>
+                    <span class="s0">with_comments, c_filename, compression)</span>
+        <span class="s0">elif hasattr(f, 'write'):</span>
+            <span class="s0">writer   = _FilelikeWriter(f, compression=compression)</span>
+            <span class="s0">c_buffer = writer._createOutputBuffer(NULL)</span>
+            <span class="s0">try:</span>
+                <span class="s0">with writer.error_log:</span>
+                    <span class="s0">bytes_count = c14n.xmlC14NDocSaveTo(</span>
+                        <span class="s0">c_doc, NULL, exclusive, c_inclusive_ns_prefixes,</span>
+                        <span class="s0">with_comments, c_buffer)</span>
+            <span class="s0">finally:</span>
+                <span class="s0">error = tree.xmlOutputBufferClose(c_buffer)</span>
+            <span class="s0">if bytes_count &lt; 0:</span>
+                <span class="s0">error = bytes_count</span>
+            <span class="s0">elif error != -1:</span>
+                <span class="s0">error = xmlerror.XML_ERR_OK</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError(f&quot;File or filename expected, got '{python._fqtypename(f).decode('UTF-8')}'&quot;)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">_destroyFakeDoc(c_base_doc, c_doc)</span>
+        <span class="s0">if c_inclusive_ns_prefixes is not NULL:</span>
+            <span class="s0">python.lxml_free(c_inclusive_ns_prefixes)</span>
+
+    <span class="s0">if writer is not None:</span>
+        <span class="s0">writer._exc_context._raise_if_stored()</span>
+
+    <span class="s0">if error &lt; 0:</span>
+        <span class="s0">message = &quot;C14N failed&quot;</span>
+        <span class="s0">if writer is not None:</span>
+            <span class="s0">errors = writer.error_log</span>
+            <span class="s0">if len(errors):</span>
+                <span class="s0">message = errors[0].message</span>
+        <span class="s0">raise C14NError(message)</span>
+
+
+<span class="s0"># C14N 2.0</span>
+
+<span class="s0">def canonicalize(xml_data=None, *, out=None, from_file=None, **options):</span>
+    <span class="s0">&quot;&quot;&quot;Convert XML to its C14N 2.0 serialised form.</span>
+
+    <span class="s0">If *out* is provided, it must be a file or file-like object that receives</span>
+    <span class="s0">the serialised canonical XML output (text, not bytes) through its ``.write()``</span>
+    <span class="s0">method.  To write to a file, open it in text mode with encoding &quot;utf-8&quot;.</span>
+    <span class="s0">If *out* is not provided, this function returns the output as text string.</span>
+
+    <span class="s0">Either *xml_data* (an XML string, tree or Element) or *file*</span>
+    <span class="s0">(a file path or file-like object) must be provided as input.</span>
+
+    <span class="s0">The configuration options are the same as for the ``C14NWriterTarget``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if xml_data is None and from_file is None:</span>
+        <span class="s0">raise ValueError(&quot;Either 'xml_data' or 'from_file' must be provided as input&quot;)</span>
+
+    <span class="s0">sio = None</span>
+    <span class="s0">if out is None:</span>
+        <span class="s0">sio = out = StringIO()</span>
+
+    <span class="s0">target = C14NWriterTarget(out.write, **options)</span>
+
+    <span class="s0">if xml_data is not None and not isinstance(xml_data, basestring):</span>
+        <span class="s0">_tree_to_target(xml_data, target)</span>
+        <span class="s0">return sio.getvalue() if sio is not None else None</span>
+
+    <span class="s0">cdef _FeedParser parser = XMLParser(</span>
+        <span class="s0">target=target,</span>
+        <span class="s0">attribute_defaults=True,</span>
+        <span class="s0">collect_ids=False,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">if xml_data is not None:</span>
+        <span class="s0">parser.feed(xml_data)</span>
+        <span class="s0">parser.close()</span>
+    <span class="s0">elif from_file is not None:</span>
+        <span class="s0">try:</span>
+            <span class="s0">_parseDocument(from_file, parser, base_url=None)</span>
+        <span class="s0">except _TargetParserResult:</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">return sio.getvalue() if sio is not None else None</span>
+
+
+<span class="s0">cdef _tree_to_target(element, target):</span>
+    <span class="s0">for event, elem in iterwalk(element, events=('start', 'end', 'start-ns', 'comment', 'pi')):</span>
+        <span class="s0">text = None</span>
+        <span class="s0">if event == 'start':</span>
+            <span class="s0">target.start(elem.tag, elem.attrib)</span>
+            <span class="s0">text = elem.text</span>
+        <span class="s0">elif event == 'end':</span>
+            <span class="s0">target.end(elem.tag)</span>
+            <span class="s0">text = elem.tail</span>
+        <span class="s0">elif event == 'start-ns':</span>
+            <span class="s0">target.start_ns(*elem)</span>
+            <span class="s0">continue</span>
+        <span class="s0">elif event == 'comment':</span>
+            <span class="s0">target.comment(elem.text)</span>
+            <span class="s0">text = elem.tail</span>
+        <span class="s0">elif event == 'pi':</span>
+            <span class="s0">target.pi(elem.target, elem.text)</span>
+            <span class="s0">text = elem.tail</span>
+        <span class="s0">if text:</span>
+            <span class="s0">target.data(text)</span>
+    <span class="s0">return target.close()</span>
+
+
+<span class="s0">cdef object _looks_like_prefix_name = re.compile(r'^\w+:\w+$', re.UNICODE).match</span>
+
+
+<span class="s0">cdef class C14NWriterTarget:</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Canonicalization writer target for the XMLParser.</span>
+
+    <span class="s0">Serialises parse events to XML C14N 2.0.</span>
+
+    <span class="s0">Configuration options:</span>
+
+    <span class="s0">- *with_comments*: set to true to include comments</span>
+    <span class="s0">- *strip_text*: set to true to strip whitespace before and after text content</span>
+    <span class="s0">- *rewrite_prefixes*: set to true to replace namespace prefixes by &quot;n{number}&quot;</span>
+    <span class="s0">- *qname_aware_tags*: a set of qname aware tag names in which prefixes</span>
+                          <span class="s0">should be replaced in text content</span>
+    <span class="s0">- *qname_aware_attrs*: a set of qname aware attribute names in which prefixes</span>
+                           <span class="s0">should be replaced in text content</span>
+    <span class="s0">- *exclude_attrs*: a set of attribute names that should not be serialised</span>
+    <span class="s0">- *exclude_tags*: a set of tag names that should not be serialised</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef object _write</span>
+    <span class="s0">cdef list _data</span>
+    <span class="s0">cdef set _qname_aware_tags</span>
+    <span class="s0">cdef object _find_qname_aware_attrs</span>
+    <span class="s0">cdef list _declared_ns_stack</span>
+    <span class="s0">cdef list _ns_stack</span>
+    <span class="s0">cdef dict _prefix_map</span>
+    <span class="s0">cdef list _preserve_space</span>
+    <span class="s0">cdef tuple _pending_start</span>
+    <span class="s0">cdef set _exclude_tags</span>
+    <span class="s0">cdef set _exclude_attrs</span>
+    <span class="s0">cdef Py_ssize_t _ignored_depth</span>
+    <span class="s0">cdef bint _with_comments</span>
+    <span class="s0">cdef bint _strip_text</span>
+    <span class="s0">cdef bint _rewrite_prefixes</span>
+    <span class="s0">cdef bint _root_seen</span>
+    <span class="s0">cdef bint _root_done</span>
+
+    <span class="s0">def __init__(self, write, *,</span>
+                 <span class="s0">with_comments=False, strip_text=False, rewrite_prefixes=False,</span>
+                 <span class="s0">qname_aware_tags=None, qname_aware_attrs=None,</span>
+                 <span class="s0">exclude_attrs=None, exclude_tags=None):</span>
+        <span class="s0">self._write = write</span>
+        <span class="s0">self._data = []</span>
+        <span class="s0">self._with_comments = with_comments</span>
+        <span class="s0">self._strip_text = strip_text</span>
+        <span class="s0">self._exclude_attrs = set(exclude_attrs) if exclude_attrs else None</span>
+        <span class="s0">self._exclude_tags = set(exclude_tags) if exclude_tags else None</span>
+
+        <span class="s0">self._rewrite_prefixes = rewrite_prefixes</span>
+        <span class="s0">if qname_aware_tags:</span>
+            <span class="s0">self._qname_aware_tags = set(qname_aware_tags)</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._qname_aware_tags = None</span>
+        <span class="s0">if qname_aware_attrs:</span>
+            <span class="s0">self._find_qname_aware_attrs = set(qname_aware_attrs).intersection</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._find_qname_aware_attrs = None</span>
+
+        <span class="s0"># Stack with globally and newly declared namespaces as (uri, prefix) pairs.</span>
+        <span class="s0">self._declared_ns_stack = [[</span>
+            <span class="s0">(&quot;http://www.w3.org/XML/1998/namespace&quot;, &quot;xml&quot;),</span>
+        <span class="s0">]]</span>
+        <span class="s0"># Stack with user declared namespace prefixes as (uri, prefix) pairs.</span>
+        <span class="s0">self._ns_stack = []</span>
+        <span class="s0">if not rewrite_prefixes:</span>
+            <span class="s0">self._ns_stack.append(_DEFAULT_NAMESPACE_PREFIXES_ITEMS)</span>
+        <span class="s0">self._ns_stack.append([])</span>
+        <span class="s0">self._prefix_map = {}</span>
+        <span class="s0">self._preserve_space = [False]</span>
+        <span class="s0">self._pending_start = None</span>
+        <span class="s0">self._ignored_depth = 0</span>
+        <span class="s0">self._root_seen = False</span>
+        <span class="s0">self._root_done = False</span>
+
+    <span class="s0">def _iter_namespaces(self, ns_stack):</span>
+        <span class="s0">for namespaces in reversed(ns_stack):</span>
+            <span class="s0">if namespaces:  # almost no element declares new namespaces</span>
+                <span class="s0">yield from namespaces</span>
+
+    <span class="s0">cdef _resolve_prefix_name(self, prefixed_name):</span>
+        <span class="s0">prefix, name = prefixed_name.split(':', 1)</span>
+        <span class="s0">for uri, p in self._iter_namespaces(self._ns_stack):</span>
+            <span class="s0">if p == prefix:</span>
+                <span class="s0">return f'{{{uri}}}{name}'</span>
+        <span class="s0">raise ValueError(f'Prefix {prefix} of QName &quot;{prefixed_name}&quot; is not declared in scope')</span>
+
+    <span class="s0">cdef _qname(self, qname, uri=None):</span>
+        <span class="s0">if uri is None:</span>
+            <span class="s0">uri, tag = qname[1:].rsplit('}', 1) if qname[:1] == '{' else ('', qname)</span>
+        <span class="s0">else:</span>
+            <span class="s0">tag = qname</span>
+
+        <span class="s0">prefixes_seen = set()</span>
+        <span class="s0">for u, prefix in self._iter_namespaces(self._declared_ns_stack):</span>
+            <span class="s0">if u == uri and prefix not in prefixes_seen:</span>
+                <span class="s0">return f'{prefix}:{tag}' if prefix else tag, tag, uri</span>
+            <span class="s0">prefixes_seen.add(prefix)</span>
+
+        <span class="s0"># Not declared yet =&gt; add new declaration.</span>
+        <span class="s0">if self._rewrite_prefixes:</span>
+            <span class="s0">if uri in self._prefix_map:</span>
+                <span class="s0">prefix = self._prefix_map[uri]</span>
+            <span class="s0">else:</span>
+                <span class="s0">prefix = self._prefix_map[uri] = f'n{len(self._prefix_map)}'</span>
+            <span class="s0">self._declared_ns_stack[-1].append((uri, prefix))</span>
+            <span class="s0">return f'{prefix}:{tag}', tag, uri</span>
+
+        <span class="s0">if not uri and '' not in prefixes_seen:</span>
+            <span class="s0"># No default namespace declared =&gt; no prefix needed.</span>
+            <span class="s0">return tag, tag, uri</span>
+
+        <span class="s0">for u, prefix in self._iter_namespaces(self._ns_stack):</span>
+            <span class="s0">if u == uri:</span>
+                <span class="s0">self._declared_ns_stack[-1].append((uri, prefix))</span>
+                <span class="s0">return f'{prefix}:{tag}' if prefix else tag, tag, uri</span>
+
+        <span class="s0">if not uri:</span>
+            <span class="s0"># As soon as a default namespace is defined,</span>
+            <span class="s0"># anything that has no namespace (and thus, no prefix) goes there.</span>
+            <span class="s0">return tag, tag, uri</span>
+
+        <span class="s0">raise ValueError(f'Namespace &quot;{uri}&quot; of name &quot;{tag}&quot; is not declared in scope')</span>
+
+    <span class="s0">def data(self, data):</span>
+        <span class="s0">if not self._ignored_depth:</span>
+            <span class="s0">self._data.append(data)</span>
+
+    <span class="s0">cdef _flush(self):</span>
+        <span class="s0">cdef unicode data = ''.join(self._data)</span>
+        <span class="s0">del self._data[:]</span>
+        <span class="s0">if self._strip_text and not self._preserve_space[-1]:</span>
+            <span class="s0">data = data.strip()</span>
+        <span class="s0">if self._pending_start is not None:</span>
+            <span class="s0">(tag, attrs, new_namespaces), self._pending_start = self._pending_start, None</span>
+            <span class="s0">qname_text = data if ':' in data and _looks_like_prefix_name(data) else None</span>
+            <span class="s0">self._start(tag, attrs, new_namespaces, qname_text)</span>
+            <span class="s0">if qname_text is not None:</span>
+                <span class="s0">return</span>
+        <span class="s0">if data and self._root_seen:</span>
+            <span class="s0">self._write(_escape_cdata_c14n(data))</span>
+
+    <span class="s0">def start_ns(self, prefix, uri):</span>
+        <span class="s0">if self._ignored_depth:</span>
+            <span class="s0">return</span>
+        <span class="s0"># we may have to resolve qnames in text content</span>
+        <span class="s0">if self._data:</span>
+            <span class="s0">self._flush()</span>
+        <span class="s0">self._ns_stack[-1].append((uri, prefix))</span>
+
+    <span class="s0">def start(self, tag, attrs):</span>
+        <span class="s0">if self._exclude_tags is not None and (</span>
+                <span class="s0">self._ignored_depth or tag in self._exclude_tags):</span>
+            <span class="s0">self._ignored_depth += 1</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._data:</span>
+            <span class="s0">self._flush()</span>
+
+        <span class="s0">new_namespaces = []</span>
+        <span class="s0">self._declared_ns_stack.append(new_namespaces)</span>
+
+        <span class="s0">if self._qname_aware_tags is not None and tag in self._qname_aware_tags:</span>
+            <span class="s0"># Need to parse text first to see if it requires a prefix declaration.</span>
+            <span class="s0">self._pending_start = (tag, attrs, new_namespaces)</span>
+            <span class="s0">return</span>
+        <span class="s0">self._start(tag, attrs, new_namespaces)</span>
+
+    <span class="s0">cdef _start(self, tag, attrs, new_namespaces, qname_text=None):</span>
+        <span class="s0">if self._exclude_attrs is not None and attrs:</span>
+            <span class="s0">attrs = {k: v for k, v in attrs.items() if k not in self._exclude_attrs}</span>
+
+        <span class="s0">qnames = {tag, *attrs}</span>
+        <span class="s0">resolved_names = {}</span>
+
+        <span class="s0"># Resolve prefixes in attribute and tag text.</span>
+        <span class="s0">if qname_text is not None:</span>
+            <span class="s0">qname = resolved_names[qname_text] = self._resolve_prefix_name(qname_text)</span>
+            <span class="s0">qnames.add(qname)</span>
+        <span class="s0">if self._find_qname_aware_attrs is not None and attrs:</span>
+            <span class="s0">qattrs = self._find_qname_aware_attrs(attrs)</span>
+            <span class="s0">if qattrs:</span>
+                <span class="s0">for attr_name in qattrs:</span>
+                    <span class="s0">value = attrs[attr_name]</span>
+                    <span class="s0">if _looks_like_prefix_name(value):</span>
+                        <span class="s0">qname = resolved_names[value] = self._resolve_prefix_name(value)</span>
+                        <span class="s0">qnames.add(qname)</span>
+            <span class="s0">else:</span>
+                <span class="s0">qattrs = None</span>
+        <span class="s0">else:</span>
+            <span class="s0">qattrs = None</span>
+
+        <span class="s0"># Assign prefixes in lexicographical order of used URIs.</span>
+        <span class="s0">parsed_qnames = {n: self._qname(n) for n in sorted(</span>
+            <span class="s0">qnames, key=lambda n: n.split('}', 1))}</span>
+
+        <span class="s0"># Write namespace declarations in prefix order ...</span>
+        <span class="s0">if new_namespaces:</span>
+            <span class="s0">attr_list = [</span>
+                <span class="s0">('xmlns:' + prefix if prefix else 'xmlns', uri)</span>
+                <span class="s0">for uri, prefix in new_namespaces</span>
+            <span class="s0">]</span>
+            <span class="s0">attr_list.sort()</span>
+        <span class="s0">else:</span>
+            <span class="s0"># almost always empty</span>
+            <span class="s0">attr_list = []</span>
+
+        <span class="s0"># ... followed by attributes in URI+name order</span>
+        <span class="s0">if attrs:</span>
+            <span class="s0">for k, v in sorted(attrs.items()):</span>
+                <span class="s0">if qattrs is not None and k in qattrs and v in resolved_names:</span>
+                    <span class="s0">v = parsed_qnames[resolved_names[v]][0]</span>
+                <span class="s0">attr_qname, attr_name, uri = parsed_qnames[k]</span>
+                <span class="s0"># No prefix for attributes in default ('') namespace.</span>
+                <span class="s0">attr_list.append((attr_qname if uri else attr_name, v))</span>
+
+        <span class="s0"># Honour xml:space attributes.</span>
+        <span class="s0">space_behaviour = attrs.get('{http://www.w3.org/XML/1998/namespace}space')</span>
+        <span class="s0">self._preserve_space.append(</span>
+            <span class="s0">space_behaviour == 'preserve' if space_behaviour</span>
+            <span class="s0">else self._preserve_space[-1])</span>
+
+        <span class="s0"># Write the tag.</span>
+        <span class="s0">write = self._write</span>
+        <span class="s0">write('&lt;' + parsed_qnames[tag][0])</span>
+        <span class="s0">if attr_list:</span>
+            <span class="s0">write(''.join([f' {k}=&quot;{_escape_attrib_c14n(v)}&quot;' for k, v in attr_list]))</span>
+        <span class="s0">write('&gt;')</span>
+
+        <span class="s0"># Write the resolved qname text content.</span>
+        <span class="s0">if qname_text is not None:</span>
+            <span class="s0">write(_escape_cdata_c14n(parsed_qnames[resolved_names[qname_text]][0]))</span>
+
+        <span class="s0">self._root_seen = True</span>
+        <span class="s0">self._ns_stack.append([])</span>
+
+    <span class="s0">def end(self, tag):</span>
+        <span class="s0">if self._ignored_depth:</span>
+            <span class="s0">self._ignored_depth -= 1</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._data:</span>
+            <span class="s0">self._flush()</span>
+        <span class="s0">self._write(f'&lt;/{self._qname(tag)[0]}&gt;')</span>
+        <span class="s0">self._preserve_space.pop()</span>
+        <span class="s0">self._root_done = len(self._preserve_space) == 1</span>
+        <span class="s0">self._declared_ns_stack.pop()</span>
+        <span class="s0">self._ns_stack.pop()</span>
+
+    <span class="s0">def comment(self, text):</span>
+        <span class="s0">if not self._with_comments:</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._ignored_depth:</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._root_done:</span>
+            <span class="s0">self._write('\n')</span>
+        <span class="s0">elif self._root_seen and self._data:</span>
+            <span class="s0">self._flush()</span>
+        <span class="s0">self._write(f'&lt;!--{_escape_cdata_c14n(text)}--&gt;')</span>
+        <span class="s0">if not self._root_seen:</span>
+            <span class="s0">self._write('\n')</span>
+
+    <span class="s0">def pi(self, target, data):</span>
+        <span class="s0">if self._ignored_depth:</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._root_done:</span>
+            <span class="s0">self._write('\n')</span>
+        <span class="s0">elif self._root_seen and self._data:</span>
+            <span class="s0">self._flush()</span>
+        <span class="s0">self._write(</span>
+            <span class="s0">f'&lt;?{target} {_escape_cdata_c14n(data)}?&gt;' if data else f'&lt;?{target}?&gt;')</span>
+        <span class="s0">if not self._root_seen:</span>
+            <span class="s0">self._write('\n')</span>
+
+    <span class="s0">def close(self):</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">cdef _raise_serialization_error(text):</span>
+    <span class="s0">raise TypeError(&quot;cannot serialize %r (type %s)&quot; % (text, type(text).__name__))</span>
+
+
+<span class="s0">cdef unicode _escape_cdata_c14n(stext):</span>
+    <span class="s0"># escape character data</span>
+    <span class="s0">cdef unicode text</span>
+    <span class="s0">cdef Py_UCS4 ch</span>
+    <span class="s0">cdef Py_ssize_t start = 0, pos = 0</span>
+    <span class="s0">cdef list substrings = None</span>
+    <span class="s0">try:</span>
+        <span class="s0">text = unicode(stext)</span>
+    <span class="s0">except (TypeError, AttributeError):</span>
+        <span class="s0">return _raise_serialization_error(stext)</span>
+
+    <span class="s0">for pos, ch in enumerate(text):</span>
+        <span class="s0">if ch == '&amp;':</span>
+            <span class="s0">escape = '&amp;amp;'</span>
+        <span class="s0">elif ch == '&lt;':</span>
+            <span class="s0">escape = '&amp;lt;'</span>
+        <span class="s0">elif ch == '&gt;':</span>
+            <span class="s0">escape = '&amp;gt;'</span>
+        <span class="s0">elif ch == '\r':</span>
+            <span class="s0">escape = '&amp;#xD;'</span>
+        <span class="s0">else:</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">if substrings is None:</span>
+            <span class="s0">substrings = []</span>
+        <span class="s0">if pos &gt; start:</span>
+            <span class="s0">substrings.append(text[start:pos])</span>
+        <span class="s0">substrings.append(escape)</span>
+        <span class="s0">start = pos + 1</span>
+
+    <span class="s0">if substrings is None:</span>
+        <span class="s0">return text</span>
+    <span class="s0">if pos &gt;= start:</span>
+        <span class="s0">substrings.append(text[start:pos+1])</span>
+    <span class="s0">return ''.join(substrings)</span>
+
+
+<span class="s0">cdef unicode _escape_attrib_c14n(stext):</span>
+    <span class="s0"># escape attribute value</span>
+    <span class="s0">cdef unicode text</span>
+    <span class="s0">cdef Py_UCS4 ch</span>
+    <span class="s0">cdef Py_ssize_t start = 0, pos = 0</span>
+    <span class="s0">cdef list substrings = None</span>
+    <span class="s0">try:</span>
+        <span class="s0">text = unicode(stext)</span>
+    <span class="s0">except (TypeError, AttributeError):</span>
+        <span class="s0">return _raise_serialization_error(stext)</span>
+
+    <span class="s0">for pos, ch in enumerate(text):</span>
+        <span class="s0">if ch == '&amp;':</span>
+            <span class="s0">escape = '&amp;amp;'</span>
+        <span class="s0">elif ch == '&lt;':</span>
+            <span class="s0">escape = '&amp;lt;'</span>
+        <span class="s0">elif ch == '&quot;':</span>
+            <span class="s0">escape = '&amp;quot;'</span>
+        <span class="s0">elif ch == '\t':</span>
+            <span class="s0">escape = '&amp;#x9;'</span>
+        <span class="s0">elif ch == '\n':</span>
+            <span class="s0">escape = '&amp;#xA;'</span>
+        <span class="s0">elif ch == '\r':</span>
+            <span class="s0">escape = '&amp;#xD;'</span>
+        <span class="s0">else:</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">if substrings is None:</span>
+            <span class="s0">substrings = []</span>
+        <span class="s0">if pos &gt; start:</span>
+            <span class="s0">substrings.append(text[start:pos])</span>
+        <span class="s0">substrings.append(escape)</span>
+        <span class="s0">start = pos + 1</span>
+
+    <span class="s0">if substrings is None:</span>
+        <span class="s0">return text</span>
+    <span class="s0">if pos &gt;= start:</span>
+        <span class="s0">substrings.append(text[start:pos+1])</span>
+    <span class="s0">return ''.join(substrings)</span>
+
+
+<span class="s0"># incremental serialisation</span>
+
+<span class="s0">cdef class xmlfile:</span>
+    <span class="s0">&quot;&quot;&quot;xmlfile(self, output_file, encoding=None, compression=None, close=False, buffered=True)</span>
+
+    <span class="s0">A simple mechanism for incremental XML serialisation.</span>
+
+    <span class="s0">Usage example::</span>
+
+         <span class="s0">with xmlfile(&quot;somefile.xml&quot;, encoding='utf-8') as xf:</span>
+             <span class="s0">xf.write_declaration(standalone=True)</span>
+             <span class="s0">xf.write_doctype('&lt;!DOCTYPE root SYSTEM &quot;some.dtd&quot;&gt;')</span>
+
+             <span class="s0"># generate an element (the root element)</span>
+             <span class="s0">with xf.element('root'):</span>
+                  <span class="s0"># write a complete Element into the open root element</span>
+                  <span class="s0">xf.write(etree.Element('test'))</span>
+
+                  <span class="s0"># generate and write more Elements, e.g. through iterparse</span>
+                  <span class="s0">for element in generate_some_elements():</span>
+                      <span class="s0"># serialise generated elements into the XML file</span>
+                      <span class="s0">xf.write(element)</span>
+
+                  <span class="s0"># or write multiple Elements or strings at once</span>
+                  <span class="s0">xf.write(etree.Element('start'), &quot;text&quot;, etree.Element('end'))</span>
+
+    <span class="s0">If 'output_file' is a file(-like) object, passing ``close=True`` will</span>
+    <span class="s0">close it when exiting the context manager.  By default, it is left</span>
+    <span class="s0">to the owner to do that.  When a file path is used, lxml will take care</span>
+    <span class="s0">of opening and closing the file itself.  Also, when a compression level</span>
+    <span class="s0">is set, lxml will deliberately close the file to make sure all data gets</span>
+    <span class="s0">compressed and written.</span>
+
+    <span class="s0">Setting ``buffered=False`` will flush the output after each operation,</span>
+    <span class="s0">such as opening or closing an ``xf.element()`` block or calling</span>
+    <span class="s0">``xf.write()``.  Alternatively, calling ``xf.flush()`` can be used to</span>
+    <span class="s0">explicitly flush any pending output when buffering is enabled.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef object output_file</span>
+    <span class="s0">cdef bytes encoding</span>
+    <span class="s0">cdef _IncrementalFileWriter writer</span>
+    <span class="s0">cdef _AsyncIncrementalFileWriter async_writer</span>
+    <span class="s0">cdef int compresslevel</span>
+    <span class="s0">cdef bint close</span>
+    <span class="s0">cdef bint buffered</span>
+    <span class="s0">cdef int method</span>
+
+    <span class="s0">def __init__(self, output_file not None, encoding=None, compression=None,</span>
+                 <span class="s0">close=False, buffered=True):</span>
+        <span class="s0">self.output_file = output_file</span>
+        <span class="s0">self.encoding = _utf8orNone(encoding)</span>
+        <span class="s0">self.compresslevel = compression or 0</span>
+        <span class="s0">self.close = close</span>
+        <span class="s0">self.buffered = buffered</span>
+        <span class="s0">self.method = OUTPUT_METHOD_XML</span>
+
+    <span class="s0">def __enter__(self):</span>
+        <span class="s0">assert self.output_file is not None</span>
+        <span class="s0">self.writer = _IncrementalFileWriter(</span>
+            <span class="s0">self.output_file, self.encoding, self.compresslevel,</span>
+            <span class="s0">self.close, self.buffered, self.method)</span>
+        <span class="s0">return self.writer</span>
+
+    <span class="s0">def __exit__(self, exc_type, exc_val, exc_tb):</span>
+        <span class="s0">if self.writer is not None:</span>
+            <span class="s0">old_writer, self.writer = self.writer, None</span>
+            <span class="s0">raise_on_error = exc_type is None</span>
+            <span class="s0">old_writer._close(raise_on_error)</span>
+            <span class="s0">if self.close:</span>
+                <span class="s0">self.output_file = None</span>
+
+    <span class="s0">async def __aenter__(self):</span>
+        <span class="s0">assert self.output_file is not None</span>
+        <span class="s0">if isinstance(self.output_file, basestring):</span>
+            <span class="s0">raise TypeError(&quot;Cannot asynchronously write to a plain file&quot;)</span>
+        <span class="s0">if not hasattr(self.output_file, 'write'):</span>
+            <span class="s0">raise TypeError(&quot;Output file needs an async .write() method&quot;)</span>
+        <span class="s0">self.async_writer = _AsyncIncrementalFileWriter(</span>
+            <span class="s0">self.output_file, self.encoding, self.compresslevel,</span>
+            <span class="s0">self.close, self.buffered, self.method)</span>
+        <span class="s0">return self.async_writer</span>
+
+    <span class="s0">async def __aexit__(self, exc_type, exc_val, exc_tb):</span>
+        <span class="s0">if self.async_writer is not None:</span>
+            <span class="s0">old_writer, self.async_writer = self.async_writer, None</span>
+            <span class="s0">raise_on_error = exc_type is None</span>
+            <span class="s0">await old_writer._close(raise_on_error)</span>
+            <span class="s0">if self.close:</span>
+                <span class="s0">self.output_file = None</span>
+
+
+<span class="s0">cdef class htmlfile(xmlfile):</span>
+    <span class="s0">&quot;&quot;&quot;htmlfile(self, output_file, encoding=None, compression=None, close=False, buffered=True)</span>
+
+    <span class="s0">A simple mechanism for incremental HTML serialisation.  Works the same as</span>
+    <span class="s0">xmlfile.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, *args, **kwargs):</span>
+        <span class="s0">super().__init__(*args, **kwargs)</span>
+        <span class="s0">self.method = OUTPUT_METHOD_HTML</span>
+
+
+<span class="s0">cdef enum _IncrementalFileWriterStatus:</span>
+    <span class="s0">WRITER_STARTING = 0</span>
+    <span class="s0">WRITER_DECL_WRITTEN = 1</span>
+    <span class="s0">WRITER_DTD_WRITTEN = 2</span>
+    <span class="s0">WRITER_IN_ELEMENT = 3</span>
+    <span class="s0">WRITER_FINISHED = 4</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _IncrementalFileWriter:</span>
+    <span class="s0">cdef tree.xmlOutputBuffer* _c_out</span>
+    <span class="s0">cdef bytes _encoding</span>
+    <span class="s0">cdef const_char* _c_encoding</span>
+    <span class="s0">cdef _FilelikeWriter _target</span>
+    <span class="s0">cdef list _element_stack</span>
+    <span class="s0">cdef int _status</span>
+    <span class="s0">cdef int _method</span>
+    <span class="s0">cdef bint _buffered</span>
+
+    <span class="s0">def __cinit__(self, outfile, bytes encoding, int compresslevel, bint close,</span>
+                  <span class="s0">bint buffered, int method):</span>
+        <span class="s0">self._status = WRITER_STARTING</span>
+        <span class="s0">self._element_stack = []</span>
+        <span class="s0">if encoding is None:</span>
+            <span class="s0"># We always need a document encoding to make the attribute serialisation</span>
+            <span class="s0"># of libxml2 identical to ours.</span>
+            <span class="s0">encoding = b'ASCII'</span>
+        <span class="s0">self._encoding = encoding</span>
+        <span class="s0">self._c_encoding = _cstr(encoding)</span>
+        <span class="s0">self._buffered = buffered</span>
+        <span class="s0">self._target = _create_output_buffer(</span>
+            <span class="s0">outfile, self._c_encoding, compresslevel, &amp;self._c_out, close)</span>
+        <span class="s0">self._method = method</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if self._c_out is not NULL:</span>
+            <span class="s0">tree.xmlOutputBufferClose(self._c_out)</span>
+
+    <span class="s0">def write_declaration(self, version=None, standalone=None, doctype=None):</span>
+        <span class="s0">&quot;&quot;&quot;write_declaration(self, version=None, standalone=None, doctype=None)</span>
+
+        <span class="s0">Write an XML declaration and (optionally) a doctype into the file.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_out is not NULL</span>
+        <span class="s0">cdef const_xmlChar* c_version</span>
+        <span class="s0">cdef int c_standalone</span>
+        <span class="s0">if self._method != OUTPUT_METHOD_XML:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;only XML documents have declarations&quot;)</span>
+        <span class="s0">if self._status &gt;= WRITER_DECL_WRITTEN:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;XML declaration already written&quot;)</span>
+        <span class="s0">version = _utf8orNone(version)</span>
+        <span class="s0">c_version = _xcstr(version) if version is not None else NULL</span>
+        <span class="s0">doctype = _utf8orNone(doctype)</span>
+        <span class="s0">if standalone is None:</span>
+            <span class="s0">c_standalone = -1</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_standalone = 1 if standalone else 0</span>
+        <span class="s0">_writeDeclarationToBuffer(self._c_out, c_version, self._c_encoding, c_standalone)</span>
+        <span class="s0">if doctype is not None:</span>
+            <span class="s0">_writeDoctype(self._c_out, _xcstr(doctype))</span>
+            <span class="s0">self._status = WRITER_DTD_WRITTEN</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._status = WRITER_DECL_WRITTEN</span>
+        <span class="s0">if not self._buffered:</span>
+            <span class="s0">tree.xmlOutputBufferFlush(self._c_out)</span>
+        <span class="s0">self._handle_error(self._c_out.error)</span>
+
+    <span class="s0">def write_doctype(self, doctype):</span>
+        <span class="s0">&quot;&quot;&quot;write_doctype(self, doctype)</span>
+
+        <span class="s0">Writes the given doctype declaration verbatimly into the file.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_out is not NULL</span>
+        <span class="s0">if doctype is None:</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._status &gt;= WRITER_DTD_WRITTEN:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;DOCTYPE already written or cannot write it here&quot;)</span>
+        <span class="s0">doctype = _utf8(doctype)</span>
+        <span class="s0">_writeDoctype(self._c_out, _xcstr(doctype))</span>
+        <span class="s0">self._status = WRITER_DTD_WRITTEN</span>
+        <span class="s0">if not self._buffered:</span>
+            <span class="s0">tree.xmlOutputBufferFlush(self._c_out)</span>
+        <span class="s0">self._handle_error(self._c_out.error)</span>
+
+    <span class="s0">def method(self, method):</span>
+        <span class="s0">&quot;&quot;&quot;method(self, method)</span>
+
+        <span class="s0">Returns a context manager that overrides and restores the output method.</span>
+        <span class="s0">method is one of (None, 'xml', 'html') where None means 'xml'.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_out is not NULL</span>
+        <span class="s0">c_method = self._method if method is None else _findOutputMethod(method)</span>
+        <span class="s0">return _MethodChanger(self, c_method)</span>
+
+    <span class="s0">def element(self, tag, attrib=None, nsmap=None, method=None, **_extra):</span>
+        <span class="s0">&quot;&quot;&quot;element(self, tag, attrib=None, nsmap=None, method, **_extra)</span>
+
+        <span class="s0">Returns a context manager that writes an opening and closing tag.</span>
+        <span class="s0">method is one of (None, 'xml', 'html') where None means 'xml'.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_out is not NULL</span>
+        <span class="s0">attributes = []</span>
+        <span class="s0">if attrib is not None:</span>
+            <span class="s0">for name, value in _iter_attrib(attrib):</span>
+                <span class="s0">if name not in _extra:</span>
+                    <span class="s0">ns, name = _getNsTag(name)</span>
+                    <span class="s0">attributes.append((ns, name, _utf8(value)))</span>
+        <span class="s0">if _extra:</span>
+            <span class="s0">for name, value in _extra.iteritems():</span>
+                <span class="s0">ns, name = _getNsTag(name)</span>
+                <span class="s0">attributes.append((ns, name, _utf8(value)))</span>
+        <span class="s0">reversed_nsmap = {}</span>
+        <span class="s0">if nsmap:</span>
+            <span class="s0">for prefix, ns in nsmap.items():</span>
+                <span class="s0">if prefix is not None:</span>
+                    <span class="s0">prefix = _utf8(prefix)</span>
+                    <span class="s0">_prefixValidOrRaise(prefix)</span>
+                <span class="s0">reversed_nsmap[_utf8(ns)] = prefix</span>
+        <span class="s0">ns, name = _getNsTag(tag)</span>
+
+        <span class="s0">c_method = self._method if method is None else _findOutputMethod(method)</span>
+
+        <span class="s0">return _FileWriterElement(self, (ns, name, attributes, reversed_nsmap), c_method)</span>
+
+    <span class="s0">cdef _write_qname(self, bytes name, bytes prefix):</span>
+        <span class="s0">if prefix:  # empty bytes for no prefix (not None to allow sorting)</span>
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, len(prefix), _cstr(prefix))</span>
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 1, ':')</span>
+        <span class="s0">tree.xmlOutputBufferWrite(self._c_out, len(name), _cstr(name))</span>
+
+    <span class="s0">cdef _write_start_element(self, element_config):</span>
+        <span class="s0">if self._status &gt; WRITER_IN_ELEMENT:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;cannot append trailing element to complete XML document&quot;)</span>
+        <span class="s0">ns, name, attributes, nsmap = element_config</span>
+        <span class="s0">flat_namespace_map, new_namespaces = self._collect_namespaces(nsmap)</span>
+        <span class="s0">prefix = self._find_prefix(ns, flat_namespace_map, new_namespaces)</span>
+        <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 1, '&lt;')</span>
+        <span class="s0">self._write_qname(name, prefix)</span>
+
+        <span class="s0">self._write_attributes_and_namespaces(</span>
+            <span class="s0">attributes, flat_namespace_map, new_namespaces)</span>
+
+        <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 1, '&gt;')</span>
+        <span class="s0">if not self._buffered:</span>
+            <span class="s0">tree.xmlOutputBufferFlush(self._c_out)</span>
+        <span class="s0">self._handle_error(self._c_out.error)</span>
+
+        <span class="s0">self._element_stack.append((ns, name, prefix, flat_namespace_map))</span>
+        <span class="s0">self._status = WRITER_IN_ELEMENT</span>
+
+    <span class="s0">cdef _write_attributes_and_namespaces(self, list attributes,</span>
+                                          <span class="s0">dict flat_namespace_map,</span>
+                                          <span class="s0">list new_namespaces):</span>
+        <span class="s0">if attributes:</span>
+            <span class="s0"># _find_prefix() may append to new_namespaces =&gt; build them first</span>
+            <span class="s0">attributes = [</span>
+                <span class="s0">(self._find_prefix(ns, flat_namespace_map, new_namespaces), name, value)</span>
+                <span class="s0">for ns, name, value in attributes ]</span>
+        <span class="s0">if new_namespaces:</span>
+            <span class="s0">new_namespaces.sort()</span>
+            <span class="s0">self._write_attributes_list(new_namespaces)</span>
+        <span class="s0">if attributes:</span>
+            <span class="s0">self._write_attributes_list(attributes)</span>
+
+    <span class="s0">cdef _write_attributes_list(self, list attributes):</span>
+        <span class="s0">for prefix, name, value in attributes:</span>
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 1, ' ')</span>
+            <span class="s0">self._write_qname(name, prefix)</span>
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 2, '=&quot;')</span>
+            <span class="s0">_write_attr_string(self._c_out, _cstr(value))</span>
+
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 1, '&quot;')</span>
+
+    <span class="s0">cdef _write_end_element(self, element_config):</span>
+        <span class="s0">if self._status != WRITER_IN_ELEMENT:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;not in an element&quot;)</span>
+        <span class="s0">if not self._element_stack or self._element_stack[-1][:2] != element_config[:2]:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;inconsistent exit action in context manager&quot;)</span>
+
+        <span class="s0"># If previous write operations failed, the context manager exit might still call us.</span>
+        <span class="s0"># That is ok, but we stop writing closing tags and handling errors in that case.</span>
+        <span class="s0"># For all non-I/O errors, we continue writing closing tags if we can.</span>
+        <span class="s0">ok_to_write = self._c_out.error == xmlerror.XML_ERR_OK</span>
+
+        <span class="s0">name, prefix = self._element_stack.pop()[1:3]</span>
+        <span class="s0">if ok_to_write:</span>
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 2, '&lt;/')</span>
+            <span class="s0">self._write_qname(name, prefix)</span>
+            <span class="s0">tree.xmlOutputBufferWrite(self._c_out, 1, '&gt;')</span>
+
+        <span class="s0">if not self._element_stack:</span>
+            <span class="s0">self._status = WRITER_FINISHED</span>
+        <span class="s0">if ok_to_write:</span>
+            <span class="s0">if not self._buffered:</span>
+                <span class="s0">tree.xmlOutputBufferFlush(self._c_out)</span>
+            <span class="s0">self._handle_error(self._c_out.error)</span>
+
+    <span class="s0">cdef _find_prefix(self, bytes href, dict flat_namespaces_map, list new_namespaces):</span>
+        <span class="s0">if href is None:</span>
+            <span class="s0">return None</span>
+        <span class="s0">if href in flat_namespaces_map:</span>
+            <span class="s0">return flat_namespaces_map[href]</span>
+        <span class="s0"># need to create a new prefix</span>
+        <span class="s0">prefixes = flat_namespaces_map.values()</span>
+        <span class="s0">i = 0</span>
+        <span class="s0">while True:</span>
+            <span class="s0">prefix = _utf8('ns%d' % i)</span>
+            <span class="s0">if prefix not in prefixes:</span>
+                <span class="s0">new_namespaces.append((b'xmlns', prefix, href))</span>
+                <span class="s0">flat_namespaces_map[href] = prefix</span>
+                <span class="s0">return prefix</span>
+            <span class="s0">i += 1</span>
+
+    <span class="s0">cdef _collect_namespaces(self, dict nsmap):</span>
+        <span class="s0">new_namespaces = []</span>
+        <span class="s0">flat_namespaces_map = {}</span>
+        <span class="s0">for ns, prefix in nsmap.iteritems():</span>
+            <span class="s0">flat_namespaces_map[ns] = prefix</span>
+            <span class="s0">if prefix is None:</span>
+                <span class="s0"># use empty bytes rather than None to allow sorting</span>
+                <span class="s0">new_namespaces.append((b'', b'xmlns', ns))</span>
+            <span class="s0">else:</span>
+                <span class="s0">new_namespaces.append((b'xmlns', prefix, ns))</span>
+        <span class="s0"># merge in flat namespace map of parent</span>
+        <span class="s0">if self._element_stack:</span>
+            <span class="s0">for ns, prefix in (&lt;dict&gt;self._element_stack[-1][-1]).iteritems():</span>
+                <span class="s0">if flat_namespaces_map.get(ns) is None:</span>
+                    <span class="s0"># unknown or empty prefix =&gt; prefer a 'real' prefix</span>
+                    <span class="s0">flat_namespaces_map[ns] = prefix</span>
+        <span class="s0">return flat_namespaces_map, new_namespaces</span>
+
+    <span class="s0">def write(self, *args, bint with_tail=True, bint pretty_print=False, method=None):</span>
+        <span class="s0">&quot;&quot;&quot;write(self, *args, with_tail=True, pretty_print=False, method=None)</span>
+
+        <span class="s0">Write subtrees or strings into the file.</span>
+
+        <span class="s0">If method is not None, it should be one of ('html', 'xml', 'text')</span>
+        <span class="s0">to temporarily override the output method.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_out is not NULL</span>
+        <span class="s0">c_method = self._method if method is None else _findOutputMethod(method)</span>
+
+        <span class="s0">for content in args:</span>
+            <span class="s0">if _isString(content):</span>
+                <span class="s0">if self._status != WRITER_IN_ELEMENT:</span>
+                    <span class="s0">if self._status &gt; WRITER_IN_ELEMENT or content.strip():</span>
+                        <span class="s0">raise LxmlSyntaxError(&quot;not in an element&quot;)</span>
+                <span class="s0">bstring = _utf8(content)</span>
+                <span class="s0">if not bstring:</span>
+                    <span class="s0">continue</span>
+
+                <span class="s0">ns, name, _, _ = self._element_stack[-1]</span>
+                <span class="s0">if (c_method == OUTPUT_METHOD_HTML and</span>
+                        <span class="s0">ns in (None, b'http://www.w3.org/1999/xhtml') and</span>
+                        <span class="s0">name in (b'script', b'style')):</span>
+                    <span class="s0">tree.xmlOutputBufferWrite(self._c_out, len(bstring), _cstr(bstring))</span>
+
+                <span class="s0">else:</span>
+                    <span class="s0">tree.xmlOutputBufferWriteEscape(self._c_out, _xcstr(bstring), NULL)</span>
+
+            <span class="s0">elif iselement(content):</span>
+                <span class="s0">if self._status &gt; WRITER_IN_ELEMENT:</span>
+                    <span class="s0">raise LxmlSyntaxError(&quot;cannot append trailing element to complete XML document&quot;)</span>
+                <span class="s0">_writeNodeToBuffer(self._c_out, (&lt;_Element&gt;content)._c_node,</span>
+                                   <span class="s0">self._c_encoding, NULL, c_method,</span>
+                                   <span class="s0">False, False, pretty_print, with_tail, False)</span>
+                <span class="s0">if (&lt;_Element&gt;content)._c_node.type == tree.XML_ELEMENT_NODE:</span>
+                    <span class="s0">if not self._element_stack:</span>
+                        <span class="s0">self._status = WRITER_FINISHED</span>
+
+            <span class="s0">elif content is not None:</span>
+                <span class="s0">raise TypeError(</span>
+                    <span class="s0">f&quot;got invalid input value of type {type(content)}, expected string or Element&quot;)</span>
+            <span class="s0">self._handle_error(self._c_out.error)</span>
+        <span class="s0">if not self._buffered:</span>
+            <span class="s0">tree.xmlOutputBufferFlush(self._c_out)</span>
+            <span class="s0">self._handle_error(self._c_out.error)</span>
+
+    <span class="s0">def flush(self):</span>
+        <span class="s0">&quot;&quot;&quot;flush(self)</span>
+
+        <span class="s0">Write any pending content of the current output buffer to the stream.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_out is not NULL</span>
+        <span class="s0">tree.xmlOutputBufferFlush(self._c_out)</span>
+        <span class="s0">self._handle_error(self._c_out.error)</span>
+
+    <span class="s0">cdef _close(self, bint raise_on_error):</span>
+        <span class="s0">if raise_on_error:</span>
+            <span class="s0">if self._status &lt; WRITER_IN_ELEMENT:</span>
+                <span class="s0">raise LxmlSyntaxError(&quot;no content written&quot;)</span>
+            <span class="s0">if self._element_stack:</span>
+                <span class="s0">raise LxmlSyntaxError(&quot;pending open tags on close&quot;)</span>
+        <span class="s0">error_result = self._c_out.error</span>
+        <span class="s0">if error_result == xmlerror.XML_ERR_OK:</span>
+            <span class="s0">error_result = tree.xmlOutputBufferClose(self._c_out)</span>
+            <span class="s0">if error_result != -1:</span>
+                <span class="s0">error_result = xmlerror.XML_ERR_OK</span>
+        <span class="s0">else:</span>
+            <span class="s0">tree.xmlOutputBufferClose(self._c_out)</span>
+        <span class="s0">self._status = WRITER_FINISHED</span>
+        <span class="s0">self._c_out = NULL</span>
+        <span class="s0">del self._element_stack[:]</span>
+        <span class="s0">if raise_on_error:</span>
+            <span class="s0">self._handle_error(error_result)</span>
+
+    <span class="s0">cdef _handle_error(self, int error_result):</span>
+        <span class="s0">if error_result != xmlerror.XML_ERR_OK:</span>
+            <span class="s0">if self._target is not None:</span>
+                <span class="s0">self._target._exc_context._raise_if_stored()</span>
+            <span class="s0">_raiseSerialisationError(error_result)</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _AsyncDataWriter:</span>
+    <span class="s0">cdef list _data</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._data = []</span>
+
+    <span class="s0">cdef bytes collect(self):</span>
+        <span class="s0">data = b''.join(self._data)</span>
+        <span class="s0">del self._data[:]</span>
+        <span class="s0">return data</span>
+
+    <span class="s0">def write(self, data):</span>
+        <span class="s0">self._data.append(data)</span>
+
+    <span class="s0">def close(self):</span>
+        <span class="s0">pass</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _AsyncIncrementalFileWriter:</span>
+    <span class="s0">cdef _IncrementalFileWriter _writer</span>
+    <span class="s0">cdef _AsyncDataWriter _buffer</span>
+    <span class="s0">cdef object _async_outfile</span>
+    <span class="s0">cdef int _flush_after_writes</span>
+    <span class="s0">cdef bint _should_close</span>
+    <span class="s0">cdef bint _buffered</span>
+
+    <span class="s0">def __cinit__(self, async_outfile, bytes encoding, int compresslevel, bint close,</span>
+                  <span class="s0">bint buffered, int method):</span>
+        <span class="s0">self._flush_after_writes = 20</span>
+        <span class="s0">self._async_outfile = async_outfile</span>
+        <span class="s0">self._should_close = close</span>
+        <span class="s0">self._buffered = buffered</span>
+        <span class="s0">self._buffer = _AsyncDataWriter()</span>
+        <span class="s0">self._writer = _IncrementalFileWriter(</span>
+            <span class="s0">self._buffer, encoding, compresslevel, close=True, buffered=False, method=method)</span>
+
+    <span class="s0">cdef bytes _flush(self):</span>
+        <span class="s0">if not self._buffered or len(self._buffer._data) &gt; self._flush_after_writes:</span>
+            <span class="s0">return self._buffer.collect()</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">async def flush(self):</span>
+        <span class="s0">self._writer.flush()</span>
+        <span class="s0">data = self._buffer.collect()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._async_outfile.write(data)</span>
+
+    <span class="s0">async def write_declaration(self, version=None, standalone=None, doctype=None):</span>
+        <span class="s0">self._writer.write_declaration(version, standalone, doctype)</span>
+        <span class="s0">data = self._flush()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._async_outfile.write(data)</span>
+
+    <span class="s0">async def write_doctype(self, doctype):</span>
+        <span class="s0">self._writer.write_doctype(doctype)</span>
+        <span class="s0">data = self._flush()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._async_outfile.write(data)</span>
+
+    <span class="s0">async def write(self, *args, with_tail=True, pretty_print=False, method=None):</span>
+        <span class="s0">self._writer.write(*args, with_tail=with_tail, pretty_print=pretty_print, method=method)</span>
+        <span class="s0">data = self._flush()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._async_outfile.write(data)</span>
+
+    <span class="s0">def method(self, method):</span>
+        <span class="s0">return self._writer.method(method)</span>
+
+    <span class="s0">def element(self, tag, attrib=None, nsmap=None, method=None, **_extra):</span>
+        <span class="s0">element_writer = self._writer.element(tag, attrib, nsmap, method, **_extra)</span>
+        <span class="s0">return _AsyncFileWriterElement(element_writer, self)</span>
+
+    <span class="s0">async def _close(self, bint raise_on_error):</span>
+        <span class="s0">self._writer._close(raise_on_error)</span>
+        <span class="s0">data = self._buffer.collect()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._async_outfile.write(data)</span>
+        <span class="s0">if self._should_close:</span>
+            <span class="s0">await self._async_outfile.close()</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _AsyncFileWriterElement:</span>
+    <span class="s0">cdef _FileWriterElement _element_writer</span>
+    <span class="s0">cdef _AsyncIncrementalFileWriter _writer</span>
+
+    <span class="s0">def __cinit__(self, _FileWriterElement element_writer not None,</span>
+                  <span class="s0">_AsyncIncrementalFileWriter writer not None):</span>
+        <span class="s0">self._element_writer = element_writer</span>
+        <span class="s0">self._writer = writer</span>
+
+    <span class="s0">async def __aenter__(self):</span>
+        <span class="s0">self._element_writer.__enter__()</span>
+        <span class="s0">data = self._writer._flush()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._writer._async_outfile.write(data)</span>
+
+    <span class="s0">async def __aexit__(self, *args):</span>
+        <span class="s0">self._element_writer.__exit__(*args)</span>
+        <span class="s0">data = self._writer._flush()</span>
+        <span class="s0">if data:</span>
+            <span class="s0">await self._writer._async_outfile.write(data)</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">@cython.freelist(8)</span>
+<span class="s0">cdef class _FileWriterElement:</span>
+    <span class="s0">cdef _IncrementalFileWriter _writer</span>
+    <span class="s0">cdef object _element</span>
+    <span class="s0">cdef int _new_method</span>
+    <span class="s0">cdef int _old_method</span>
+
+    <span class="s0">def __cinit__(self, _IncrementalFileWriter writer not None, element_config, int method):</span>
+        <span class="s0">self._writer = writer</span>
+        <span class="s0">self._element = element_config</span>
+        <span class="s0">self._new_method = method</span>
+        <span class="s0">self._old_method = writer._method</span>
+
+    <span class="s0">def __enter__(self):</span>
+        <span class="s0">self._writer._method = self._new_method</span>
+        <span class="s0">self._writer._write_start_element(self._element)</span>
+
+    <span class="s0">def __exit__(self, exc_type, exc_val, exc_tb):</span>
+        <span class="s0">self._writer._write_end_element(self._element)</span>
+        <span class="s0">self._writer._method = self._old_method</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">@cython.freelist(8)</span>
+<span class="s0">cdef class _MethodChanger:</span>
+    <span class="s0">cdef _IncrementalFileWriter _writer</span>
+    <span class="s0">cdef int _new_method</span>
+    <span class="s0">cdef int _old_method</span>
+    <span class="s0">cdef bint _entered</span>
+    <span class="s0">cdef bint _exited</span>
+
+    <span class="s0">def __cinit__(self, _IncrementalFileWriter writer not None, int method):</span>
+        <span class="s0">self._writer = writer</span>
+        <span class="s0">self._new_method = method</span>
+        <span class="s0">self._old_method = writer._method</span>
+        <span class="s0">self._entered = False</span>
+        <span class="s0">self._exited = False</span>
+
+    <span class="s0">def __enter__(self):</span>
+        <span class="s0">if self._entered:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;Inconsistent enter action in context manager&quot;)</span>
+        <span class="s0">self._writer._method = self._new_method</span>
+        <span class="s0">self._entered = True</span>
+
+    <span class="s0">def __exit__(self, exc_type, exc_val, exc_tb):</span>
+        <span class="s0">if self._exited:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;Inconsistent exit action in context manager&quot;)</span>
+        <span class="s0">if self._writer._method != self._new_method:</span>
+            <span class="s0">raise LxmlSyntaxError(&quot;Method changed outside of context manager&quot;)</span>
+        <span class="s0">self._writer._method = self._old_method</span>
+        <span class="s0">self._exited = True</span>
+
+    <span class="s0">async def __aenter__(self):</span>
+        <span class="s0"># for your async convenience</span>
+        <span class="s0">return self.__enter__()</span>
+
+    <span class="s0">async def __aexit__(self, *args):</span>
+        <span class="s0"># for your async convenience</span>
+        <span class="s0">return self.__exit__(*args)</span>
+</pre>
+</body>
+</html>

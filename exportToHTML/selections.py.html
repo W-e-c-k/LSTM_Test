@@ -1,0 +1,458 @@
+<html>
+<head>
+<title>selections.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #2aacb8;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+selections.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is part of h5py, a Python interface to the HDF5 library.</span>
+<span class="s0">#</span>
+<span class="s0"># http://www.h5py.org</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright 2008-2013 Andrew Collette and contributors</span>
+<span class="s0">#</span>
+<span class="s0"># License:  Standard 3-clause BSD; see &quot;license.txt&quot; for full license terms</span>
+<span class="s0">#           and contributor agreement.</span>
+
+<span class="s2">&quot;&quot;&quot; 
+    High-level access to HDF5 dataspace selections 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">numpy </span><span class="s3">as </span><span class="s1">np</span>
+
+<span class="s3">from </span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">product</span>
+<span class="s3">from </span><span class="s4">.. </span><span class="s3">import </span><span class="s1">h5s</span><span class="s4">, </span><span class="s1">h5r</span><span class="s4">, </span><span class="s1">_selector</span>
+
+<span class="s3">def </span><span class="s1">select</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">args</span><span class="s4">, </span><span class="s1">dataset</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; High-level routine to generate a selection from arbitrary arguments 
+    to __getitem__.  The arguments should be the following: 
+ 
+    shape 
+        Shape of the &quot;source&quot; dataspace. 
+ 
+    args 
+        Either a single argument or a tuple of arguments.  See below for 
+        supported classes of argument. 
+ 
+    dataset 
+        A h5py.Dataset instance representing the source dataset. 
+ 
+    Argument classes: 
+ 
+    Single Selection instance 
+        Returns the argument. 
+ 
+    numpy.ndarray 
+        Must be a boolean mask.  Returns a PointSelection instance. 
+ 
+    RegionReference 
+        Returns a Selection instance. 
+ 
+    Indices, slices, ellipses, MultiBlockSlices only 
+        Returns a SimpleSelection instance 
+ 
+    Indices, slices, ellipses, lists or boolean index arrays 
+        Returns a FancySelection instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">args</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">):</span>
+        <span class="s1">args </span><span class="s4">= (</span><span class="s1">args</span><span class="s4">,)</span>
+
+    <span class="s0"># &quot;Special&quot; indexing objects</span>
+    <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">args</span><span class="s4">) == </span><span class="s5">1</span><span class="s4">:</span>
+
+        <span class="s1">arg </span><span class="s4">= </span><span class="s1">args</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">, </span><span class="s1">Selection</span><span class="s4">):</span>
+            <span class="s3">if </span><span class="s1">arg</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">!= </span><span class="s1">shape</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Mismatched selection shape&quot;</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">arg</span>
+
+        <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">, </span><span class="s1">np</span><span class="s4">.</span><span class="s1">ndarray</span><span class="s4">) </span><span class="s3">and </span><span class="s1">arg</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">kind </span><span class="s4">== </span><span class="s6">'b'</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">arg</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">!= </span><span class="s1">shape</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Boolean indexing array has incompatible shape&quot;</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">PointSelection</span><span class="s4">.</span><span class="s1">from_mask</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">)</span>
+
+        <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">, </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">RegionReference</span><span class="s4">):</span>
+            <span class="s3">if </span><span class="s1">dataset </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Cannot apply a region reference without a dataset&quot;</span><span class="s4">)</span>
+            <span class="s1">sid </span><span class="s4">= </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">get_region</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">, </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">id</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">shape </span><span class="s4">!= </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Reference shape does not match dataset shape&quot;</span><span class="s4">)</span>
+
+            <span class="s3">return </span><span class="s1">Selection</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">=</span><span class="s1">sid</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">dataset </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">selector </span><span class="s4">= </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">_selector</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s1">space </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create_simple</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">)</span>
+        <span class="s1">selector </span><span class="s4">= </span><span class="s1">_selector</span><span class="s4">.</span><span class="s1">Selector</span><span class="s4">(</span><span class="s1">space</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">selector</span><span class="s4">.</span><span class="s1">make_selection</span><span class="s4">(</span><span class="s1">args</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">Selection</span><span class="s4">:</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Base class for HDF5 dataspace selections.  Subclasses support the 
+        &quot;selection protocol&quot;, which means they have at least the following 
+        members: 
+ 
+        __init__(shape)   =&gt; Create a new selection on &quot;shape&quot;-tuple 
+        __getitem__(args) =&gt; Perform a selection with the range specified. 
+                             What args are allowed depends on the 
+                             particular subclass in use. 
+ 
+        id (read-only) =&gt;      h5py.h5s.SpaceID instance 
+        shape (read-only) =&gt;   The shape of the dataspace. 
+        mshape  (read-only) =&gt; The shape of the selection region. 
+                               Not guaranteed to fit within &quot;shape&quot;, although 
+                               the total number of points is less than 
+                               product(shape). 
+        nselect (read-only) =&gt; Number of selected points.  Always equal to 
+                               product(mshape). 
+ 
+        broadcast(target_shape) =&gt; Return an iterable which yields dataspaces 
+                                   for read, based on target_shape. 
+ 
+        The base class represents &quot;unshaped&quot; selections (1-D). 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create a selection.  Shape may be None if spaceid is given. &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">spaceid </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id </span><span class="s4">= </span><span class="s1">spaceid</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_shape </span><span class="s4">= </span><span class="s1">spaceid</span><span class="s4">.</span><span class="s1">shape</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">shape </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">)</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_shape </span><span class="s4">= </span><span class="s1">shape</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create_simple</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, (</span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">UNLIMITED</span><span class="s4">,)*</span><span class="s1">len</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">))</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">select_all</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">id</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; SpaceID instance &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Shape of whole dataspace &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_shape</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">nselect</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Number of elements currently selected &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">get_select_npoints</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">mshape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Shape of selection (always 1-D for this class) &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">nselect</span><span class="s4">,)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">array_shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Shape of array to read/write (always 1-D for this class)&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">mshape</span>
+
+    <span class="s0"># expand_shape and broadcast only really make sense for SimpleSelection</span>
+    <span class="s3">def </span><span class="s1">expand_shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source_shape</span><span class="s4">):</span>
+        <span class="s3">if </span><span class="s1">product</span><span class="s4">(</span><span class="s1">source_shape</span><span class="s4">) != </span><span class="s1">self</span><span class="s4">.</span><span class="s1">nselect</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Broadcasting is not supported for point-wise selections&quot;</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">source_shape</span>
+
+    <span class="s3">def </span><span class="s1">broadcast</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source_shape</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Get an iterable for broadcasting &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">product</span><span class="s4">(</span><span class="s1">source_shape</span><span class="s4">) != </span><span class="s1">self</span><span class="s4">.</span><span class="s1">nselect</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Broadcasting is not supported for point-wise selections&quot;</span><span class="s4">)</span>
+        <span class="s3">yield </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">args</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">NotImplementedError</span><span class="s4">(</span><span class="s6">&quot;This class does not support indexing&quot;</span><span class="s4">)</span>
+
+<span class="s3">class </span><span class="s1">PointSelection</span><span class="s4">(</span><span class="s1">Selection</span><span class="s4">):</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Represents a point-wise selection.  You can supply sequences of 
+        points to the three methods append(), prepend() and set(), or 
+        instantiate it with a single boolean array using from_mask(). 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">points</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">points </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_perform_selection</span><span class="s4">(</span><span class="s1">points</span><span class="s4">, </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SELECT_SET</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">_perform_selection</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">points</span><span class="s4">, </span><span class="s1">op</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Internal method which actually performs the selection &quot;&quot;&quot;</span>
+        <span class="s1">points </span><span class="s4">= </span><span class="s1">np</span><span class="s4">.</span><span class="s1">asarray</span><span class="s4">(</span><span class="s1">points</span><span class="s4">, </span><span class="s1">order</span><span class="s4">=</span><span class="s6">'C'</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s6">'u8'</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">points</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">) == </span><span class="s5">1</span><span class="s4">:</span>
+            <span class="s1">points</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">= (</span><span class="s5">1</span><span class="s4">,</span><span class="s1">points</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[</span><span class="s5">0</span><span class="s4">])</span>
+
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">get_select_type</span><span class="s4">() != </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_POINTS</span><span class="s4">:</span>
+            <span class="s1">op </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SELECT_SET</span>
+
+        <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">points</span><span class="s4">) == </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">select_none</span><span class="s4">()</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">select_elements</span><span class="s4">(</span><span class="s1">points</span><span class="s4">, </span><span class="s1">op</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">classmethod</span>
+    <span class="s3">def </span><span class="s1">from_mask</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">mask</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Create a point-wise selection from a NumPy boolean array &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s4">(</span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">mask</span><span class="s4">, </span><span class="s1">np</span><span class="s4">.</span><span class="s1">ndarray</span><span class="s4">) </span><span class="s3">and </span><span class="s1">mask</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">kind </span><span class="s4">== </span><span class="s6">'b'</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;PointSelection.from_mask only works with bool arrays&quot;</span><span class="s4">)</span>
+
+        <span class="s1">points </span><span class="s4">= </span><span class="s1">np</span><span class="s4">.</span><span class="s1">transpose</span><span class="s4">(</span><span class="s1">mask</span><span class="s4">.</span><span class="s1">nonzero</span><span class="s4">())</span>
+        <span class="s3">return </span><span class="s1">cls</span><span class="s4">(</span><span class="s1">mask</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">, </span><span class="s1">points</span><span class="s4">=</span><span class="s1">points</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">append</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">points</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Add the sequence of points to the end of the current selection &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_perform_selection</span><span class="s4">(</span><span class="s1">points</span><span class="s4">, </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SELECT_APPEND</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">prepend</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">points</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Add the sequence of points to the beginning of the current selection &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_perform_selection</span><span class="s4">(</span><span class="s1">points</span><span class="s4">, </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SELECT_PREPEND</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">set</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">points</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Replace the current selection with the given sequence of points&quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_perform_selection</span><span class="s4">(</span><span class="s1">points</span><span class="s4">, </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SELECT_SET</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">SimpleSelection</span><span class="s4">(</span><span class="s1">Selection</span><span class="s4">):</span>
+
+    <span class="s2">&quot;&quot;&quot; A single &quot;rectangular&quot; (regular) selection composed of only slices 
+        and integer arguments.  Can participate in broadcasting. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">mshape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Shape of current selection &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">[</span><span class="s5">1</span><span class="s4">]</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">array_shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s1">scalar </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">[</span><span class="s5">3</span><span class="s4">]</span>
+        <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x</span><span class="s4">, </span><span class="s1">s </span><span class="s3">in </span><span class="s1">zip</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">mshape</span><span class="s4">, </span><span class="s1">scalar</span><span class="s4">) </span><span class="s3">if not </span><span class="s1">s</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">hyperslab</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">hyperslab </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_sel </span><span class="s4">= </span><span class="s1">hyperslab</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s0"># No hyperslab specified - select all</span>
+            <span class="s1">rank </span><span class="s4">= </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_sel </span><span class="s4">= ((</span><span class="s5">0</span><span class="s4">,)*</span><span class="s1">rank</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, (</span><span class="s5">1</span><span class="s4">,)*</span><span class="s1">rank</span><span class="s4">, (</span><span class="s3">False</span><span class="s4">,)*</span><span class="s1">rank</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">expand_shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source_shape</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Match the dimensions of an array to be broadcast to the selection 
+ 
+        The returned shape describes an array of the same size as the input 
+        shape, but its dimensions 
+ 
+        E.g. with a dataset shape (10, 5, 4, 2), writing like this:: 
+ 
+            ds[..., 0] = np.ones((5, 4)) 
+ 
+        The source shape (5, 4) will expand to (1, 5, 4, 1). 
+        Then the broadcast method below repeats that chunk 10 
+        times to write to an effective shape of (10, 5, 4, 1). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">start</span><span class="s4">, </span><span class="s1">count</span><span class="s4">, </span><span class="s1">step</span><span class="s4">, </span><span class="s1">scalar </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span>
+
+        <span class="s1">rank </span><span class="s4">= </span><span class="s1">len</span><span class="s4">(</span><span class="s1">count</span><span class="s4">)</span>
+        <span class="s1">remaining_src_dims </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">source_shape</span><span class="s4">)</span>
+
+        <span class="s1">eshape </span><span class="s4">= []</span>
+        <span class="s3">for </span><span class="s1">idx </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s5">1</span><span class="s4">, </span><span class="s1">rank </span><span class="s4">+ </span><span class="s5">1</span><span class="s4">):</span>
+            <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">remaining_src_dims</span><span class="s4">) == </span><span class="s5">0 </span><span class="s3">or </span><span class="s1">scalar</span><span class="s4">[-</span><span class="s1">idx</span><span class="s4">]:  </span><span class="s0"># Skip scalar axes</span>
+                <span class="s1">eshape</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s5">1</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">t </span><span class="s4">= </span><span class="s1">remaining_src_dims</span><span class="s4">.</span><span class="s1">pop</span><span class="s4">()</span>
+                <span class="s3">if </span><span class="s1">t </span><span class="s4">== </span><span class="s5">1 </span><span class="s3">or </span><span class="s1">count</span><span class="s4">[-</span><span class="s1">idx</span><span class="s4">] == </span><span class="s1">t</span><span class="s4">:</span>
+                    <span class="s1">eshape</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">t</span><span class="s4">)</span>
+                <span class="s3">else</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Can't broadcast %s -&gt; %s&quot; </span><span class="s4">% (</span><span class="s1">source_shape</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">))  </span><span class="s0"># array shape</span>
+
+        <span class="s3">if </span><span class="s1">any</span><span class="s4">([</span><span class="s1">n </span><span class="s4">&gt; </span><span class="s5">1 </span><span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">remaining_src_dims</span><span class="s4">]):</span>
+            <span class="s0"># All dimensions from target_shape should either have been popped</span>
+            <span class="s0"># to match the selection shape, or be 1.</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Can't broadcast %s -&gt; %s&quot; </span><span class="s4">% (</span><span class="s1">source_shape</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">))  </span><span class="s0"># array shape</span>
+
+        <span class="s0"># We have built eshape backwards, so now reverse it</span>
+        <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">eshape</span><span class="s4">[::-</span><span class="s5">1</span><span class="s4">])</span>
+
+
+    <span class="s3">def </span><span class="s1">broadcast</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source_shape</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Return an iterator over target dataspaces for broadcasting. 
+ 
+        Follows the standard NumPy broadcasting rules against the current 
+        selection shape (self.mshape). 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">== ():</span>
+            <span class="s3">if </span><span class="s1">product</span><span class="s4">(</span><span class="s1">source_shape</span><span class="s4">) != </span><span class="s5">1</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Can't broadcast %s to scalar&quot; </span><span class="s4">% </span><span class="s1">source_shape</span><span class="s4">)</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">select_all</span><span class="s4">()</span>
+            <span class="s3">yield </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span>
+            <span class="s3">return</span>
+
+        <span class="s1">start</span><span class="s4">, </span><span class="s1">count</span><span class="s4">, </span><span class="s1">step</span><span class="s4">, </span><span class="s1">scalar </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span>
+
+        <span class="s1">rank </span><span class="s4">= </span><span class="s1">len</span><span class="s4">(</span><span class="s1">count</span><span class="s4">)</span>
+        <span class="s1">tshape </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">expand_shape</span><span class="s4">(</span><span class="s1">source_shape</span><span class="s4">)</span>
+
+        <span class="s1">chunks </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x</span><span class="s4">//</span><span class="s1">y </span><span class="s3">for </span><span class="s1">x</span><span class="s4">, </span><span class="s1">y </span><span class="s3">in </span><span class="s1">zip</span><span class="s4">(</span><span class="s1">count</span><span class="s4">, </span><span class="s1">tshape</span><span class="s4">))</span>
+        <span class="s1">nchunks </span><span class="s4">= </span><span class="s1">product</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">nchunks </span><span class="s4">== </span><span class="s5">1</span><span class="s4">:</span>
+            <span class="s3">yield </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">sid </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">()</span>
+            <span class="s1">sid</span><span class="s4">.</span><span class="s1">select_hyperslab</span><span class="s4">((</span><span class="s5">0</span><span class="s4">,)*</span><span class="s1">rank</span><span class="s4">, </span><span class="s1">tshape</span><span class="s4">, </span><span class="s1">step</span><span class="s4">)</span>
+            <span class="s3">for </span><span class="s1">idx </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">nchunks</span><span class="s4">):</span>
+                <span class="s1">offset </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x</span><span class="s4">*</span><span class="s1">y</span><span class="s4">*</span><span class="s1">z </span><span class="s4">+ </span><span class="s1">s </span><span class="s3">for </span><span class="s1">x</span><span class="s4">, </span><span class="s1">y</span><span class="s4">, </span><span class="s1">z</span><span class="s4">, </span><span class="s1">s </span><span class="s3">in </span><span class="s1">zip</span><span class="s4">(</span><span class="s1">np</span><span class="s4">.</span><span class="s1">unravel_index</span><span class="s4">(</span><span class="s1">idx</span><span class="s4">, </span><span class="s1">chunks</span><span class="s4">), </span><span class="s1">tshape</span><span class="s4">, </span><span class="s1">step</span><span class="s4">, </span><span class="s1">start</span><span class="s4">))</span>
+                <span class="s1">sid</span><span class="s4">.</span><span class="s1">offset_simple</span><span class="s4">(</span><span class="s1">offset</span><span class="s4">)</span>
+                <span class="s3">yield </span><span class="s1">sid</span>
+
+
+<span class="s3">class </span><span class="s1">FancySelection</span><span class="s4">(</span><span class="s1">Selection</span><span class="s4">):</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Implements advanced NumPy-style selection operations in addition to 
+        the standard slice-and-int behavior. 
+ 
+        Indexing arguments may be ints, slices, lists of indices, or 
+        per-axis (1D) boolean arrays. 
+ 
+        Broadcasting is not supported for these selections. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">mshape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_mshape</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">array_shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_array_shape</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">mshape</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">array_shape</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">spaceid</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">mshape </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">mshape </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span>
+        <span class="s3">if </span><span class="s1">array_shape </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">array_shape </span><span class="s4">= </span><span class="s1">mshape</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_mshape </span><span class="s4">= </span><span class="s1">mshape</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_array_shape </span><span class="s4">= </span><span class="s1">array_shape</span>
+
+    <span class="s3">def </span><span class="s1">expand_shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source_shape</span><span class="s4">):</span>
+        <span class="s3">if not </span><span class="s1">source_shape </span><span class="s4">== </span><span class="s1">self</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Broadcasting is not supported for complex selections&quot;</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">source_shape</span>
+
+    <span class="s3">def </span><span class="s1">broadcast</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source_shape</span><span class="s4">):</span>
+        <span class="s3">if not </span><span class="s1">source_shape </span><span class="s4">== </span><span class="s1">self</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Broadcasting is not supported for complex selections&quot;</span><span class="s4">)</span>
+        <span class="s3">yield </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span>
+
+
+<span class="s3">def </span><span class="s1">guess_shape</span><span class="s4">(</span><span class="s1">sid</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Given a dataspace, try to deduce the shape of the selection. 
+ 
+    Returns one of: 
+        * A tuple with the selection shape, same length as the dataspace 
+        * A 1D selection shape for point-based and multiple-hyperslab selections 
+        * None, for unselected scalars and for NULL dataspaces 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">sel_class </span><span class="s4">= </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">get_simple_extent_type</span><span class="s4">()    </span><span class="s0"># Dataspace class</span>
+    <span class="s1">sel_type </span><span class="s4">= </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">get_select_type</span><span class="s4">()            </span><span class="s0"># Flavor of selection in use</span>
+
+    <span class="s3">if </span><span class="s1">sel_class </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">NULL</span><span class="s4">:</span>
+        <span class="s0"># NULL dataspaces don't support selections</span>
+        <span class="s3">return None</span>
+
+    <span class="s3">elif </span><span class="s1">sel_class </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SCALAR</span><span class="s4">:</span>
+        <span class="s0"># NumPy has no way of expressing empty 0-rank selections, so we use None</span>
+        <span class="s3">if </span><span class="s1">sel_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_NONE</span><span class="s4">: </span><span class="s3">return None</span>
+        <span class="s3">if </span><span class="s1">sel_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_ALL</span><span class="s4">: </span><span class="s3">return </span><span class="s1">tuple</span><span class="s4">()</span>
+
+    <span class="s3">elif </span><span class="s1">sel_class </span><span class="s4">!= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SIMPLE</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Unrecognized dataspace class %s&quot; </span><span class="s4">% </span><span class="s1">sel_class</span><span class="s4">)</span>
+
+    <span class="s0"># We have a &quot;simple&quot; (rank &gt;= 1) dataspace</span>
+
+    <span class="s1">N </span><span class="s4">= </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">get_select_npoints</span><span class="s4">()</span>
+    <span class="s1">rank </span><span class="s4">= </span><span class="s1">len</span><span class="s4">(</span><span class="s1">sid</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">sel_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_NONE</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s5">0</span><span class="s4">,)*</span><span class="s1">rank</span>
+
+    <span class="s3">elif </span><span class="s1">sel_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_ALL</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">shape</span>
+
+    <span class="s3">elif </span><span class="s1">sel_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_POINTS</span><span class="s4">:</span>
+        <span class="s0"># Like NumPy, point-based selections yield 1D arrays regardless of</span>
+        <span class="s0"># the dataspace rank</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s1">N</span><span class="s4">,)</span>
+
+    <span class="s3">elif </span><span class="s1">sel_type </span><span class="s4">!= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SEL_HYPERSLABS</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Unrecognized selection method %s&quot; </span><span class="s4">% </span><span class="s1">sel_type</span><span class="s4">)</span>
+
+    <span class="s0"># We have a hyperslab-based selection</span>
+
+    <span class="s3">if </span><span class="s1">N </span><span class="s4">== </span><span class="s5">0</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s5">0</span><span class="s4">,)*</span><span class="s1">rank</span>
+
+    <span class="s1">bottomcorner</span><span class="s4">, </span><span class="s1">topcorner </span><span class="s4">= (</span><span class="s1">np</span><span class="s4">.</span><span class="s1">array</span><span class="s4">(</span><span class="s1">x</span><span class="s4">) </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">get_select_bounds</span><span class="s4">())</span>
+
+    <span class="s0"># Shape of full selection box</span>
+    <span class="s1">boxshape </span><span class="s4">= </span><span class="s1">topcorner </span><span class="s4">- </span><span class="s1">bottomcorner </span><span class="s4">+ </span><span class="s1">np</span><span class="s4">.</span><span class="s1">ones</span><span class="s4">((</span><span class="s1">rank</span><span class="s4">,))</span>
+
+    <span class="s3">def </span><span class="s1">get_n_axis</span><span class="s4">(</span><span class="s1">sid</span><span class="s4">, </span><span class="s1">axis</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Determine the number of elements selected along a particular axis. 
+ 
+        To do this, we &quot;mask off&quot; the axis by making a hyperslab selection 
+        which leaves only the first point along the axis.  For a 2D dataset 
+        with selection box shape (X, Y), for axis 1, this would leave a 
+        selection of shape (X, 1).  We count the number of points N_leftover 
+        remaining in the selection and compute the axis selection length by 
+        N_axis = N/N_leftover. 
+        &quot;&quot;&quot;</span>
+
+        <span class="s3">if</span><span class="s4">(</span><span class="s1">boxshape</span><span class="s4">[</span><span class="s1">axis</span><span class="s4">]) == </span><span class="s5">1</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s5">1</span>
+
+        <span class="s1">start </span><span class="s4">= </span><span class="s1">bottomcorner</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">()</span>
+        <span class="s1">start</span><span class="s4">[</span><span class="s1">axis</span><span class="s4">] += </span><span class="s5">1</span>
+        <span class="s1">count </span><span class="s4">= </span><span class="s1">boxshape</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">()</span>
+        <span class="s1">count</span><span class="s4">[</span><span class="s1">axis</span><span class="s4">] -= </span><span class="s5">1</span>
+
+        <span class="s0"># Throw away all points along this axis</span>
+        <span class="s1">masked_sid </span><span class="s4">= </span><span class="s1">sid</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">()</span>
+        <span class="s1">masked_sid</span><span class="s4">.</span><span class="s1">select_hyperslab</span><span class="s4">(</span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">start</span><span class="s4">), </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">count</span><span class="s4">), </span><span class="s1">op</span><span class="s4">=</span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SELECT_NOTB</span><span class="s4">)</span>
+
+        <span class="s1">N_leftover </span><span class="s4">= </span><span class="s1">masked_sid</span><span class="s4">.</span><span class="s1">get_select_npoints</span><span class="s4">()</span>
+
+        <span class="s3">return </span><span class="s1">N</span><span class="s4">//</span><span class="s1">N_leftover</span>
+
+
+    <span class="s1">shape </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">get_n_axis</span><span class="s4">(</span><span class="s1">sid</span><span class="s4">, </span><span class="s1">x</span><span class="s4">) </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">rank</span><span class="s4">))</span>
+
+    <span class="s3">if </span><span class="s1">product</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">) != </span><span class="s1">N</span><span class="s4">:</span>
+        <span class="s0"># This means multiple hyperslab selections are in effect,</span>
+        <span class="s0"># so we fall back to a 1D shape</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s1">N</span><span class="s4">,)</span>
+
+    <span class="s3">return </span><span class="s1">shape</span>
+</pre>
+</body>
+</html>

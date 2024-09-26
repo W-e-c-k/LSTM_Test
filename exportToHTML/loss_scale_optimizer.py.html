@@ -1,0 +1,319 @@
+<html>
+<head>
+<title>loss_scale_optimizer.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+loss_scale_optimizer.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">initializers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">optimizers </span><span class="s0">import </span><span class="s1">optimizer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">tracking</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span>
+        <span class="s3">&quot;keras.optimizers.LossScaleOptimizer&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.mixed_precision.LossScaleOptimizer&quot;</span><span class="s2">,</span>
+    <span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">class </span><span class="s1">LossScaleOptimizer</span><span class="s2">(</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">Optimizer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;An optimizer that dynamically scales the loss to prevent underflow. 
+ 
+    Loss scaling is a technique to prevent numeric underflow in intermediate 
+    gradients when float16 is used. To prevent underflow, the loss is multiplied 
+    (or &quot;scaled&quot;) by a certain factor called the &quot;loss scale&quot;, which causes 
+    intermediate gradients to be scaled by the loss scale as well. The final 
+    gradients are divided (or &quot;unscaled&quot;) by the loss scale to bring them back 
+    to their original value. 
+ 
+    `LossScaleOptimizer` wraps another optimizer and applies dynamic loss 
+    scaling to it. This loss scale is dynamically updated over time as follows: 
+    - On any train step, if a nonfinite gradient is encountered, the loss scale 
+      is halved, and the train step is skipped. 
+    - If `dynamic_growth_steps` have ocurred since the last time the loss scale 
+      was updated, and no nonfinite gradients have occurred, the loss scale 
+      is doubled. 
+ 
+    Args: 
+        inner_optimizer: The `keras.optimizers.Optimizer` instance to wrap. 
+        initial_scale: Float. The initial loss scale. This scale will be updated 
+            during training. It is recommended for this to be a very high 
+            number, because a loss scale that is too high gets lowered far more 
+            quickly than a loss scale that is too low gets raised. 
+        dynamic_growth_steps: Int. How often to update the scale upwards. After 
+            every `dynamic_growth_steps` steps with finite gradients, the 
+            loss scale is doubled. 
+        {{base_optimizer_keyword_args}} 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">inner_optimizer</span><span class="s2">,</span>
+        <span class="s1">initial_scale</span><span class="s2">=</span><span class="s5">2.0</span><span class="s2">**</span><span class="s5">15</span><span class="s2">,</span>
+        <span class="s1">dynamic_growth_steps</span><span class="s2">=</span><span class="s5">2000</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;dynamic&quot;</span><span class="s2">, </span><span class="s0">True</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;LossScaleOptimizer no longer suports `dynamic=False`. &quot;</span>
+                <span class="s3">&quot;Instead, simply set `loss_scale_factor` directly on the &quot;</span>
+                <span class="s3">&quot;`inner_optimizer`.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">learning_rate</span><span class="s2">=</span><span class="s5">0.0</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer </span><span class="s2">= </span><span class="s1">inner_optimizer</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">initial_scale </span><span class="s2">= </span><span class="s1">initial_scale</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_growth_steps </span><span class="s2">= </span><span class="s1">dynamic_growth_steps</span>
+
+    <span class="s2">@</span><span class="s1">tracking</span><span class="s2">.</span><span class="s1">no_automatic_dependency_tracking</span>
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">var_list</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(),</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;int&quot;</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;step_counter&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(),</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Constant</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">initial_scale</span><span class="s2">),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;dynamic_scale&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">var_list</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variables </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">variables</span>
+
+    <span class="s0">def </span><span class="s1">stateless_apply</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;To call `stateless_apply`, </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s0">} </span><span class="s3">&quot;</span>
+                <span class="s3">&quot;must be built (i.e. its variables must have been created). &quot;</span>
+                <span class="s3">&quot;You can build it via `optimizer.build(trainable_variables)`.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">finite </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">check_finite</span><span class="s2">(</span><span class="s1">grads</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cond</span><span class="s2">(</span>
+            <span class="s1">finite</span><span class="s2">,</span>
+            <span class="s0">lambda</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stateless_handle_finite_grads</span><span class="s2">(</span>
+                <span class="s1">optimizer_variables</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span>
+            <span class="s2">),</span>
+            <span class="s0">lambda</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stateless_handle_non_finite_grads</span><span class="s2">(</span>
+                <span class="s1">optimizer_variables</span><span class="s2">, </span><span class="s1">trainable_variables</span>
+            <span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_stateless_handle_finite_grads</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span>
+    <span class="s2">):</span>
+        <span class="s0">def </span><span class="s1">upscale</span><span class="s2">():</span>
+            <span class="s1">mapping </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">))</span>
+            <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">StatelessScope</span><span class="s2">(</span><span class="s1">state_mapping</span><span class="s2">=</span><span class="s1">mapping</span><span class="s2">) </span><span class="s0">as </span><span class="s1">scope</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale </span><span class="s2">* </span><span class="s5">2.0</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s2">[</span><span class="s1">scope</span><span class="s2">.</span><span class="s1">get_current_value</span><span class="s2">(</span><span class="s1">v</span><span class="s2">) </span><span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variables</span><span class="s2">]</span>
+
+        <span class="s0">def </span><span class="s1">increment</span><span class="s2">():</span>
+            <span class="s1">mapping </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">))</span>
+            <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">StatelessScope</span><span class="s2">(</span><span class="s1">state_mapping</span><span class="s2">=</span><span class="s1">mapping</span><span class="s2">) </span><span class="s0">as </span><span class="s1">scope</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span><span class="s5">1</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s2">[</span><span class="s1">scope</span><span class="s2">.</span><span class="s1">get_current_value</span><span class="s2">(</span><span class="s1">v</span><span class="s2">) </span><span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variables</span><span class="s2">]</span>
+
+        <span class="s1">mapping </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">))</span>
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">StatelessScope</span><span class="s2">(</span><span class="s1">state_mapping</span><span class="s2">=</span><span class="s1">mapping</span><span class="s2">):</span>
+            <span class="s6"># Potentially upscale loss and reset counter.</span>
+            <span class="s1">own_variables </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cond</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_growth_steps </span><span class="s2">- </span><span class="s5">1</span><span class="s2">),</span>
+                <span class="s1">upscale</span><span class="s2">,</span>
+                <span class="s1">increment</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+            <span class="s6"># Unscale gradients.</span>
+            <span class="s1">scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale</span>
+            <span class="s1">unscaled_grads </span><span class="s2">= [</span>
+                <span class="s1">g </span><span class="s0">if </span><span class="s1">g </span><span class="s0">is None else </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide</span><span class="s2">(</span><span class="s1">g</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">) </span><span class="s0">for </span><span class="s1">g </span><span class="s0">in </span><span class="s1">grads</span>
+            <span class="s2">]</span>
+            <span class="s2">(</span>
+                <span class="s1">new_trainable_variables</span><span class="s2">,</span>
+                <span class="s1">new_inner_variables</span><span class="s2">,</span>
+            <span class="s2">) = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">stateless_apply</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">,</span>
+                <span class="s1">unscaled_grads</span><span class="s2">,</span>
+                <span class="s1">trainable_variables</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s1">new_optimizer_variables </span><span class="s2">= </span><span class="s1">own_variables </span><span class="s2">+ </span><span class="s1">new_inner_variables</span>
+        <span class="s0">return </span><span class="s1">new_trainable_variables</span><span class="s2">, </span><span class="s1">new_optimizer_variables</span>
+
+    <span class="s0">def </span><span class="s1">_stateless_handle_non_finite_grads</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">, </span><span class="s1">trainable_variables</span>
+    <span class="s2">):</span>
+        <span class="s1">mapping </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">, </span><span class="s1">optimizer_variables</span><span class="s2">))</span>
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">StatelessScope</span><span class="s2">(</span><span class="s1">state_mapping</span><span class="s2">=</span><span class="s1">mapping</span><span class="s2">) </span><span class="s0">as </span><span class="s1">scope</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale </span><span class="s2">/ </span><span class="s5">2.0</span><span class="s2">)</span>
+        <span class="s1">new_optimizer_variables </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">:</span>
+            <span class="s1">new_optimizer_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">scope</span><span class="s2">.</span><span class="s1">get_current_value</span><span class="s2">(</span><span class="s1">v</span><span class="s2">))</span>
+        <span class="s0">return </span><span class="s1">trainable_variables</span><span class="s2">, </span><span class="s1">new_optimizer_variables</span>
+
+    <span class="s0">def </span><span class="s1">apply</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s6"># Optionally build optimizer.</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s2">, </span><span class="s1">caller</span><span class="s2">=</span><span class="s1">self</span><span class="s2">):</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">trainable_variables</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() == </span><span class="s3">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_tf_apply</span><span class="s2">(</span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_common_apply</span><span class="s2">(</span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_stateful_handle_finite_grads</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">):</span>
+        <span class="s1">scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale</span>
+        <span class="s6"># Unscale gradients.</span>
+        <span class="s1">unscaled_grads </span><span class="s2">= [</span>
+            <span class="s1">g </span><span class="s0">if </span><span class="s1">g </span><span class="s0">is None else </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide</span><span class="s2">(</span><span class="s1">g</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">) </span><span class="s0">for </span><span class="s1">g </span><span class="s0">in </span><span class="s1">grads</span>
+        <span class="s2">]</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">apply</span><span class="s2">(</span>
+            <span class="s1">unscaled_grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">=</span><span class="s1">trainable_variables</span>
+        <span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">upscale</span><span class="s2">():</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale </span><span class="s2">* </span><span class="s5">2.0</span><span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">increment</span><span class="s2">():</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span><span class="s5">1</span><span class="s2">)</span>
+
+        <span class="s6"># Potentially upscale loss and reset counter.</span>
+        <span class="s1">ops</span><span class="s2">.</span><span class="s1">cond</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_growth_steps </span><span class="s2">- </span><span class="s5">1</span><span class="s2">),</span>
+            <span class="s1">upscale</span><span class="s2">,</span>
+            <span class="s1">increment</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_stateful_handle_non_finite_grads</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s6"># If any inf or nan in grads, downscale loss and reset counter.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">step_counter</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale </span><span class="s2">/ </span><span class="s5">2.0</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_common_apply</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">finite </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">check_finite</span><span class="s2">(</span><span class="s1">grads</span><span class="s2">)</span>
+        <span class="s1">ops</span><span class="s2">.</span><span class="s1">cond</span><span class="s2">(</span>
+            <span class="s1">finite</span><span class="s2">,</span>
+            <span class="s0">lambda</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stateful_handle_finite_grads</span><span class="s2">(</span>
+                <span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span>
+            <span class="s2">),</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_stateful_handle_non_finite_grads</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_tf_apply</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Tensorflow specific logic for apply, which handles distribution.&quot;&quot;&quot;</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+        <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">distribute</span><span class="s2">.</span><span class="s1">in_cross_replica_context</span><span class="s2">():</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">&quot;apply() must be called in a replica context.&quot;</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">__internal__</span><span class="s2">.</span><span class="s1">distribute</span><span class="s2">.</span><span class="s1">strategy_supports_no_merge_call</span><span class="s2">():</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_common_apply</span><span class="s2">(</span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">=</span><span class="s1">trainable_variables</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+
+            <span class="s0">def </span><span class="s1">_handle_cross_replica</span><span class="s2">(</span><span class="s1">distribution</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">):</span>
+                <span class="s1">finite_per_replica </span><span class="s2">= (</span>
+                    <span class="s1">distribution</span><span class="s2">.</span><span class="s1">extended</span><span class="s2">.</span><span class="s1">call_for_each_replica</span><span class="s2">(</span>
+                        <span class="s1">self</span><span class="s2">.</span><span class="s1">check_finite</span><span class="s2">, </span><span class="s1">args</span><span class="s2">=(</span><span class="s1">grads</span><span class="s2">,)</span>
+                    <span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s6"># Each replica computed the same `finite` value, since</span>
+                <span class="s6"># `grads` is all-reduced across replicas. Arbitrarily take</span>
+                <span class="s6"># `finite` from the first replica.</span>
+                <span class="s1">finite </span><span class="s2">= </span><span class="s1">distribution</span><span class="s2">.</span><span class="s1">experimental_local_results</span><span class="s2">(</span>
+                    <span class="s1">finite_per_replica</span>
+                <span class="s2">)[</span><span class="s5">0</span><span class="s2">]</span>
+
+                <span class="s0">def </span><span class="s1">apply_fn</span><span class="s2">():</span>
+                    <span class="s1">distribution</span><span class="s2">.</span><span class="s1">extended</span><span class="s2">.</span><span class="s1">call_for_each_replica</span><span class="s2">(</span>
+                        <span class="s1">self</span><span class="s2">.</span><span class="s1">_stateful_handle_finite_grads</span><span class="s2">,</span>
+                        <span class="s1">args</span><span class="s2">=(</span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">),</span>
+                    <span class="s2">)</span>
+
+                <span class="s6"># Note: We must call this cond() in a cross-replica context.</span>
+                <span class="s6"># DistributionStrategy does not support having a cond in a</span>
+                <span class="s6"># replica context with a branch that calls `merge_call`, and</span>
+                <span class="s6"># self._optimizer.apply_gradients calls `merge_call`.</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">cond</span><span class="s2">(</span>
+                    <span class="s1">finite</span><span class="s2">, </span><span class="s1">apply_fn</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stateful_handle_non_finite_grads</span>
+                <span class="s2">)</span>
+
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">distribute</span><span class="s2">.</span><span class="s1">get_replica_context</span><span class="s2">().</span><span class="s1">merge_call</span><span class="s2">(</span>
+                <span class="s1">_handle_cross_replica</span><span class="s2">, </span><span class="s1">args</span><span class="s2">=(</span><span class="s1">grads</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">)</span>
+            <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">check_finite</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">grads</span><span class="s2">):</span>
+        <span class="s1">tensor_grads </span><span class="s2">= [</span><span class="s1">g </span><span class="s0">for </span><span class="s1">g </span><span class="s0">in </span><span class="s1">grads </span><span class="s0">if </span><span class="s1">g </span><span class="s0">is not None</span><span class="s2">]</span>
+        <span class="s1">finite_grads </span><span class="s2">= [</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">all</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">isfinite</span><span class="s2">(</span><span class="s1">g</span><span class="s2">)) </span><span class="s0">for </span><span class="s1">g </span><span class="s0">in </span><span class="s1">tensor_grads</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">all</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">finite_grads</span><span class="s2">))</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">learning_rate</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">learning_rate</span>
+
+    <span class="s2">@</span><span class="s1">learning_rate</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">learning_rate</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">learning_rate</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">learning_rate </span><span class="s2">= </span><span class="s1">learning_rate</span>
+
+    <span class="s0">def </span><span class="s1">scale_loss</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">loss</span><span class="s2">):</span>
+        <span class="s1">scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_scale </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s0">else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">initial_scale</span>
+        <span class="s0">return </span><span class="s1">loss </span><span class="s2">* </span><span class="s1">scale</span>
+
+    <span class="s0">def </span><span class="s1">finalize_variable_values</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">var_list</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span><span class="s2">.</span><span class="s1">finalize_variable_values</span><span class="s2">(</span><span class="s1">var_list</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s1">inner_optimizer_config </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">inner_optimizer</span>
+        <span class="s2">)</span>
+        <span class="s1">config</span><span class="s2">.</span><span class="s1">update</span><span class="s2">(</span>
+            <span class="s2">{</span>
+                <span class="s3">&quot;inner_optimizer&quot;</span><span class="s2">: </span><span class="s1">inner_optimizer_config</span><span class="s2">,</span>
+                <span class="s3">&quot;initial_scale&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">initial_scale</span><span class="s2">,</span>
+                <span class="s3">&quot;dynamic_growth_steps&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dynamic_growth_steps</span><span class="s2">,</span>
+            <span class="s2">}</span>
+        <span class="s2">)</span>
+        <span class="s0">del </span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;learning_rate&quot;</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s1">config</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">inner_optimizer </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+            <span class="s1">config</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;inner_optimizer&quot;</span><span class="s2">),</span>
+            <span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(</span><span class="s1">inner_optimizer</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">)</span>
+
+
+<span class="s1">LossScaleOptimizer</span><span class="s2">.</span><span class="s1">__doc__ </span><span class="s2">= </span><span class="s1">LossScaleOptimizer</span><span class="s2">.</span><span class="s1">__doc__</span><span class="s2">.</span><span class="s1">replace</span><span class="s2">(</span>
+    <span class="s3">&quot;{{base_optimizer_keyword_args}}&quot;</span><span class="s2">, </span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">base_optimizer_keyword_args</span>
+<span class="s2">)</span>
+</pre>
+</body>
+</html>

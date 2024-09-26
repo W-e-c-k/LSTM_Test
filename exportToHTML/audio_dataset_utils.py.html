@@ -1,0 +1,476 @@
+<html>
+<head>
+<title>audio_dataset_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #2aacb8;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+audio_dataset_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">dataset_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow_io </span><span class="s0">as </span><span class="s1">tfio</span>
+
+<span class="s1">ALLOWED_FORMATS </span><span class="s2">= (</span><span class="s3">&quot;.wav&quot;</span><span class="s2">,)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.utils.audio_dataset_from_directory&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">audio_dataset_from_directory</span><span class="s2">(</span>
+    <span class="s1">directory</span><span class="s2">,</span>
+    <span class="s1">labels</span><span class="s2">=</span><span class="s3">&quot;inferred&quot;</span><span class="s2">,</span>
+    <span class="s1">label_mode</span><span class="s2">=</span><span class="s3">&quot;int&quot;</span><span class="s2">,</span>
+    <span class="s1">class_names</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">batch_size</span><span class="s2">=</span><span class="s4">32</span><span class="s2">,</span>
+    <span class="s1">sampling_rate</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">ragged</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">validation_split</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">subset</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">follow_links</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">verbose</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Generates a `tf.data.Dataset` from audio files in a directory. 
+ 
+    If your directory structure is: 
+ 
+    ``` 
+    main_directory/ 
+    ...class_a/ 
+    ......a_audio_1.wav 
+    ......a_audio_2.wav 
+    ...class_b/ 
+    ......b_audio_1.wav 
+    ......b_audio_2.wav 
+    ``` 
+ 
+    Then calling `audio_dataset_from_directory(main_directory, 
+    labels='inferred')` 
+    will return a `tf.data.Dataset` that yields batches of audio files from 
+    the subdirectories `class_a` and `class_b`, together with labels 
+    0 and 1 (0 corresponding to `class_a` and 1 corresponding to `class_b`). 
+ 
+    Only `.wav` files are supported at this time. 
+ 
+    Args: 
+        directory: Directory where the data is located. 
+            If `labels` is `&quot;inferred&quot;`, it should contain subdirectories, 
+            each containing audio files for a class. Otherwise, the directory 
+            structure is ignored. 
+        labels: Either &quot;inferred&quot; (labels are generated from the directory 
+            structure), `None` (no labels), or a list/tuple of integer labels 
+            of the same size as the number of audio files found in 
+            the directory. Labels should be sorted according to the 
+            alphanumeric order of the audio file paths 
+            (obtained via `os.walk(directory)` in Python). 
+        label_mode: String describing the encoding of `labels`. Options are: 
+            - `&quot;int&quot;`: means that the labels are encoded as integers (e.g. for 
+              `sparse_categorical_crossentropy` loss). 
+            - `&quot;categorical&quot;` means that the labels are encoded as a categorical 
+              vector (e.g. for `categorical_crossentropy` loss) 
+            - `&quot;binary&quot;` means that the labels (there can be only 2) 
+              are encoded as `float32` scalars with values 0 
+              or 1 (e.g. for `binary_crossentropy`). 
+            - `None` (no labels). 
+        class_names: Only valid if &quot;labels&quot; is `&quot;inferred&quot;`. 
+            This is the explicit list of class names 
+            (must match names of subdirectories). Used to control the order 
+            of the classes (otherwise alphanumerical order is used). 
+        batch_size: Size of the batches of data. Default: 32. If `None`, 
+            the data will not be batched 
+            (the dataset will yield individual samples). 
+        sampling_rate: Audio sampling rate (in samples per second). 
+        output_sequence_length: Maximum length of an audio sequence. Audio files 
+            longer than this will be truncated to `output_sequence_length`. 
+            If set to `None`, then all sequences in the same batch will 
+            be padded to the 
+            length of the longest sequence in the batch. 
+        ragged: Whether to return a Ragged dataset (where each sequence has its 
+            own length). Defaults to `False`. 
+        shuffle: Whether to shuffle the data. 
+            If set to `False`, sorts the data in alphanumeric order. 
+            Defaults to `True`. 
+        seed: Optional random seed for shuffling and transformations. 
+        validation_split: Optional float between 0 and 1, fraction of data to 
+            reserve for validation. 
+        subset: Subset of the data to return. One of `&quot;training&quot;`, 
+            `&quot;validation&quot;` or `&quot;both&quot;`. Only used if `validation_split` is set. 
+        follow_links: Whether to visits subdirectories pointed to by symlinks. 
+            Defaults to `False`. 
+        verbose: Whether to display number information on classes and 
+            number of files found. Defaults to `True`. 
+ 
+    Returns: 
+ 
+    A `tf.data.Dataset` object. 
+ 
+    - If `label_mode` is `None`, it yields `string` tensors of shape 
+      `(batch_size,)`, containing the contents of a batch of audio files. 
+    - Otherwise, it yields a tuple `(audio, labels)`, where `audio` 
+      has shape `(batch_size, sequence_length, num_channels)` and `labels` 
+      follows the format described 
+      below. 
+ 
+    Rules regarding labels format: 
+ 
+    - if `label_mode` is `int`, the labels are an `int32` tensor of shape 
+      `(batch_size,)`. 
+    - if `label_mode` is `binary`, the labels are a `float32` tensor of 
+      1s and 0s of shape `(batch_size, 1)`. 
+    - if `label_mode` is `categorical`, the labels are a `float32` tensor 
+      of shape `(batch_size, num_classes)`, representing a one-hot 
+      encoding of the class index. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">labels </span><span class="s0">not in </span><span class="s2">(</span><span class="s3">&quot;inferred&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;The `labels` argument should be a list/tuple of integer &quot;</span>
+                <span class="s3">&quot;labels, of the same size as the number of audio files in &quot;</span>
+                <span class="s3">&quot;the target directory. If you wish to infer the labels from &quot;</span>
+                <span class="s3">&quot;the subdirectory names in the target directory,&quot;</span>
+                <span class="s3">' pass `labels=&quot;inferred&quot;`. '</span>
+                <span class="s3">&quot;If you wish to get a dataset that only contains audio samples &quot;</span>
+                <span class="s3">f&quot;(no labels), pass `labels=None`. Received: labels=</span><span class="s0">{</span><span class="s1">labels</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">class_names</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;You can only pass `class_names` if &quot;</span>
+                <span class="s3">f'`labels=&quot;inferred&quot;`. Received: labels=</span><span class="s0">{</span><span class="s1">labels</span><span class="s0">}</span><span class="s3">, and '</span>
+                <span class="s3">f&quot;class_names=</span><span class="s0">{</span><span class="s1">class_names</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">label_mode </span><span class="s0">not in </span><span class="s2">{</span><span class="s3">&quot;int&quot;</span><span class="s2">, </span><span class="s3">&quot;categorical&quot;</span><span class="s2">, </span><span class="s3">&quot;binary&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">}:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">'`label_mode` argument must be one of &quot;int&quot;, &quot;categorical&quot;, '</span>
+            <span class="s3">'&quot;binary&quot;, '</span>
+            <span class="s3">f&quot;or None. Received: label_mode=</span><span class="s0">{</span><span class="s1">label_mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">ragged </span><span class="s0">and </span><span class="s1">output_sequence_length </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Cannot set both `ragged` and `output_sequence_length`&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">sampling_rate </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">sampling_rate</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`sampling_rate` should have an integer value. &quot;</span>
+                <span class="s3">f&quot;Received: sampling_rate=</span><span class="s0">{</span><span class="s1">sampling_rate</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">sampling_rate </span><span class="s2">&lt;= </span><span class="s4">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`sampling_rate` should be higher than 0. &quot;</span>
+                <span class="s3">f&quot;Received: sampling_rate=</span><span class="s0">{</span><span class="s1">sampling_rate</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if not </span><span class="s1">tfio</span><span class="s2">.</span><span class="s1">available</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ImportError</span><span class="s2">(</span>
+                <span class="s3">&quot;To use the argument `sampling_rate`, you should install &quot;</span>
+                <span class="s3">&quot;tensorflow_io. You can install it via `pip install &quot;</span>
+                <span class="s3">&quot;tensorflow-io`.&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">labels </span><span class="s0">is None or </span><span class="s1">label_mode </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">labels </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">label_mode </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s1">dataset_utils</span><span class="s2">.</span><span class="s1">check_validation_split_arg</span><span class="s2">(</span>
+        <span class="s1">validation_split</span><span class="s2">, </span><span class="s1">subset</span><span class="s2">, </span><span class="s1">shuffle</span><span class="s2">, </span><span class="s1">seed</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">seed </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">seed </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">randint</span><span class="s2">(</span><span class="s4">1e6</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">batch_size </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">shuffle_buffer_size </span><span class="s2">= </span><span class="s1">batch_size </span><span class="s2">* </span><span class="s4">8</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">shuffle_buffer_size </span><span class="s2">= </span><span class="s4">1024</span>
+
+    <span class="s1">file_paths</span><span class="s2">, </span><span class="s1">labels</span><span class="s2">, </span><span class="s1">class_names </span><span class="s2">= </span><span class="s1">dataset_utils</span><span class="s2">.</span><span class="s1">index_directory</span><span class="s2">(</span>
+        <span class="s1">directory</span><span class="s2">,</span>
+        <span class="s1">labels</span><span class="s2">,</span>
+        <span class="s1">formats</span><span class="s2">=</span><span class="s1">ALLOWED_FORMATS</span><span class="s2">,</span>
+        <span class="s1">class_names</span><span class="s2">=</span><span class="s1">class_names</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s1">shuffle</span><span class="s2">,</span>
+        <span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">,</span>
+        <span class="s1">follow_links</span><span class="s2">=</span><span class="s1">follow_links</span><span class="s2">,</span>
+        <span class="s1">verbose</span><span class="s2">=</span><span class="s1">verbose</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">label_mode </span><span class="s2">== </span><span class="s3">&quot;binary&quot; </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">) != </span><span class="s4">2</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">'When passing `label_mode=&quot;binary&quot;`, there must be exactly 2 '</span>
+            <span class="s3">f&quot;class_names. Received: class_names=</span><span class="s0">{</span><span class="s1">class_names</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">subset </span><span class="s2">== </span><span class="s3">&quot;both&quot;</span><span class="s2">:</span>
+        <span class="s1">train_dataset</span><span class="s2">, </span><span class="s1">val_dataset </span><span class="s2">= </span><span class="s1">get_training_and_validation_dataset</span><span class="s2">(</span>
+            <span class="s1">file_paths</span><span class="s2">=</span><span class="s1">file_paths</span><span class="s2">,</span>
+            <span class="s1">labels</span><span class="s2">=</span><span class="s1">labels</span><span class="s2">,</span>
+            <span class="s1">validation_split</span><span class="s2">=</span><span class="s1">validation_split</span><span class="s2">,</span>
+            <span class="s1">directory</span><span class="s2">=</span><span class="s1">directory</span><span class="s2">,</span>
+            <span class="s1">label_mode</span><span class="s2">=</span><span class="s1">label_mode</span><span class="s2">,</span>
+            <span class="s1">class_names</span><span class="s2">=</span><span class="s1">class_names</span><span class="s2">,</span>
+            <span class="s1">sampling_rate</span><span class="s2">=</span><span class="s1">sampling_rate</span><span class="s2">,</span>
+            <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+            <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+            <span class="s1">shuffle</span><span class="s2">=</span><span class="s1">shuffle</span><span class="s2">,</span>
+            <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s1">shuffle_buffer_size</span><span class="s2">,</span>
+            <span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">train_dataset </span><span class="s2">= </span><span class="s1">prepare_dataset</span><span class="s2">(</span>
+            <span class="s1">dataset</span><span class="s2">=</span><span class="s1">train_dataset</span><span class="s2">,</span>
+            <span class="s1">batch_size</span><span class="s2">=</span><span class="s1">batch_size</span><span class="s2">,</span>
+            <span class="s1">class_names</span><span class="s2">=</span><span class="s1">class_names</span><span class="s2">,</span>
+            <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+            <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">val_dataset </span><span class="s2">= </span><span class="s1">prepare_dataset</span><span class="s2">(</span>
+            <span class="s1">dataset</span><span class="s2">=</span><span class="s1">val_dataset</span><span class="s2">,</span>
+            <span class="s1">batch_size</span><span class="s2">=</span><span class="s1">batch_size</span><span class="s2">,</span>
+            <span class="s1">class_names</span><span class="s2">=</span><span class="s1">class_names</span><span class="s2">,</span>
+            <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+            <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">train_dataset</span><span class="s2">, </span><span class="s1">val_dataset</span>
+
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">dataset </span><span class="s2">= </span><span class="s1">get_dataset</span><span class="s2">(</span>
+            <span class="s1">file_paths</span><span class="s2">=</span><span class="s1">file_paths</span><span class="s2">,</span>
+            <span class="s1">labels</span><span class="s2">=</span><span class="s1">labels</span><span class="s2">,</span>
+            <span class="s1">directory</span><span class="s2">=</span><span class="s1">directory</span><span class="s2">,</span>
+            <span class="s1">validation_split</span><span class="s2">=</span><span class="s1">validation_split</span><span class="s2">,</span>
+            <span class="s1">subset</span><span class="s2">=</span><span class="s1">subset</span><span class="s2">,</span>
+            <span class="s1">label_mode</span><span class="s2">=</span><span class="s1">label_mode</span><span class="s2">,</span>
+            <span class="s1">class_names</span><span class="s2">=</span><span class="s1">class_names</span><span class="s2">,</span>
+            <span class="s1">sampling_rate</span><span class="s2">=</span><span class="s1">sampling_rate</span><span class="s2">,</span>
+            <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+            <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+            <span class="s1">shuffle</span><span class="s2">=</span><span class="s1">shuffle</span><span class="s2">,</span>
+            <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s1">shuffle_buffer_size</span><span class="s2">,</span>
+            <span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">dataset </span><span class="s2">= </span><span class="s1">prepare_dataset</span><span class="s2">(</span>
+            <span class="s1">dataset</span><span class="s2">=</span><span class="s1">dataset</span><span class="s2">,</span>
+            <span class="s1">batch_size</span><span class="s2">=</span><span class="s1">batch_size</span><span class="s2">,</span>
+            <span class="s1">class_names</span><span class="s2">=</span><span class="s1">class_names</span><span class="s2">,</span>
+            <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+            <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">dataset</span>
+
+
+<span class="s0">def </span><span class="s1">prepare_dataset</span><span class="s2">(</span>
+    <span class="s1">dataset</span><span class="s2">,</span>
+    <span class="s1">batch_size</span><span class="s2">,</span>
+    <span class="s1">class_names</span><span class="s2">,</span>
+    <span class="s1">output_sequence_length</span><span class="s2">,</span>
+    <span class="s1">ragged</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">prefetch</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">batch_size </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">output_sequence_length </span><span class="s0">is None and not </span><span class="s1">ragged</span><span class="s2">:</span>
+            <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">padded_batch</span><span class="s2">(</span>
+                <span class="s1">batch_size</span><span class="s2">, </span><span class="s1">padded_shapes</span><span class="s2">=([</span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">], [])</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">batch</span><span class="s2">(</span><span class="s1">batch_size</span><span class="s2">)</span>
+
+    <span class="s6"># Users may need to reference `class_names`.</span>
+    <span class="s1">dataset</span><span class="s2">.</span><span class="s1">class_names </span><span class="s2">= </span><span class="s1">class_names</span>
+    <span class="s0">return </span><span class="s1">dataset</span>
+
+
+<span class="s0">def </span><span class="s1">get_training_and_validation_dataset</span><span class="s2">(</span>
+    <span class="s1">file_paths</span><span class="s2">,</span>
+    <span class="s1">labels</span><span class="s2">,</span>
+    <span class="s1">validation_split</span><span class="s2">,</span>
+    <span class="s1">directory</span><span class="s2">,</span>
+    <span class="s1">label_mode</span><span class="s2">,</span>
+    <span class="s1">class_names</span><span class="s2">,</span>
+    <span class="s1">sampling_rate</span><span class="s2">,</span>
+    <span class="s1">output_sequence_length</span><span class="s2">,</span>
+    <span class="s1">ragged</span><span class="s2">,</span>
+    <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s2">(</span>
+        <span class="s1">file_paths_train</span><span class="s2">,</span>
+        <span class="s1">labels_train</span><span class="s2">,</span>
+    <span class="s2">) = </span><span class="s1">dataset_utils</span><span class="s2">.</span><span class="s1">get_training_or_validation_split</span><span class="s2">(</span>
+        <span class="s1">file_paths</span><span class="s2">, </span><span class="s1">labels</span><span class="s2">, </span><span class="s1">validation_split</span><span class="s2">, </span><span class="s3">&quot;training&quot;</span>
+    <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">file_paths_train</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;No training audio files found in directory </span><span class="s0">{</span><span class="s1">directory</span><span class="s0">}</span><span class="s3">. &quot;</span>
+            <span class="s3">f&quot;Allowed format(s): </span><span class="s0">{</span><span class="s1">ALLOWED_FORMATS</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">file_paths_val</span><span class="s2">, </span><span class="s1">labels_val </span><span class="s2">= </span><span class="s1">dataset_utils</span><span class="s2">.</span><span class="s1">get_training_or_validation_split</span><span class="s2">(</span>
+        <span class="s1">file_paths</span><span class="s2">, </span><span class="s1">labels</span><span class="s2">, </span><span class="s1">validation_split</span><span class="s2">, </span><span class="s3">&quot;validation&quot;</span>
+    <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">file_paths_val</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;No validation audio files found in directory </span><span class="s0">{</span><span class="s1">directory</span><span class="s0">}</span><span class="s3">. &quot;</span>
+            <span class="s3">f&quot;Allowed format(s): </span><span class="s0">{</span><span class="s1">ALLOWED_FORMATS</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">train_dataset </span><span class="s2">= </span><span class="s1">paths_and_labels_to_dataset</span><span class="s2">(</span>
+        <span class="s1">file_paths</span><span class="s2">=</span><span class="s1">file_paths_train</span><span class="s2">,</span>
+        <span class="s1">labels</span><span class="s2">=</span><span class="s1">labels_train</span><span class="s2">,</span>
+        <span class="s1">label_mode</span><span class="s2">=</span><span class="s1">label_mode</span><span class="s2">,</span>
+        <span class="s1">num_classes</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">) </span><span class="s0">if </span><span class="s1">class_names </span><span class="s0">else </span><span class="s4">0</span><span class="s2">,</span>
+        <span class="s1">sampling_rate</span><span class="s2">=</span><span class="s1">sampling_rate</span><span class="s2">,</span>
+        <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+        <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s1">shuffle</span><span class="s2">,</span>
+        <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s1">shuffle_buffer_size</span><span class="s2">,</span>
+        <span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s1">val_dataset </span><span class="s2">= </span><span class="s1">paths_and_labels_to_dataset</span><span class="s2">(</span>
+        <span class="s1">file_paths</span><span class="s2">=</span><span class="s1">file_paths_val</span><span class="s2">,</span>
+        <span class="s1">labels</span><span class="s2">=</span><span class="s1">labels_val</span><span class="s2">,</span>
+        <span class="s1">label_mode</span><span class="s2">=</span><span class="s1">label_mode</span><span class="s2">,</span>
+        <span class="s1">num_classes</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">) </span><span class="s0">if </span><span class="s1">class_names </span><span class="s0">else </span><span class="s4">0</span><span class="s2">,</span>
+        <span class="s1">sampling_rate</span><span class="s2">=</span><span class="s1">sampling_rate</span><span class="s2">,</span>
+        <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+        <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">train_dataset</span><span class="s2">, </span><span class="s1">val_dataset</span>
+
+
+<span class="s0">def </span><span class="s1">get_dataset</span><span class="s2">(</span>
+    <span class="s1">file_paths</span><span class="s2">,</span>
+    <span class="s1">labels</span><span class="s2">,</span>
+    <span class="s1">directory</span><span class="s2">,</span>
+    <span class="s1">validation_split</span><span class="s2">,</span>
+    <span class="s1">subset</span><span class="s2">,</span>
+    <span class="s1">label_mode</span><span class="s2">,</span>
+    <span class="s1">class_names</span><span class="s2">,</span>
+    <span class="s1">sampling_rate</span><span class="s2">,</span>
+    <span class="s1">output_sequence_length</span><span class="s2">,</span>
+    <span class="s1">ragged</span><span class="s2">,</span>
+    <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">file_paths</span><span class="s2">, </span><span class="s1">labels </span><span class="s2">= </span><span class="s1">dataset_utils</span><span class="s2">.</span><span class="s1">get_training_or_validation_split</span><span class="s2">(</span>
+        <span class="s1">file_paths</span><span class="s2">, </span><span class="s1">labels</span><span class="s2">, </span><span class="s1">validation_split</span><span class="s2">, </span><span class="s1">subset</span>
+    <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">file_paths</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;No audio files found in directory </span><span class="s0">{</span><span class="s1">directory</span><span class="s0">}</span><span class="s3">. &quot;</span>
+            <span class="s3">f&quot;Allowed format(s): </span><span class="s0">{</span><span class="s1">ALLOWED_FORMATS</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">paths_and_labels_to_dataset</span><span class="s2">(</span>
+        <span class="s1">file_paths</span><span class="s2">=</span><span class="s1">file_paths</span><span class="s2">,</span>
+        <span class="s1">labels</span><span class="s2">=</span><span class="s1">labels</span><span class="s2">,</span>
+        <span class="s1">label_mode</span><span class="s2">=</span><span class="s1">label_mode</span><span class="s2">,</span>
+        <span class="s1">num_classes</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">) </span><span class="s0">if </span><span class="s1">class_names </span><span class="s0">else </span><span class="s4">0</span><span class="s2">,</span>
+        <span class="s1">sampling_rate</span><span class="s2">=</span><span class="s1">sampling_rate</span><span class="s2">,</span>
+        <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s1">output_sequence_length</span><span class="s2">,</span>
+        <span class="s1">ragged</span><span class="s2">=</span><span class="s1">ragged</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s1">shuffle</span><span class="s2">,</span>
+        <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s1">shuffle_buffer_size</span><span class="s2">,</span>
+        <span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">read_and_decode_audio</span><span class="s2">(</span>
+    <span class="s1">path</span><span class="s2">, </span><span class="s1">sampling_rate</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s0">None</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Reads and decodes audio file.&quot;&quot;&quot;</span>
+    <span class="s1">audio </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">read_file</span><span class="s2">(</span><span class="s1">path</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">output_sequence_length </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">output_sequence_length </span><span class="s2">= -</span><span class="s4">1</span>
+
+    <span class="s1">audio</span><span class="s2">, </span><span class="s1">default_audio_rate </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">audio</span><span class="s2">.</span><span class="s1">decode_wav</span><span class="s2">(</span>
+        <span class="s1">contents</span><span class="s2">=</span><span class="s1">audio</span><span class="s2">, </span><span class="s1">desired_samples</span><span class="s2">=</span><span class="s1">output_sequence_length</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">sampling_rate </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s6"># default_audio_rate should have dtype=int64</span>
+        <span class="s1">default_audio_rate </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">default_audio_rate</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">int64</span><span class="s2">)</span>
+        <span class="s1">audio </span><span class="s2">= </span><span class="s1">tfio</span><span class="s2">.</span><span class="s1">audio</span><span class="s2">.</span><span class="s1">resample</span><span class="s2">(</span>
+            <span class="s1">input</span><span class="s2">=</span><span class="s1">audio</span><span class="s2">, </span><span class="s1">rate_in</span><span class="s2">=</span><span class="s1">default_audio_rate</span><span class="s2">, </span><span class="s1">rate_out</span><span class="s2">=</span><span class="s1">sampling_rate</span>
+        <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">audio</span>
+
+
+<span class="s0">def </span><span class="s1">paths_and_labels_to_dataset</span><span class="s2">(</span>
+    <span class="s1">file_paths</span><span class="s2">,</span>
+    <span class="s1">labels</span><span class="s2">,</span>
+    <span class="s1">label_mode</span><span class="s2">,</span>
+    <span class="s1">num_classes</span><span class="s2">,</span>
+    <span class="s1">sampling_rate</span><span class="s2">,</span>
+    <span class="s1">output_sequence_length</span><span class="s2">,</span>
+    <span class="s1">ragged</span><span class="s2">,</span>
+    <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">shuffle_buffer_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Constructs a fixed-size dataset of audio and labels.&quot;&quot;&quot;</span>
+    <span class="s1">path_ds </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensor_slices</span><span class="s2">(</span><span class="s1">file_paths</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">label_mode</span><span class="s2">:</span>
+        <span class="s1">label_ds </span><span class="s2">= </span><span class="s1">dataset_utils</span><span class="s2">.</span><span class="s1">labels_to_dataset</span><span class="s2">(</span>
+            <span class="s1">labels</span><span class="s2">, </span><span class="s1">label_mode</span><span class="s2">, </span><span class="s1">num_classes</span>
+        <span class="s2">)</span>
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">zip</span><span class="s2">((</span><span class="s1">path_ds</span><span class="s2">, </span><span class="s1">label_ds</span><span class="s2">))</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">path_ds</span>
+
+    <span class="s0">if </span><span class="s1">shuffle</span><span class="s2">:</span>
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">buffer_size</span><span class="s2">=</span><span class="s1">shuffle_buffer_size </span><span class="s0">or </span><span class="s4">1024</span><span class="s2">, </span><span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">label_mode</span><span class="s2">:</span>
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+            <span class="s0">lambda </span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">: (</span>
+                <span class="s1">read_and_decode_audio</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">sampling_rate</span><span class="s2">, </span><span class="s1">output_sequence_length</span><span class="s2">),</span>
+                <span class="s1">y</span><span class="s2">,</span>
+            <span class="s2">),</span>
+            <span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">ragged</span><span class="s2">:</span>
+            <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+                <span class="s0">lambda </span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">: (</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">.</span><span class="s1">from_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">), </span><span class="s1">y</span><span class="s2">),</span>
+                <span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+            <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">read_and_decode_audio</span><span class="s2">(</span>
+                <span class="s1">x</span><span class="s2">, </span><span class="s1">sampling_rate</span><span class="s2">, </span><span class="s1">output_sequence_length</span>
+            <span class="s2">),</span>
+            <span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">ragged</span><span class="s2">:</span>
+            <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+                <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">.</span><span class="s1">from_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">),</span>
+                <span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">ds</span>
+</pre>
+</body>
+</html>

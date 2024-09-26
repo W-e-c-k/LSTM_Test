@@ -1,0 +1,430 @@
+<html>
+<head>
+<title>cloning.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cloning.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers </span><span class="s0">import </span><span class="s1">Input</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers </span><span class="s0">import </span><span class="s1">InputLayer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models</span><span class="s2">.</span><span class="s1">functional </span><span class="s0">import </span><span class="s1">Functional</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models</span><span class="s2">.</span><span class="s1">functional </span><span class="s0">import </span><span class="s1">functional_like_constructor</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models</span><span class="s2">.</span><span class="s1">sequential </span><span class="s0">import </span><span class="s1">Sequential</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.models.clone_model&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">clone_model</span><span class="s2">(</span>
+    <span class="s1">model</span><span class="s2">,</span>
+    <span class="s1">input_tensors</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">clone_function</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">call_function</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">recursive</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Clone a Functional or Sequential `Model` instance. 
+ 
+    Model cloning is similar to calling a model on new inputs, 
+    except that it creates new layers (and thus new weights) instead 
+    of sharing the weights of the existing layers. 
+ 
+    Note that 
+    `clone_model` will not preserve the uniqueness of shared objects within the 
+    model (e.g. a single variable attached to two distinct layers will be 
+    restored as two separate variables). 
+ 
+    Args: 
+        model: Instance of `Model` 
+            (could be a Functional model or a Sequential model). 
+        input_tensors: optional list of input tensors or InputLayer objects 
+            to build the model upon. If not provided, 
+            new `Input` objects will be created. 
+        clone_function: Callable with signature `fn(layer)` 
+            to be used to clone each layer in the target 
+            model (except `Input` instances). It takes as argument the 
+            layer instance to be cloned, and returns the corresponding layer 
+            instance to be used in the model copy. If unspecified, this callable 
+            defaults to the following serialization/deserialization function: 
+            `lambda layer: layer.__class__.from_config(layer.get_config())`. 
+            By passing a custom callable, you can customize your copy of the 
+            model, e.g. by wrapping certain layers of interest (you might want 
+            to replace all `LSTM` instances with equivalent 
+            `Bidirectional(LSTM(...))` instances, for example). 
+            Defaults to `None`. 
+        call_function: Callable with signature 
+            `fn(layer, *args, **kwargs)` to be used to call each 
+            cloned layer and a set of inputs. It takes the layer instance, 
+            the call arguments and keyword arguments, and returns the 
+            call outputs. If unspecified, this callable defaults to 
+            the regular `__call__()` method: 
+            `def fn(layer, *args, **kwargs): return layer(*args, **kwargs)`. 
+            By passing a custom callable, you can insert new layers before or 
+            after a given layer. Note: this argument can only be used with 
+            Functional models. 
+        recursive: Boolean. Whether to recursively clone any Sequential 
+            or Functional models encountered in the original 
+            Sequential/Functional model. If `False`, 
+            then inner models are cloned by calling `clone_function()`. 
+            If `True`, then inner models are cloned by calling `clone_model()` 
+            with the same `clone_function`, `call_function`, and `recursive` 
+            arguments. Note that in this case, `call_function` 
+            will not be propagated to any Sequential model 
+            (since it is not applicable to Sequential models). 
+ 
+    Returns: 
+        An instance of `Model` reproducing the behavior 
+        of the original model, on top of new inputs tensors, 
+        using newly instantiated weights. The cloned model may behave 
+        differently from the original model if a custom `clone_function` 
+        or `call_function` modifies a layer or layer call. 
+ 
+    Example: 
+ 
+    ```python 
+    # Create a test Sequential model. 
+    model = keras.Sequential([ 
+        keras.layers.Input(shape=(728,)), 
+        keras.layers.Dense(32, activation='relu'), 
+        keras.layers.Dense(1, activation='sigmoid'), 
+    ]) 
+    # Create a copy of the test model (with freshly initialized weights). 
+    new_model = clone_model(model) 
+    ``` 
+ 
+    Using a `clone_function` to make a model deterministic by setting the 
+    random seed everywhere: 
+ 
+    ```python 
+    def clone_function(layer): 
+        config = layer.get_config() 
+        if &quot;seed&quot; in config: 
+            config[&quot;seed&quot;] = 1337 
+        return layer.__class__.from_config(config) 
+ 
+    new_model = clone_model(model) 
+    ``` 
+ 
+    Using a `call_function` to add a `Dropout` layer after each `Dense` layer 
+    (without recreating new layers): 
+ 
+    ```python 
+    def call_function(layer, *args, **kwargs): 
+        out = layer(*args, **kwargs) 
+        if isinstance(layer, keras.layers.Dense): 
+            out = keras.layers.Dropout(0.5)(out) 
+        return out 
+ 
+    new_model = clone_model( 
+        model, 
+        clone_function=lambda x: x,  # Reuse the same layers. 
+        call_function=call_function, 
+    ) 
+    ``` 
+ 
+    Note that subclassed models cannot be cloned by default, 
+    since their internal layer structure is not known. 
+    To achieve equivalent functionality 
+    as `clone_model` in the case of a subclassed model, simply make sure 
+    that the model class implements `get_config()` 
+    (and optionally `from_config()`), and call: 
+ 
+    ```python 
+    new_model = model.__class__.from_config(model.get_config()) 
+    ``` 
+ 
+    In the case of a subclassed model, you cannot using a custom 
+    `clone_function`. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">cache </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;cache&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">kwargs</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;Unexpected keyword argument(s): </span><span class="s0">{</span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">Sequential</span><span class="s2">):</span>
+        <span class="s5"># Wrap clone_function to handle recursiveness and layer sharing.</span>
+        <span class="s1">clone_function </span><span class="s2">= </span><span class="s1">_wrap_clone_function</span><span class="s2">(</span>
+            <span class="s1">clone_function</span><span class="s2">,</span>
+            <span class="s1">call_function</span><span class="s2">=</span><span class="s1">call_function</span><span class="s2">,</span>
+            <span class="s1">recursive</span><span class="s2">=</span><span class="s1">recursive</span><span class="s2">,</span>
+            <span class="s1">cache</span><span class="s2">=</span><span class="s1">cache</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">call_function </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`call_function` argument is not supported with Sequential &quot;</span>
+                <span class="s3">&quot;models.  In a Sequential model, layers aren't called &quot;</span>
+                <span class="s3">&quot;at model-construction time (they're merely listed). &quot;</span>
+                <span class="s3">&quot;Use `call_function` with Functional models only. &quot;</span>
+                <span class="s3">&quot;Received model of &quot;</span>
+                <span class="s3">f&quot;type '</span><span class="s0">{</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s0">}</span><span class="s3">', with &quot;</span>
+                <span class="s3">f&quot;call_function=</span><span class="s0">{</span><span class="s1">clone_function</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">_clone_sequential_model</span><span class="s2">(</span>
+            <span class="s1">model</span><span class="s2">,</span>
+            <span class="s1">clone_function</span><span class="s2">=</span><span class="s1">clone_function</span><span class="s2">,</span>
+            <span class="s1">input_tensors</span><span class="s2">=</span><span class="s1">input_tensors</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">Functional</span><span class="s2">):</span>
+        <span class="s5"># Wrap clone_function to handle recursiveness and layer sharing.</span>
+        <span class="s1">clone_function </span><span class="s2">= </span><span class="s1">_wrap_clone_function</span><span class="s2">(</span>
+            <span class="s1">clone_function</span><span class="s2">,</span>
+            <span class="s1">call_function</span><span class="s2">=</span><span class="s1">call_function</span><span class="s2">,</span>
+            <span class="s1">recursive</span><span class="s2">=</span><span class="s1">recursive</span><span class="s2">,</span>
+            <span class="s1">cache</span><span class="s2">=</span><span class="s1">cache</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s5"># If the get_config() method is the same as a regular Functional</span>
+        <span class="s5"># model, we're safe to use _clone_functional_model (which relies</span>
+        <span class="s5"># on a Functional constructor). In the case where the get_config</span>
+        <span class="s5"># is custom, this may not necessarily work, but if clone_function</span>
+        <span class="s5"># or input_tensors are passed, we attempt it anyway</span>
+        <span class="s5"># in order to preserve backwards compatibility.</span>
+        <span class="s0">if </span><span class="s1">utils</span><span class="s2">.</span><span class="s1">is_default</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">get_config</span><span class="s2">) </span><span class="s0">or </span><span class="s2">(</span>
+            <span class="s1">clone_function </span><span class="s0">or </span><span class="s1">input_tensors</span>
+        <span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">_clone_functional_model</span><span class="s2">(</span>
+                <span class="s1">model</span><span class="s2">,</span>
+                <span class="s1">clone_function</span><span class="s2">=</span><span class="s1">clone_function</span><span class="s2">,</span>
+                <span class="s1">call_function</span><span class="s2">=</span><span class="s1">call_function</span><span class="s2">,</span>
+                <span class="s1">input_tensors</span><span class="s2">=</span><span class="s1">input_tensors</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+    <span class="s5"># Case of a custom model class</span>
+    <span class="s0">if </span><span class="s1">clone_function </span><span class="s0">or </span><span class="s1">input_tensors</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Arguments `clone_function` and `input_tensors` &quot;</span>
+            <span class="s3">&quot;are only supported for Sequential models &quot;</span>
+            <span class="s3">&quot;or Functional models. Received model of &quot;</span>
+            <span class="s3">f&quot;type '</span><span class="s0">{</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s0">}</span><span class="s3">', with &quot;</span>
+            <span class="s3">f&quot;clone_function=</span><span class="s0">{</span><span class="s1">clone_function</span><span class="s0">} </span><span class="s3">and &quot;</span>
+            <span class="s3">f&quot;input_tensors=</span><span class="s0">{</span><span class="s1">input_tensors</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">call_function </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Argument `call_function` is only supported &quot;</span>
+            <span class="s3">&quot;for Functional models. Received model of &quot;</span>
+            <span class="s3">f&quot;type '</span><span class="s0">{</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s0">}</span><span class="s3">', with &quot;</span>
+            <span class="s3">f&quot;call_function=</span><span class="s0">{</span><span class="s1">clone_function</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s1">config </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">model</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+        <span class="s1">config</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">={</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">: </span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">}</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_wrap_clone_function</span><span class="s2">(</span>
+    <span class="s1">clone_function</span><span class="s2">, </span><span class="s1">call_function</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">recursive</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, </span><span class="s1">cache</span><span class="s2">=</span><span class="s0">None</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Wrapper to handle recursiveness and layer sharing.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">clone_function </span><span class="s0">is None</span><span class="s2">:</span>
+
+        <span class="s0">def </span><span class="s1">_clone_layer</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">get_config</span><span class="s2">())</span>
+
+        <span class="s1">clone_function </span><span class="s2">= </span><span class="s1">_clone_layer</span>
+
+    <span class="s0">if </span><span class="s1">cache </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">cache </span><span class="s2">= {}</span>
+
+    <span class="s0">def </span><span class="s1">wrapped_clone_function</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">id</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">) </span><span class="s0">in </span><span class="s1">cache</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">cache</span><span class="s2">[</span><span class="s1">id</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)]</span>
+        <span class="s0">if </span><span class="s1">recursive</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">Sequential</span><span class="s2">):</span>
+                <span class="s5"># Note: Sequential doens't support call_function.</span>
+                <span class="s1">clone </span><span class="s2">= </span><span class="s1">clone_model</span><span class="s2">(</span>
+                    <span class="s1">layer</span><span class="s2">,</span>
+                    <span class="s1">clone_function</span><span class="s2">=</span><span class="s1">clone_function</span><span class="s2">,</span>
+                    <span class="s1">cache</span><span class="s2">=</span><span class="s1">cache</span><span class="s2">,</span>
+                <span class="s2">)</span>
+                <span class="s1">cache</span><span class="s2">[</span><span class="s1">id</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)] = </span><span class="s1">clone</span>
+                <span class="s0">return </span><span class="s1">clone</span>
+            <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">Functional</span><span class="s2">):</span>
+                <span class="s1">clone </span><span class="s2">= </span><span class="s1">clone_model</span><span class="s2">(</span>
+                    <span class="s1">layer</span><span class="s2">,</span>
+                    <span class="s1">clone_function</span><span class="s2">=</span><span class="s1">clone_function</span><span class="s2">,</span>
+                    <span class="s1">call_function</span><span class="s2">=</span><span class="s1">call_function</span><span class="s2">,</span>
+                    <span class="s1">cache</span><span class="s2">=</span><span class="s1">cache</span><span class="s2">,</span>
+                <span class="s2">)</span>
+                <span class="s1">cache</span><span class="s2">[</span><span class="s1">id</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)] = </span><span class="s1">clone</span>
+                <span class="s0">return </span><span class="s1">clone</span>
+        <span class="s1">clone </span><span class="s2">= </span><span class="s1">clone_function</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s1">cache</span><span class="s2">[</span><span class="s1">id</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)] = </span><span class="s1">clone</span>
+        <span class="s0">return </span><span class="s1">clone</span>
+
+    <span class="s0">return </span><span class="s1">wrapped_clone_function</span>
+
+
+<span class="s0">def </span><span class="s1">_clone_sequential_model</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">clone_function</span><span class="s2">, </span><span class="s1">input_tensors</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Clone a `Sequential` model instance. 
+ 
+    Model cloning is similar to calling a model on new inputs, 
+    except that it creates new layers (and thus new weights) instead 
+    of sharing the weights of the existing layers. 
+ 
+    Args: 
+        model: Instance of `Sequential`. 
+        input_tensors: optional list of input tensors 
+            to build the model upon. If not provided, 
+            placeholders will be created. 
+        clone_function: callable to be applied on non-input layers in the model. 
+            By default, it clones the layer (without copying the weights). 
+ 
+    Returns: 
+        An instance of `Sequential` reproducing the behavior 
+        of the original model, on top of new inputs tensors, 
+        using newly instantiated weights. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">Sequential</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Expected `model` argument &quot;</span>
+            <span class="s3">&quot;to be a `Sequential` model instance. &quot;</span>
+            <span class="s3">f&quot;Received: model=</span><span class="s0">{</span><span class="s1">model</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">callable</span><span class="s2">(</span><span class="s1">clone_function</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Expected `clone_function` argument to be a callable. &quot;</span>
+            <span class="s3">f&quot;Received: clone_function=</span><span class="s0">{</span><span class="s1">clone_function</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">new_layers </span><span class="s2">= [</span><span class="s1">clone_function</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">) </span><span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">InputLayer</span><span class="s2">):</span>
+        <span class="s1">ref_input_layer </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">]</span>
+        <span class="s1">input_name </span><span class="s2">= </span><span class="s1">ref_input_layer</span><span class="s2">.</span><span class="s1">name</span>
+        <span class="s1">input_batch_shape </span><span class="s2">= </span><span class="s1">ref_input_layer</span><span class="s2">.</span><span class="s1">batch_shape</span>
+        <span class="s1">input_dtype </span><span class="s2">= </span><span class="s1">ref_input_layer</span><span class="s2">.</span><span class="s1">_dtype</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">input_name </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">input_dtype </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">input_batch_shape </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">if </span><span class="s1">input_tensors</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">input_tensors</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_tensors</span><span class="s2">) != </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Argument `input_tensors` must contain a single tensor.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">input_tensors </span><span class="s2">= </span><span class="s1">input_tensors</span><span class="s2">[</span><span class="s6">0</span><span class="s2">]</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">input_tensors</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">KerasTensor</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Argument `input_tensors` must be a KerasTensor. &quot;</span>
+                <span class="s3">f&quot;Received invalid value: input_tensors=</span><span class="s0">{</span><span class="s1">input_tensors</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">Input</span><span class="s2">(</span><span class="s1">tensor</span><span class="s2">=</span><span class="s1">input_tensors</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">input_name</span><span class="s2">)</span>
+        <span class="s1">new_layers </span><span class="s2">= [</span><span class="s1">inputs</span><span class="s2">] + </span><span class="s1">new_layers</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">input_batch_shape </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">Input</span><span class="s2">(</span>
+                <span class="s1">tensor</span><span class="s2">=</span><span class="s1">input_tensors</span><span class="s2">,</span>
+                <span class="s1">batch_shape</span><span class="s2">=</span><span class="s1">input_batch_shape</span><span class="s2">,</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">input_dtype</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s1">input_name</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">new_layers </span><span class="s2">= [</span><span class="s1">inputs</span><span class="s2">] + </span><span class="s1">new_layers</span>
+    <span class="s0">return </span><span class="s1">Sequential</span><span class="s2">(</span><span class="s1">new_layers</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">model</span><span class="s2">.</span><span class="s1">name</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s1">model</span><span class="s2">.</span><span class="s1">trainable</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_clone_functional_model</span><span class="s2">(</span>
+    <span class="s1">model</span><span class="s2">, </span><span class="s1">clone_function</span><span class="s2">, </span><span class="s1">input_tensors</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">call_function</span><span class="s2">=</span><span class="s0">None</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Clone a `Functional` model instance. 
+ 
+    Model cloning is similar to calling a model on new inputs, 
+    except that it creates new layers (and thus new weights) instead 
+    of sharing the weights of the existing layers. 
+ 
+    Input layers are always cloned. 
+ 
+    Args: 
+        model: Instance of `Functional`. 
+        input_tensors: optional list of input tensors 
+            to build the model upon. If not provided, 
+            placeholders will be created. 
+        clone_function: callable to be applied on non-input layers in the model. 
+            By default, it clones the layer (without copying the weights). 
+ 
+    Returns: 
+        An instance of `Functional` reproducing the behavior 
+        of the original model, on top of new inputs tensors, 
+        using newly instantiated weights. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">if not </span><span class="s1">callable</span><span class="s2">(</span><span class="s1">clone_function</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Expected `clone_function` argument to be a callable. &quot;</span>
+            <span class="s3">f&quot;Received: clone_function=</span><span class="s0">{</span><span class="s1">clone_function</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">Functional</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Expected `model` argument &quot;</span>
+            <span class="s3">f&quot;to be a Functional Model instance. Received: model=</span><span class="s0">{</span><span class="s1">model</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">input_tensors </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if not </span><span class="s1">all</span><span class="s2">(</span>
+            <span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">KerasTensor</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">input_tensors</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;All entries in `input_tensors` must be KerasTensors. &quot;</span>
+                <span class="s3">f&quot;Received invalid values: inputs_tensors=</span><span class="s0">{</span><span class="s1">input_tensors</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">tree</span><span class="s2">.</span><span class="s1">assert_same_structure</span><span class="s2">(</span><span class="s1">input_tensors</span><span class="s2">, </span><span class="s1">model</span><span class="s2">.</span><span class="s1">input</span><span class="s2">)</span>
+        <span class="s0">except </span><span class="s2">(</span><span class="s1">ValueError</span><span class="s2">, </span><span class="s1">TypeError</span><span class="s2">) </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`input_tensors` must have the same structure as model.input&quot;</span>
+                <span class="s3">f&quot;</span><span class="s0">\n</span><span class="s3">Reference structure: </span><span class="s0">{</span><span class="s1">model</span><span class="s2">.</span><span class="s1">input</span><span class="s0">}</span><span class="s3">&quot;</span>
+                <span class="s3">f&quot;</span><span class="s0">\n</span><span class="s3">Received structure: </span><span class="s0">{</span><span class="s1">input_tensors</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">) </span><span class="s0">from </span><span class="s1">e</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">input_tensors </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+            <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">Input</span><span class="s2">(</span><span class="s1">batch_shape</span><span class="s2">=</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">x</span><span class="s2">.</span><span class="s1">name</span><span class="s2">),</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">input</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">operation_fn</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+        <span class="s1">new_layer </span><span class="s2">= </span><span class="s1">clone_function</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">new_layer</span>
+
+    <span class="s1">output_tensors </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_run_through_graph</span><span class="s2">(</span>
+        <span class="s1">input_tensors</span><span class="s2">,</span>
+        <span class="s1">operation_fn</span><span class="s2">=</span><span class="s1">operation_fn</span><span class="s2">,</span>
+        <span class="s1">call_fn</span><span class="s2">=</span><span class="s1">call_function</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">functional_like_constructor</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">):</span>
+        <span class="s1">new_model </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">(</span>
+            <span class="s1">input_tensors</span><span class="s2">, </span><span class="s1">output_tensors</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">model</span><span class="s2">.</span><span class="s1">name</span>
+        <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s5"># This may be incorrect: the new model will end up having a different</span>
+        <span class="s5"># class than the original. However various existing models rely</span>
+        <span class="s5"># on this behavior, so we keep it.</span>
+        <span class="s1">new_model </span><span class="s2">= </span><span class="s1">Functional</span><span class="s2">(</span><span class="s1">input_tensors</span><span class="s2">, </span><span class="s1">output_tensors</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">model</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">new_model</span>
+</pre>
+</body>
+</html>

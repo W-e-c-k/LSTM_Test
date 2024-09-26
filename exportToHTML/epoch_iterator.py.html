@@ -1,0 +1,152 @@
+<html>
+<head>
+<title>epoch_iterator.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+epoch_iterator.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot; 
+Separation of concerns: 
+ 
+DataAdapter: 
+    - x, y 
+    - sample_weight 
+    - class_weight 
+    - shuffle 
+    - batch_size 
+        - steps, as it relates to batch_size for array data 
+ 
+EpochIterator: 
+    - whether to yield numpy or tf data 
+    - steps 
+    - most argument validation 
+ 
+Trainer: 
+    - steps_per_execution 
+    - validation_split 
+    - validation_data 
+    - callbacks 
+    - validation_freq 
+    - epochs 
+    - initial_epoch 
+    - any backend-specific concern such as distribution 
+ 
+PyDataset: 
+    - num_workers 
+    - use_multiprocessing 
+    - max_queue_size 
+ 
+EpochIterator steps: 
+ 
+1. Look at data type and select correct DataHandler 
+2. Instantiate DataHandler with correct arguments 
+3. Raise or warn on unused arguments 
+4. in __iter__, iterate, either for a fixed number of steps 
+or until there is no data 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">warnings</span>
+
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">trainers </span><span class="s2">import </span><span class="s1">data_adapters</span>
+
+
+<span class="s2">class </span><span class="s1">EpochIterator</span><span class="s3">:</span>
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">x</span><span class="s3">,</span>
+        <span class="s1">y</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">sample_weight</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">batch_size</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">steps_per_epoch</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">shuffle</span><span class="s3">=</span><span class="s2">False</span><span class="s3">,</span>
+        <span class="s1">class_weight</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">steps_per_execution</span><span class="s3">=</span><span class="s4">1</span><span class="s3">,</span>
+    <span class="s3">):</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_epoch </span><span class="s3">= </span><span class="s1">steps_per_epoch</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_execution </span><span class="s3">= </span><span class="s1">steps_per_execution</span>
+        <span class="s2">if </span><span class="s1">steps_per_epoch</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_current_iterator </span><span class="s3">= </span><span class="s2">None</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_insufficient_data </span><span class="s3">= </span><span class="s2">False</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_adapter </span><span class="s3">= </span><span class="s1">data_adapters</span><span class="s3">.</span><span class="s1">get_data_adapter</span><span class="s3">(</span>
+            <span class="s1">x</span><span class="s3">=</span><span class="s1">x</span><span class="s3">,</span>
+            <span class="s1">y</span><span class="s3">=</span><span class="s1">y</span><span class="s3">,</span>
+            <span class="s1">sample_weight</span><span class="s3">=</span><span class="s1">sample_weight</span><span class="s3">,</span>
+            <span class="s1">batch_size</span><span class="s3">=</span><span class="s1">batch_size</span><span class="s3">,</span>
+            <span class="s1">steps_per_epoch</span><span class="s3">=</span><span class="s1">steps_per_epoch</span><span class="s3">,</span>
+            <span class="s1">shuffle</span><span class="s3">=</span><span class="s1">shuffle</span><span class="s3">,</span>
+            <span class="s1">class_weight</span><span class="s3">=</span><span class="s1">class_weight</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_num_batches </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_adapter</span><span class="s3">.</span><span class="s1">num_batches</span>
+
+    <span class="s2">def </span><span class="s1">_get_iterator</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_adapter</span><span class="s3">.</span><span class="s1">get_numpy_iterator</span><span class="s3">()</span>
+
+    <span class="s2">def </span><span class="s1">enumerate_epoch</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">buffer </span><span class="s3">= []</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_adapter</span><span class="s3">.</span><span class="s1">on_epoch_begin</span><span class="s3">()</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_epoch</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_current_iterator </span><span class="s2">is None</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_current_iterator </span><span class="s3">= </span><span class="s1">iter</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_iterator</span><span class="s3">())</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_insufficient_data </span><span class="s3">= </span><span class="s2">False</span>
+
+            <span class="s2">for </span><span class="s1">step </span><span class="s2">in </span><span class="s1">range</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_epoch</span><span class="s3">):</span>
+                <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_insufficient_data</span><span class="s3">:</span>
+                    <span class="s2">break</span>
+
+                <span class="s2">try</span><span class="s3">:</span>
+                    <span class="s1">data </span><span class="s3">= </span><span class="s1">next</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_current_iterator</span><span class="s3">)</span>
+                    <span class="s1">buffer</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+                    <span class="s2">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">buffer</span><span class="s3">) == </span><span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_execution</span><span class="s3">:</span>
+                        <span class="s2">yield </span><span class="s1">step </span><span class="s3">- </span><span class="s1">len</span><span class="s3">(</span><span class="s1">buffer</span><span class="s3">) + </span><span class="s4">1</span><span class="s3">, </span><span class="s1">buffer</span>
+                        <span class="s1">buffer </span><span class="s3">= []</span>
+                <span class="s2">except </span><span class="s3">(</span><span class="s1">StopIteration</span><span class="s3">,):</span>
+                    <span class="s1">warnings</span><span class="s3">.</span><span class="s1">warn</span><span class="s3">(</span>
+                        <span class="s5">&quot;Your input ran out of data; interrupting epoch. &quot;</span>
+                        <span class="s5">&quot;Make sure that your dataset or generator can generate &quot;</span>
+                        <span class="s5">&quot;at least `steps_per_epoch * epochs` batches. &quot;</span>
+                        <span class="s5">&quot;You may need to use the `.repeat()` &quot;</span>
+                        <span class="s5">&quot;function when building your dataset.&quot;</span><span class="s3">,</span>
+                        <span class="s1">stacklevel</span><span class="s3">=</span><span class="s4">2</span><span class="s3">,</span>
+                    <span class="s3">)</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">_current_iterator </span><span class="s3">= </span><span class="s2">None</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">_insufficient_data </span><span class="s3">= </span><span class="s2">True</span>
+            <span class="s2">if </span><span class="s1">buffer</span><span class="s3">:</span>
+                <span class="s2">yield </span><span class="s1">step </span><span class="s3">- </span><span class="s1">len</span><span class="s3">(</span><span class="s1">buffer</span><span class="s3">) + </span><span class="s4">1</span><span class="s3">, </span><span class="s1">buffer</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">for </span><span class="s1">step</span><span class="s3">, </span><span class="s1">data </span><span class="s2">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_iterator</span><span class="s3">()):</span>
+                <span class="s1">buffer</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+                <span class="s2">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">buffer</span><span class="s3">) == </span><span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_execution</span><span class="s3">:</span>
+                    <span class="s2">yield </span><span class="s1">step </span><span class="s3">- </span><span class="s1">len</span><span class="s3">(</span><span class="s1">buffer</span><span class="s3">) + </span><span class="s4">1</span><span class="s3">, </span><span class="s1">buffer</span>
+                    <span class="s1">buffer </span><span class="s3">= []</span>
+            <span class="s2">if </span><span class="s1">buffer</span><span class="s3">:</span>
+                <span class="s2">yield </span><span class="s1">step </span><span class="s3">- </span><span class="s1">len</span><span class="s3">(</span><span class="s1">buffer</span><span class="s3">) + </span><span class="s4">1</span><span class="s3">, </span><span class="s1">buffer</span>
+            <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_num_batches</span><span class="s3">:</span>
+                <span class="s6"># Infer the number of batches returned by the data_adapter.</span>
+                <span class="s6"># Assumed static.</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_num_batches </span><span class="s3">= </span><span class="s1">step </span><span class="s3">+ </span><span class="s4">1</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_adapter</span><span class="s3">.</span><span class="s1">on_epoch_end</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">num_batches</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_epoch</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">steps_per_epoch</span>
+        <span class="s6"># Either copied from the data_adapter, or</span>
+        <span class="s6"># inferred at the end of an iteration.</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_num_batches</span>
+</pre>
+</body>
+</html>

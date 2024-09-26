@@ -1,0 +1,934 @@
+<html>
+<head>
+<title>_libsvm.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_libsvm.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;</span>
+<span class="s0">Binding for libsvm_skl</span>
+<span class="s0">----------------------</span>
+
+<span class="s0">These are the bindings for libsvm_skl, which is a fork of libsvm[1]</span>
+<span class="s0">that adds to libsvm some capabilities, like index of support vectors</span>
+<span class="s0">and efficient representation of dense matrices.</span>
+
+<span class="s0">These are low-level routines, but can be used for flexibility or</span>
+<span class="s0">performance reasons. See sklearn.svm for a higher-level API.</span>
+
+<span class="s0">Low-level memory management is done in libsvm_helper.c. If we happen</span>
+<span class="s0">to run out of memory a MemoryError will be raised. In practice this is</span>
+<span class="s0">not very helpful since high chances are malloc fails inside svm.cpp,</span>
+<span class="s0">where no sort of memory checks are done.</span>
+
+<span class="s0">[1] https://www.csie.ntu.edu.tw/~cjlin/libsvm/</span>
+
+<span class="s0">Notes</span>
+<span class="s0">-----</span>
+<span class="s0">The signature mode='c' is somewhat superficial, since we already</span>
+<span class="s0">check that arrays are C-contiguous in svm.py</span>
+
+<span class="s0">Authors</span>
+<span class="s0">-------</span>
+<span class="s0">2010: Fabian Pedregosa &lt;fabian.pedregosa@inria.fr&gt;</span>
+      <span class="s0">Gael Varoquaux &lt;gael.varoquaux@normalesup.org&gt;</span>
+<span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">import  numpy as np</span>
+<span class="s0">from libc.stdlib cimport free</span>
+<span class="s0">from ..utils._cython_blas cimport _dot</span>
+<span class="s0">from ..utils._typedefs cimport float64_t, int32_t, intp_t</span>
+
+<span class="s0">include &quot;_libsvm.pxi&quot;</span>
+
+<span class="s0">cdef extern from *:</span>
+    <span class="s0">ctypedef struct svm_parameter:</span>
+        <span class="s0">pass</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Internal variables</span>
+<span class="s0">LIBSVM_KERNEL_TYPES = ['linear', 'poly', 'rbf', 'sigmoid', 'precomputed']</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Wrapper functions</span>
+
+<span class="s0">def fit(</span>
+    <span class="s0">const float64_t[:, ::1] X,</span>
+    <span class="s0">const float64_t[::1] Y,</span>
+    <span class="s0">int svm_type=0,</span>
+    <span class="s0">kernel='rbf',</span>
+    <span class="s0">int degree=3,</span>
+    <span class="s0">double gamma=0.1,</span>
+    <span class="s0">double coef0=0.0,</span>
+    <span class="s0">double tol=1e-3,</span>
+    <span class="s0">double C=1.0,</span>
+    <span class="s0">double nu=0.5,</span>
+    <span class="s0">double epsilon=0.1,</span>
+    <span class="s0">const float64_t[::1] class_weight=np.empty(0),</span>
+    <span class="s0">const float64_t[::1] sample_weight=np.empty(0),</span>
+    <span class="s0">int shrinking=1,</span>
+    <span class="s0">int probability=0,</span>
+    <span class="s0">double cache_size=100.,</span>
+    <span class="s0">int max_iter=-1,</span>
+    <span class="s0">int random_seed=0,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Train the model using libsvm (low-level method)</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : array-like, dtype=float64 of shape (n_samples, n_features)</span>
+
+    <span class="s0">Y : array, dtype=float64 of shape (n_samples,)</span>
+        <span class="s0">target vector</span>
+
+    <span class="s0">svm_type : {0, 1, 2, 3, 4}, default=0</span>
+        <span class="s0">Type of SVM: C_SVC, NuSVC, OneClassSVM, EpsilonSVR or NuSVR</span>
+        <span class="s0">respectively.</span>
+
+    <span class="s0">kernel : {'linear', 'rbf', 'poly', 'sigmoid', 'precomputed'}, default=&quot;rbf&quot;</span>
+        <span class="s0">Kernel to use in the model: linear, polynomial, RBF, sigmoid</span>
+        <span class="s0">or precomputed.</span>
+
+    <span class="s0">degree : int32, default=3</span>
+        <span class="s0">Degree of the polynomial kernel (only relevant if kernel is</span>
+        <span class="s0">set to polynomial).</span>
+
+    <span class="s0">gamma : float64, default=0.1</span>
+        <span class="s0">Gamma parameter in rbf, poly and sigmoid kernels. Ignored by other</span>
+        <span class="s0">kernels.</span>
+
+    <span class="s0">coef0 : float64, default=0</span>
+        <span class="s0">Independent parameter in poly/sigmoid kernel.</span>
+
+    <span class="s0">tol : float64, default=1e-3</span>
+        <span class="s0">Numeric stopping criterion (WRITEME).</span>
+
+    <span class="s0">C : float64, default=1</span>
+        <span class="s0">C parameter in C-Support Vector Classification.</span>
+
+    <span class="s0">nu : float64, default=0.5</span>
+        <span class="s0">An upper bound on the fraction of training errors and a lower bound of</span>
+        <span class="s0">the fraction of support vectors. Should be in the interval (0, 1].</span>
+
+    <span class="s0">epsilon : double, default=0.1</span>
+        <span class="s0">Epsilon parameter in the epsilon-insensitive loss function.</span>
+
+    <span class="s0">class_weight : array, dtype=float64, shape (n_classes,), \</span>
+            <span class="s0">default=np.empty(0)</span>
+        <span class="s0">Set the parameter C of class i to class_weight[i]*C for</span>
+        <span class="s0">SVC. If not given, all classes are supposed to have</span>
+        <span class="s0">weight one.</span>
+
+    <span class="s0">sample_weight : array, dtype=float64, shape (n_samples,), \</span>
+            <span class="s0">default=np.empty(0)</span>
+        <span class="s0">Weights assigned to each sample.</span>
+
+    <span class="s0">shrinking : int, default=1</span>
+        <span class="s0">Whether to use the shrinking heuristic.</span>
+
+    <span class="s0">probability : int, default=0</span>
+        <span class="s0">Whether to enable probability estimates.</span>
+
+    <span class="s0">cache_size : float64, default=100</span>
+        <span class="s0">Cache size for gram matrix columns (in megabytes).</span>
+
+    <span class="s0">max_iter : int (-1 for no limit), default=-1</span>
+        <span class="s0">Stop solver after this many iterations regardless of accuracy</span>
+        <span class="s0">(XXX Currently there is no API to know whether this kicked in.)</span>
+
+    <span class="s0">random_seed : int, default=0</span>
+        <span class="s0">Seed for the random number generator used for probability estimates.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">support : array of shape (n_support,)</span>
+        <span class="s0">Index of support vectors.</span>
+
+    <span class="s0">support_vectors : array of shape (n_support, n_features)</span>
+        <span class="s0">Support vectors (equivalent to X[support]). Will return an</span>
+        <span class="s0">empty array in the case of precomputed kernel.</span>
+
+    <span class="s0">n_class_SV : array of shape (n_class,)</span>
+        <span class="s0">Number of support vectors in each class.</span>
+
+    <span class="s0">sv_coef : array of shape (n_class-1, n_support)</span>
+        <span class="s0">Coefficients of support vectors in decision function.</span>
+
+    <span class="s0">intercept : array of shape (n_class*(n_class-1)/2,)</span>
+        <span class="s0">Intercept in decision function.</span>
+
+    <span class="s0">probA, probB : array of shape (n_class*(n_class-1)/2,)</span>
+        <span class="s0">Probability estimates, empty array for probability=False.</span>
+
+    <span class="s0">n_iter : ndarray of shape (max(1, (n_class * (n_class - 1) // 2)),)</span>
+        <span class="s0">Number of iterations run by the optimization routine to fit the model.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef svm_parameter param</span>
+    <span class="s0">cdef svm_problem problem</span>
+    <span class="s0">cdef svm_model *model</span>
+    <span class="s0">cdef const char *error_msg</span>
+    <span class="s0">cdef intp_t SV_len</span>
+
+    <span class="s0">if len(sample_weight) == 0:</span>
+        <span class="s0">sample_weight = np.ones(X.shape[0], dtype=np.float64)</span>
+    <span class="s0">else:</span>
+        <span class="s0">assert sample_weight.shape[0] == X.shape[0], (</span>
+            <span class="s0">f&quot;sample_weight and X have incompatible shapes: sample_weight has &quot;</span>
+            <span class="s0">f&quot;{sample_weight.shape[0]} samples while X has {X.shape[0]}&quot;</span>
+        <span class="s0">)</span>
+
+    <span class="s0">kernel_index = LIBSVM_KERNEL_TYPES.index(kernel)</span>
+    <span class="s0">set_problem(</span>
+        <span class="s0">&amp;problem,</span>
+        <span class="s0">&lt;char*&gt; &amp;X[0, 0],</span>
+        <span class="s0">&lt;char*&gt; &amp;Y[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;sample_weight[0],</span>
+        <span class="s0">&lt;intp_t*&gt; X.shape,</span>
+        <span class="s0">kernel_index,</span>
+    <span class="s0">)</span>
+    <span class="s0">if problem.x == NULL:</span>
+        <span class="s0">raise MemoryError(&quot;Seems we've run out of memory&quot;)</span>
+    <span class="s0">cdef int32_t[::1] class_weight_label = np.arange(</span>
+        <span class="s0">class_weight.shape[0], dtype=np.int32</span>
+    <span class="s0">)</span>
+    <span class="s0">set_parameter(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">svm_type,</span>
+        <span class="s0">kernel_index,</span>
+        <span class="s0">degree,</span>
+        <span class="s0">gamma,</span>
+        <span class="s0">coef0,</span>
+        <span class="s0">nu,</span>
+        <span class="s0">cache_size,</span>
+        <span class="s0">C,</span>
+        <span class="s0">tol,</span>
+        <span class="s0">epsilon,</span>
+        <span class="s0">shrinking,</span>
+        <span class="s0">probability,</span>
+        <span class="s0">&lt;int&gt; class_weight.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight_label[0] if class_weight_label.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight[0] if class_weight.size &gt; 0 else NULL,</span>
+        <span class="s0">max_iter,</span>
+        <span class="s0">random_seed,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">error_msg = svm_check_parameter(&amp;problem, &amp;param)</span>
+    <span class="s0">if error_msg:</span>
+        <span class="s0"># for SVR: epsilon is called p in libsvm</span>
+        <span class="s0">error_repl = error_msg.decode('utf-8').replace(&quot;p &lt; 0&quot;, &quot;epsilon &lt; 0&quot;)</span>
+        <span class="s0">raise ValueError(error_repl)</span>
+    <span class="s0">cdef BlasFunctions blas_functions</span>
+    <span class="s0">blas_functions.dot = _dot[double]</span>
+    <span class="s0"># this does the real work</span>
+    <span class="s0">cdef int fit_status = 0</span>
+    <span class="s0">with nogil:</span>
+        <span class="s0">model = svm_train(&amp;problem, &amp;param, &amp;fit_status, &amp;blas_functions)</span>
+
+    <span class="s0"># from here until the end, we just copy the data returned by</span>
+    <span class="s0"># svm_train</span>
+    <span class="s0">SV_len = get_l(model)</span>
+    <span class="s0">n_class = get_nr(model)</span>
+
+    <span class="s0">cdef int[::1] n_iter = np.empty(max(1, n_class * (n_class - 1) // 2), dtype=np.intc)</span>
+    <span class="s0">copy_n_iter(&lt;char*&gt; &amp;n_iter[0], model)</span>
+
+    <span class="s0">cdef float64_t[:, ::1] sv_coef = np.empty((n_class-1, SV_len), dtype=np.float64)</span>
+    <span class="s0">copy_sv_coef(&lt;char*&gt; &amp;sv_coef[0, 0] if sv_coef.size &gt; 0 else NULL, model)</span>
+
+    <span class="s0"># the intercept is just model.rho but with sign changed</span>
+    <span class="s0">cdef float64_t[::1] intercept = np.empty(</span>
+        <span class="s0">int((n_class*(n_class-1))/2), dtype=np.float64</span>
+    <span class="s0">)</span>
+    <span class="s0">copy_intercept(&lt;char*&gt; &amp;intercept[0], model, &lt;intp_t*&gt; intercept.shape)</span>
+
+    <span class="s0">cdef int32_t[::1] support = np.empty(SV_len, dtype=np.int32)</span>
+    <span class="s0">copy_support(&lt;char*&gt; &amp;support[0] if support.size &gt; 0 else NULL, model)</span>
+
+    <span class="s0"># copy model.SV</span>
+    <span class="s0">cdef float64_t[:, ::1] support_vectors</span>
+    <span class="s0">if kernel_index == 4:</span>
+        <span class="s0"># precomputed kernel</span>
+        <span class="s0">support_vectors = np.empty((0, 0), dtype=np.float64)</span>
+    <span class="s0">else:</span>
+        <span class="s0">support_vectors = np.empty((SV_len, X.shape[1]), dtype=np.float64)</span>
+        <span class="s0">copy_SV(</span>
+            <span class="s0">&lt;char*&gt; &amp;support_vectors[0, 0] if support_vectors.size &gt; 0 else NULL,</span>
+            <span class="s0">model,</span>
+            <span class="s0">&lt;intp_t*&gt; support_vectors.shape,</span>
+        <span class="s0">)</span>
+
+    <span class="s0">cdef int32_t[::1] n_class_SV</span>
+    <span class="s0">if svm_type == 0 or svm_type == 1:</span>
+        <span class="s0">n_class_SV = np.empty(n_class, dtype=np.int32)</span>
+        <span class="s0">copy_nSV(&lt;char*&gt; &amp;n_class_SV[0] if n_class_SV.size &gt; 0 else NULL, model)</span>
+    <span class="s0">else:</span>
+        <span class="s0"># OneClass and SVR are considered to have 2 classes</span>
+        <span class="s0">n_class_SV = np.array([SV_len, SV_len], dtype=np.int32)</span>
+
+    <span class="s0">cdef float64_t[::1] probA</span>
+    <span class="s0">cdef float64_t[::1] probB</span>
+    <span class="s0">if probability != 0:</span>
+        <span class="s0">if svm_type &lt; 2:  # SVC and NuSVC</span>
+            <span class="s0">probA = np.empty(int(n_class*(n_class-1)/2), dtype=np.float64)</span>
+            <span class="s0">probB = np.empty(int(n_class*(n_class-1)/2), dtype=np.float64)</span>
+            <span class="s0">copy_probB(&lt;char*&gt; &amp;probB[0], model, &lt;intp_t*&gt; probB.shape)</span>
+        <span class="s0">else:</span>
+            <span class="s0">probA = np.empty(1, dtype=np.float64)</span>
+            <span class="s0">probB = np.empty(0, dtype=np.float64)</span>
+        <span class="s0">copy_probA(&lt;char*&gt; &amp;probA[0], model, &lt;intp_t*&gt; probA.shape)</span>
+    <span class="s0">else:</span>
+        <span class="s0">probA = np.empty(0, dtype=np.float64)</span>
+        <span class="s0">probB = np.empty(0, dtype=np.float64)</span>
+
+    <span class="s0">svm_free_and_destroy_model(&amp;model)</span>
+    <span class="s0">free(problem.x)</span>
+
+    <span class="s0">return (</span>
+        <span class="s0">support.base,</span>
+        <span class="s0">support_vectors.base,</span>
+        <span class="s0">n_class_SV.base,</span>
+        <span class="s0">sv_coef.base,</span>
+        <span class="s0">intercept.base,</span>
+        <span class="s0">probA.base,</span>
+        <span class="s0">probB.base,</span>
+        <span class="s0">fit_status,</span>
+        <span class="s0">n_iter.base,</span>
+    <span class="s0">)</span>
+
+
+<span class="s0">cdef void set_predict_params(</span>
+    <span class="s0">svm_parameter *param,</span>
+    <span class="s0">int svm_type,</span>
+    <span class="s0">kernel,</span>
+    <span class="s0">int degree,</span>
+    <span class="s0">double gamma,</span>
+    <span class="s0">double coef0,</span>
+    <span class="s0">double cache_size,</span>
+    <span class="s0">int probability,</span>
+    <span class="s0">int nr_weight,</span>
+    <span class="s0">char *weight_label,</span>
+    <span class="s0">char *weight,</span>
+<span class="s0">) except *:</span>
+    <span class="s0">&quot;&quot;&quot;Fill param with prediction time-only parameters.&quot;&quot;&quot;</span>
+
+    <span class="s0"># training-time only parameters</span>
+    <span class="s0">cdef double C = 0.0</span>
+    <span class="s0">cdef double epsilon = 0.1</span>
+    <span class="s0">cdef int max_iter = 0</span>
+    <span class="s0">cdef double nu = 0.5</span>
+    <span class="s0">cdef int shrinking = 0</span>
+    <span class="s0">cdef double tol = 0.1</span>
+    <span class="s0">cdef int random_seed = -1</span>
+
+    <span class="s0">kernel_index = LIBSVM_KERNEL_TYPES.index(kernel)</span>
+
+    <span class="s0">set_parameter(</span>
+        <span class="s0">param,</span>
+        <span class="s0">svm_type,</span>
+        <span class="s0">kernel_index,</span>
+        <span class="s0">degree,</span>
+        <span class="s0">gamma,</span>
+        <span class="s0">coef0,</span>
+        <span class="s0">nu,</span>
+        <span class="s0">cache_size,</span>
+        <span class="s0">C,</span>
+        <span class="s0">tol,</span>
+        <span class="s0">epsilon,</span>
+        <span class="s0">shrinking,</span>
+        <span class="s0">probability,</span>
+        <span class="s0">nr_weight,</span>
+        <span class="s0">weight_label,</span>
+        <span class="s0">weight,</span>
+        <span class="s0">max_iter,</span>
+        <span class="s0">random_seed,</span>
+    <span class="s0">)</span>
+
+
+<span class="s0">def predict(</span>
+    <span class="s0">const float64_t[:, ::1] X,</span>
+    <span class="s0">const int32_t[::1] support,</span>
+    <span class="s0">const float64_t[:, ::1] SV,</span>
+    <span class="s0">const int32_t[::1] nSV,</span>
+    <span class="s0">const float64_t[:, ::1] sv_coef,</span>
+    <span class="s0">const float64_t[::1] intercept,</span>
+    <span class="s0">const float64_t[::1] probA=np.empty(0),</span>
+    <span class="s0">const float64_t[::1] probB=np.empty(0),</span>
+    <span class="s0">int svm_type=0,</span>
+    <span class="s0">kernel='rbf',</span>
+    <span class="s0">int degree=3,</span>
+    <span class="s0">double gamma=0.1,</span>
+    <span class="s0">double coef0=0.0,</span>
+    <span class="s0">const float64_t[::1] class_weight=np.empty(0),</span>
+    <span class="s0">const float64_t[::1] sample_weight=np.empty(0),</span>
+    <span class="s0">double cache_size=100.0,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Predict target values of X given a model (low-level method)</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : array-like, dtype=float of shape (n_samples, n_features)</span>
+
+    <span class="s0">support : array of shape (n_support,)</span>
+        <span class="s0">Index of support vectors in training set.</span>
+
+    <span class="s0">SV : array of shape (n_support, n_features)</span>
+        <span class="s0">Support vectors.</span>
+
+    <span class="s0">nSV : array of shape (n_class,)</span>
+        <span class="s0">Number of support vectors in each class.</span>
+
+    <span class="s0">sv_coef : array of shape (n_class-1, n_support)</span>
+        <span class="s0">Coefficients of support vectors in decision function.</span>
+
+    <span class="s0">intercept : array of shape (n_class*(n_class-1)/2)</span>
+        <span class="s0">Intercept in decision function.</span>
+
+    <span class="s0">probA, probB : array of shape (n_class*(n_class-1)/2,)</span>
+        <span class="s0">Probability estimates.</span>
+
+    <span class="s0">svm_type : {0, 1, 2, 3, 4}, default=0</span>
+        <span class="s0">Type of SVM: C_SVC, NuSVC, OneClassSVM, EpsilonSVR or NuSVR</span>
+        <span class="s0">respectively.</span>
+
+    <span class="s0">kernel : {'linear', 'rbf', 'poly', 'sigmoid', 'precomputed'}, default=&quot;rbf&quot;</span>
+        <span class="s0">Kernel to use in the model: linear, polynomial, RBF, sigmoid</span>
+        <span class="s0">or precomputed.</span>
+
+    <span class="s0">degree : int32, default=3</span>
+        <span class="s0">Degree of the polynomial kernel (only relevant if kernel is</span>
+        <span class="s0">set to polynomial).</span>
+
+    <span class="s0">gamma : float64, default=0.1</span>
+        <span class="s0">Gamma parameter in rbf, poly and sigmoid kernels. Ignored by other</span>
+        <span class="s0">kernels.</span>
+
+    <span class="s0">coef0 : float64, default=0.0</span>
+        <span class="s0">Independent parameter in poly/sigmoid kernel.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">dec_values : array</span>
+        <span class="s0">Predicted values.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef float64_t[::1] dec_values</span>
+    <span class="s0">cdef svm_parameter param</span>
+    <span class="s0">cdef svm_model *model</span>
+    <span class="s0">cdef int rv</span>
+
+    <span class="s0">cdef int32_t[::1] class_weight_label = np.arange(</span>
+        <span class="s0">class_weight.shape[0], dtype=np.int32</span>
+    <span class="s0">)</span>
+
+    <span class="s0">set_predict_params(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">svm_type,</span>
+        <span class="s0">kernel,</span>
+        <span class="s0">degree,</span>
+        <span class="s0">gamma,</span>
+        <span class="s0">coef0,</span>
+        <span class="s0">cache_size,</span>
+        <span class="s0">0,</span>
+        <span class="s0">&lt;int&gt;class_weight.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight_label[0] if class_weight_label.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight[0] if class_weight.size &gt; 0 else NULL,</span>
+    <span class="s0">)</span>
+    <span class="s0">model = set_model(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">&lt;int&gt; nSV.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;SV[0, 0] if SV.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;intp_t*&gt; SV.shape,</span>
+        <span class="s0">&lt;char*&gt; &amp;support[0] if support.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;intp_t*&gt; support.shape,</span>
+        <span class="s0">&lt;intp_t*&gt; sv_coef.strides,</span>
+        <span class="s0">&lt;char*&gt; &amp;sv_coef[0, 0] if sv_coef.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;intercept[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;nSV[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;probA[0] if probA.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;probB[0] if probB.size &gt; 0 else NULL,</span>
+    <span class="s0">)</span>
+    <span class="s0">cdef BlasFunctions blas_functions</span>
+    <span class="s0">blas_functions.dot = _dot[double]</span>
+    <span class="s0"># TODO: use check_model</span>
+    <span class="s0">try:</span>
+        <span class="s0">dec_values = np.empty(X.shape[0])</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">rv = copy_predict(</span>
+                <span class="s0">&lt;char*&gt; &amp;X[0, 0],</span>
+                <span class="s0">model,</span>
+                <span class="s0">&lt;intp_t*&gt; X.shape,</span>
+                <span class="s0">&lt;char*&gt; &amp;dec_values[0],</span>
+                <span class="s0">&amp;blas_functions,</span>
+            <span class="s0">)</span>
+        <span class="s0">if rv &lt; 0:</span>
+            <span class="s0">raise MemoryError(&quot;We've run out of memory&quot;)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">free_model(model)</span>
+
+    <span class="s0">return dec_values.base</span>
+
+
+<span class="s0">def predict_proba(</span>
+    <span class="s0">const float64_t[:, ::1] X,</span>
+    <span class="s0">const int32_t[::1] support,</span>
+    <span class="s0">const float64_t[:, ::1] SV,</span>
+    <span class="s0">const int32_t[::1] nSV,</span>
+    <span class="s0">float64_t[:, ::1] sv_coef,</span>
+    <span class="s0">float64_t[::1] intercept,</span>
+    <span class="s0">float64_t[::1] probA=np.empty(0),</span>
+    <span class="s0">float64_t[::1] probB=np.empty(0),</span>
+    <span class="s0">int svm_type=0,</span>
+    <span class="s0">kernel='rbf',</span>
+    <span class="s0">int degree=3,</span>
+    <span class="s0">double gamma=0.1,</span>
+    <span class="s0">double coef0=0.0,</span>
+    <span class="s0">float64_t[::1] class_weight=np.empty(0),</span>
+    <span class="s0">float64_t[::1] sample_weight=np.empty(0),</span>
+    <span class="s0">double cache_size=100.0,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Predict probabilities</span>
+
+    <span class="s0">svm_model stores all parameters needed to predict a given value.</span>
+
+    <span class="s0">For speed, all real work is done at the C level in function</span>
+    <span class="s0">copy_predict (libsvm_helper.c).</span>
+
+    <span class="s0">We have to reconstruct model and parameters to make sure we stay</span>
+    <span class="s0">in sync with the python object.</span>
+
+    <span class="s0">See sklearn.svm.predict for a complete list of parameters.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : array-like, dtype=float of shape (n_samples, n_features)</span>
+
+    <span class="s0">support : array of shape (n_support,)</span>
+        <span class="s0">Index of support vectors in training set.</span>
+
+    <span class="s0">SV : array of shape (n_support, n_features)</span>
+        <span class="s0">Support vectors.</span>
+
+    <span class="s0">nSV : array of shape (n_class,)</span>
+        <span class="s0">Number of support vectors in each class.</span>
+
+    <span class="s0">sv_coef : array of shape (n_class-1, n_support)</span>
+        <span class="s0">Coefficients of support vectors in decision function.</span>
+
+    <span class="s0">intercept : array of shape (n_class*(n_class-1)/2,)</span>
+        <span class="s0">Intercept in decision function.</span>
+
+    <span class="s0">probA, probB : array of shape (n_class*(n_class-1)/2,)</span>
+        <span class="s0">Probability estimates.</span>
+
+    <span class="s0">svm_type : {0, 1, 2, 3, 4}, default=0</span>
+        <span class="s0">Type of SVM: C_SVC, NuSVC, OneClassSVM, EpsilonSVR or NuSVR</span>
+        <span class="s0">respectively.</span>
+
+    <span class="s0">kernel : {'linear', 'rbf', 'poly', 'sigmoid', 'precomputed'}, default=&quot;rbf&quot;</span>
+        <span class="s0">Kernel to use in the model: linear, polynomial, RBF, sigmoid</span>
+        <span class="s0">or precomputed.</span>
+
+    <span class="s0">degree : int32, default=3</span>
+        <span class="s0">Degree of the polynomial kernel (only relevant if kernel is</span>
+        <span class="s0">set to polynomial).</span>
+
+    <span class="s0">gamma : float64, default=0.1</span>
+        <span class="s0">Gamma parameter in rbf, poly and sigmoid kernels. Ignored by other</span>
+        <span class="s0">kernels.</span>
+
+    <span class="s0">coef0 : float64, default=0.0</span>
+        <span class="s0">Independent parameter in poly/sigmoid kernel.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">dec_values : array</span>
+        <span class="s0">Predicted values.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef float64_t[:, ::1] dec_values</span>
+    <span class="s0">cdef svm_parameter param</span>
+    <span class="s0">cdef svm_model *model</span>
+    <span class="s0">cdef int32_t[::1] class_weight_label = np.arange(</span>
+        <span class="s0">class_weight.shape[0], dtype=np.int32</span>
+    <span class="s0">)</span>
+    <span class="s0">cdef int rv</span>
+
+    <span class="s0">set_predict_params(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">svm_type,</span>
+        <span class="s0">kernel,</span>
+        <span class="s0">degree,</span>
+        <span class="s0">gamma,</span>
+        <span class="s0">coef0,</span>
+        <span class="s0">cache_size,</span>
+        <span class="s0">1,</span>
+        <span class="s0">&lt;int&gt; class_weight.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight_label[0] if class_weight_label.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight[0] if class_weight.size &gt; 0 else NULL,</span>
+    <span class="s0">)</span>
+    <span class="s0">model = set_model(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">&lt;int&gt; nSV.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;SV[0, 0] if SV.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;intp_t*&gt; SV.shape,</span>
+        <span class="s0">&lt;char*&gt; &amp;support[0],</span>
+        <span class="s0">&lt;intp_t*&gt; support.shape,</span>
+        <span class="s0">&lt;intp_t*&gt; sv_coef.strides,</span>
+        <span class="s0">&lt;char*&gt; &amp;sv_coef[0, 0],</span>
+        <span class="s0">&lt;char*&gt; &amp;intercept[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;nSV[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;probA[0] if probA.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;probB[0] if probB.size &gt; 0 else NULL,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">cdef intp_t n_class = get_nr(model)</span>
+    <span class="s0">cdef BlasFunctions blas_functions</span>
+    <span class="s0">blas_functions.dot = _dot[double]</span>
+    <span class="s0">try:</span>
+        <span class="s0">dec_values = np.empty((X.shape[0], n_class), dtype=np.float64)</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">rv = copy_predict_proba(</span>
+                <span class="s0">&lt;char*&gt; &amp;X[0, 0],</span>
+                <span class="s0">model,</span>
+                <span class="s0">&lt;intp_t*&gt; X.shape,</span>
+                <span class="s0">&lt;char*&gt; &amp;dec_values[0, 0],</span>
+                <span class="s0">&amp;blas_functions,</span>
+            <span class="s0">)</span>
+        <span class="s0">if rv &lt; 0:</span>
+            <span class="s0">raise MemoryError(&quot;We've run out of memory&quot;)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">free_model(model)</span>
+
+    <span class="s0">return dec_values.base</span>
+
+
+<span class="s0">def decision_function(</span>
+    <span class="s0">const float64_t[:, ::1] X,</span>
+    <span class="s0">const int32_t[::1] support,</span>
+    <span class="s0">const float64_t[:, ::1] SV,</span>
+    <span class="s0">const int32_t[::1] nSV,</span>
+    <span class="s0">const float64_t[:, ::1] sv_coef,</span>
+    <span class="s0">const float64_t[::1] intercept,</span>
+    <span class="s0">const float64_t[::1] probA=np.empty(0),</span>
+    <span class="s0">const float64_t[::1] probB=np.empty(0),</span>
+    <span class="s0">int svm_type=0,</span>
+    <span class="s0">kernel='rbf',</span>
+    <span class="s0">int degree=3,</span>
+    <span class="s0">double gamma=0.1,</span>
+    <span class="s0">double coef0=0.0,</span>
+    <span class="s0">const float64_t[::1] class_weight=np.empty(0),</span>
+    <span class="s0">const float64_t[::1] sample_weight=np.empty(0),</span>
+    <span class="s0">double cache_size=100.0,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Predict margin (libsvm name for this is predict_values)</span>
+
+    <span class="s0">We have to reconstruct model and parameters to make sure we stay</span>
+    <span class="s0">in sync with the python object.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : array-like, dtype=float, size=[n_samples, n_features]</span>
+
+    <span class="s0">support : array, shape=[n_support]</span>
+        <span class="s0">Index of support vectors in training set.</span>
+
+    <span class="s0">SV : array, shape=[n_support, n_features]</span>
+        <span class="s0">Support vectors.</span>
+
+    <span class="s0">nSV : array, shape=[n_class]</span>
+        <span class="s0">Number of support vectors in each class.</span>
+
+    <span class="s0">sv_coef : array, shape=[n_class-1, n_support]</span>
+        <span class="s0">Coefficients of support vectors in decision function.</span>
+
+    <span class="s0">intercept : array, shape=[n_class*(n_class-1)/2]</span>
+        <span class="s0">Intercept in decision function.</span>
+
+    <span class="s0">probA, probB : array, shape=[n_class*(n_class-1)/2]</span>
+        <span class="s0">Probability estimates.</span>
+
+    <span class="s0">svm_type : {0, 1, 2, 3, 4}, optional</span>
+        <span class="s0">Type of SVM: C_SVC, NuSVC, OneClassSVM, EpsilonSVR or NuSVR</span>
+        <span class="s0">respectively. 0 by default.</span>
+
+    <span class="s0">kernel : {'linear', 'rbf', 'poly', 'sigmoid', 'precomputed'}, optional</span>
+        <span class="s0">Kernel to use in the model: linear, polynomial, RBF, sigmoid</span>
+        <span class="s0">or precomputed. 'rbf' by default.</span>
+
+    <span class="s0">degree : int32, optional</span>
+        <span class="s0">Degree of the polynomial kernel (only relevant if kernel is</span>
+        <span class="s0">set to polynomial), 3 by default.</span>
+
+    <span class="s0">gamma : float64, optional</span>
+        <span class="s0">Gamma parameter in rbf, poly and sigmoid kernels. Ignored by other</span>
+        <span class="s0">kernels. 0.1 by default.</span>
+
+    <span class="s0">coef0 : float64, optional</span>
+        <span class="s0">Independent parameter in poly/sigmoid kernel. 0 by default.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">dec_values : array</span>
+        <span class="s0">Predicted values.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef float64_t[:, ::1] dec_values</span>
+    <span class="s0">cdef svm_parameter param</span>
+    <span class="s0">cdef svm_model *model</span>
+    <span class="s0">cdef intp_t n_class</span>
+
+    <span class="s0">cdef int32_t[::1] class_weight_label = np.arange(</span>
+        <span class="s0">class_weight.shape[0], dtype=np.int32</span>
+    <span class="s0">)</span>
+
+    <span class="s0">cdef int rv</span>
+
+    <span class="s0">set_predict_params(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">svm_type,</span>
+        <span class="s0">kernel,</span>
+        <span class="s0">degree,</span>
+        <span class="s0">gamma,</span>
+        <span class="s0">coef0,</span>
+        <span class="s0">cache_size,</span>
+        <span class="s0">0,</span>
+        <span class="s0">&lt;int&gt; class_weight.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight_label[0] if class_weight_label.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight[0] if class_weight.size &gt; 0 else NULL,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">model = set_model(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">&lt;int&gt; nSV.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;SV[0, 0] if SV.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;intp_t*&gt; SV.shape,</span>
+        <span class="s0">&lt;char*&gt; &amp;support[0],</span>
+        <span class="s0">&lt;intp_t*&gt; support.shape,</span>
+        <span class="s0">&lt;intp_t*&gt; sv_coef.strides,</span>
+        <span class="s0">&lt;char*&gt; &amp;sv_coef[0, 0],</span>
+        <span class="s0">&lt;char*&gt; &amp;intercept[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;nSV[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;probA[0] if probA.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;probB[0] if probB.size &gt; 0 else NULL,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">if svm_type &gt; 1:</span>
+        <span class="s0">n_class = 1</span>
+    <span class="s0">else:</span>
+        <span class="s0">n_class = get_nr(model)</span>
+        <span class="s0">n_class = n_class * (n_class - 1) // 2</span>
+    <span class="s0">cdef BlasFunctions blas_functions</span>
+    <span class="s0">blas_functions.dot = _dot[double]</span>
+    <span class="s0">try:</span>
+        <span class="s0">dec_values = np.empty((X.shape[0], n_class), dtype=np.float64)</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">rv = copy_predict_values(</span>
+                <span class="s0">&lt;char*&gt; &amp;X[0, 0],</span>
+                <span class="s0">model,</span>
+                <span class="s0">&lt;intp_t*&gt; X.shape,</span>
+                <span class="s0">&lt;char*&gt; &amp;dec_values[0, 0],</span>
+                <span class="s0">n_class,</span>
+                <span class="s0">&amp;blas_functions,</span>
+            <span class="s0">)</span>
+        <span class="s0">if rv &lt; 0:</span>
+            <span class="s0">raise MemoryError(&quot;We've run out of memory&quot;)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">free_model(model)</span>
+
+    <span class="s0">return dec_values.base</span>
+
+
+<span class="s0">def cross_validation(</span>
+    <span class="s0">const float64_t[:, ::1] X,</span>
+    <span class="s0">const float64_t[::1] Y,</span>
+    <span class="s0">int n_fold,</span>
+    <span class="s0">int svm_type=0,</span>
+    <span class="s0">kernel='rbf',</span>
+    <span class="s0">int degree=3,</span>
+    <span class="s0">double gamma=0.1,</span>
+    <span class="s0">double coef0=0.0,</span>
+    <span class="s0">double tol=1e-3,</span>
+    <span class="s0">double C=1.0,</span>
+    <span class="s0">double nu=0.5,</span>
+    <span class="s0">double epsilon=0.1,</span>
+    <span class="s0">float64_t[::1] class_weight=np.empty(0),</span>
+    <span class="s0">float64_t[::1] sample_weight=np.empty(0),</span>
+    <span class="s0">int shrinking=0,</span>
+    <span class="s0">int probability=0,</span>
+    <span class="s0">double cache_size=100.0,</span>
+    <span class="s0">int max_iter=-1,</span>
+    <span class="s0">int random_seed=0,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Binding of the cross-validation routine (low-level routine)</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+
+    <span class="s0">X : array-like, dtype=float of shape (n_samples, n_features)</span>
+
+    <span class="s0">Y : array, dtype=float of shape (n_samples,)</span>
+        <span class="s0">target vector</span>
+
+    <span class="s0">n_fold : int32</span>
+        <span class="s0">Number of folds for cross validation.</span>
+
+    <span class="s0">svm_type : {0, 1, 2, 3, 4}, default=0</span>
+        <span class="s0">Type of SVM: C_SVC, NuSVC, OneClassSVM, EpsilonSVR or NuSVR</span>
+        <span class="s0">respectively.</span>
+
+    <span class="s0">kernel : {'linear', 'rbf', 'poly', 'sigmoid', 'precomputed'}, default='rbf'</span>
+        <span class="s0">Kernel to use in the model: linear, polynomial, RBF, sigmoid</span>
+        <span class="s0">or precomputed.</span>
+
+    <span class="s0">degree : int32, default=3</span>
+        <span class="s0">Degree of the polynomial kernel (only relevant if kernel is</span>
+        <span class="s0">set to polynomial).</span>
+
+    <span class="s0">gamma : float64, default=0.1</span>
+        <span class="s0">Gamma parameter in rbf, poly and sigmoid kernels. Ignored by other</span>
+        <span class="s0">kernels.</span>
+
+    <span class="s0">coef0 : float64, default=0.0</span>
+        <span class="s0">Independent parameter in poly/sigmoid kernel.</span>
+
+    <span class="s0">tol : float64, default=1e-3</span>
+        <span class="s0">Numeric stopping criterion (WRITEME).</span>
+
+    <span class="s0">C : float64, default=1</span>
+        <span class="s0">C parameter in C-Support Vector Classification.</span>
+
+    <span class="s0">nu : float64, default=0.5</span>
+        <span class="s0">An upper bound on the fraction of training errors and a lower bound of</span>
+        <span class="s0">the fraction of support vectors. Should be in the interval (0, 1].</span>
+
+    <span class="s0">epsilon : double, default=0.1</span>
+        <span class="s0">Epsilon parameter in the epsilon-insensitive loss function.</span>
+
+    <span class="s0">class_weight : array, dtype=float64, shape (n_classes,), \</span>
+            <span class="s0">default=np.empty(0)</span>
+        <span class="s0">Set the parameter C of class i to class_weight[i]*C for</span>
+        <span class="s0">SVC. If not given, all classes are supposed to have</span>
+        <span class="s0">weight one.</span>
+
+    <span class="s0">sample_weight : array, dtype=float64, shape (n_samples,), \</span>
+            <span class="s0">default=np.empty(0)</span>
+        <span class="s0">Weights assigned to each sample.</span>
+
+    <span class="s0">shrinking : int, default=1</span>
+        <span class="s0">Whether to use the shrinking heuristic.</span>
+
+    <span class="s0">probability : int, default=0</span>
+        <span class="s0">Whether to enable probability estimates.</span>
+
+    <span class="s0">cache_size : float64, default=100</span>
+        <span class="s0">Cache size for gram matrix columns (in megabytes).</span>
+
+    <span class="s0">max_iter : int (-1 for no limit), default=-1</span>
+        <span class="s0">Stop solver after this many iterations regardless of accuracy</span>
+        <span class="s0">(XXX Currently there is no API to know whether this kicked in.)</span>
+
+    <span class="s0">random_seed : int, default=0</span>
+        <span class="s0">Seed for the random number generator used for probability estimates.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">target : array, float</span>
+
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef svm_parameter param</span>
+    <span class="s0">cdef svm_problem problem</span>
+    <span class="s0">cdef const char *error_msg</span>
+
+    <span class="s0">if len(sample_weight) == 0:</span>
+        <span class="s0">sample_weight = np.ones(X.shape[0], dtype=np.float64)</span>
+    <span class="s0">else:</span>
+        <span class="s0">assert sample_weight.shape[0] == X.shape[0], (</span>
+            <span class="s0">f&quot;sample_weight and X have incompatible shapes: sample_weight has &quot;</span>
+            <span class="s0">f&quot;{sample_weight.shape[0]} samples while X has {X.shape[0]}&quot;</span>
+        <span class="s0">)</span>
+
+    <span class="s0">if X.shape[0] &lt; n_fold:</span>
+        <span class="s0">raise ValueError(&quot;Number of samples is less than number of folds&quot;)</span>
+
+    <span class="s0"># set problem</span>
+    <span class="s0">kernel_index = LIBSVM_KERNEL_TYPES.index(kernel)</span>
+    <span class="s0">set_problem(</span>
+        <span class="s0">&amp;problem,</span>
+        <span class="s0">&lt;char*&gt; &amp;X[0, 0],</span>
+        <span class="s0">&lt;char*&gt; &amp;Y[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;sample_weight[0] if sample_weight.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;intp_t*&gt; X.shape,</span>
+        <span class="s0">kernel_index,</span>
+    <span class="s0">)</span>
+    <span class="s0">if problem.x == NULL:</span>
+        <span class="s0">raise MemoryError(&quot;Seems we've run out of memory&quot;)</span>
+    <span class="s0">cdef int32_t[::1] class_weight_label = np.arange(</span>
+        <span class="s0">class_weight.shape[0], dtype=np.int32</span>
+    <span class="s0">)</span>
+
+    <span class="s0"># set parameters</span>
+    <span class="s0">set_parameter(</span>
+        <span class="s0">&amp;param,</span>
+        <span class="s0">svm_type,</span>
+        <span class="s0">kernel_index,</span>
+        <span class="s0">degree,</span>
+        <span class="s0">gamma,</span>
+        <span class="s0">coef0,</span>
+        <span class="s0">nu,</span>
+        <span class="s0">cache_size,</span>
+        <span class="s0">C,</span>
+        <span class="s0">tol,</span>
+        <span class="s0">tol,</span>
+        <span class="s0">shrinking,</span>
+        <span class="s0">probability,</span>
+        <span class="s0">&lt;int&gt; class_weight.shape[0],</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight_label[0] if class_weight_label.size &gt; 0 else NULL,</span>
+        <span class="s0">&lt;char*&gt; &amp;class_weight[0] if class_weight.size &gt; 0 else NULL,</span>
+        <span class="s0">max_iter,</span>
+        <span class="s0">random_seed,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">error_msg = svm_check_parameter(&amp;problem, &amp;param)</span>
+    <span class="s0">if error_msg:</span>
+        <span class="s0">raise ValueError(error_msg)</span>
+
+    <span class="s0">cdef float64_t[::1] target</span>
+    <span class="s0">cdef BlasFunctions blas_functions</span>
+    <span class="s0">blas_functions.dot = _dot[double]</span>
+    <span class="s0">try:</span>
+        <span class="s0">target = np.empty((X.shape[0]), dtype=np.float64)</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">svm_cross_validation(</span>
+                <span class="s0">&amp;problem,</span>
+                <span class="s0">&amp;param,</span>
+                <span class="s0">n_fold,</span>
+                <span class="s0">&lt;double *&gt; &amp;target[0],</span>
+                <span class="s0">&amp;blas_functions,</span>
+            <span class="s0">)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">free(problem.x)</span>
+
+    <span class="s0">return target.base</span>
+
+
+<span class="s0">def set_verbosity_wrap(int verbosity):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Control verbosity of libsvm library</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">set_verbosity(verbosity)</span>
+</pre>
+</body>
+</html>

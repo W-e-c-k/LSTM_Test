@@ -1,0 +1,232 @@
+<html>
+<head>
+<title>xmlschema.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+xmlschema.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0">#  support for XMLSchema validation</span>
+<span class="s0">from lxml.includes cimport xmlschema</span>
+
+
+<span class="s0">cdef class XMLSchemaError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;Base class of all XML Schema errors</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class XMLSchemaParseError(XMLSchemaError):</span>
+    <span class="s0">&quot;&quot;&quot;Error while parsing an XML document as XML Schema.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class XMLSchemaValidateError(XMLSchemaError):</span>
+    <span class="s0">&quot;&quot;&quot;Error while validating an XML document with an XML Schema.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XMLSchema</span>
+
+<span class="s0">cdef XPath _check_for_default_attributes = XPath(</span>
+    <span class="s0">&quot;boolean(//xs:attribute[@default or @fixed][1])&quot;,</span>
+    <span class="s0">namespaces={'xs': 'http://www.w3.org/2001/XMLSchema'})</span>
+
+
+<span class="s0">cdef class XMLSchema(_Validator):</span>
+    <span class="s0">&quot;&quot;&quot;XMLSchema(self, etree=None, file=None)</span>
+    <span class="s0">Turn a document into an XML Schema validator.</span>
+
+    <span class="s0">Either pass a schema as Element or ElementTree, or pass a file or</span>
+    <span class="s0">filename through the ``file`` keyword argument.</span>
+
+    <span class="s0">Passing the ``attribute_defaults`` boolean option will make the</span>
+    <span class="s0">schema insert default/fixed attributes into validated documents.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlschema.xmlSchema* _c_schema</span>
+    <span class="s0">cdef _Document _doc</span>
+    <span class="s0">cdef bint _has_default_attributes</span>
+    <span class="s0">cdef bint _add_attribute_defaults</span>
+
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._has_default_attributes = True # play it safe</span>
+        <span class="s0">self._add_attribute_defaults = False</span>
+
+    <span class="s0">def __init__(self, etree=None, *, file=None, bint attribute_defaults=False):</span>
+        <span class="s0">cdef xmlschema.xmlSchemaParserCtxt* parser_ctxt</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+
+        <span class="s0">self._add_attribute_defaults = attribute_defaults</span>
+        <span class="s0">_Validator.__init__(self)</span>
+        <span class="s0">c_doc = NULL</span>
+        <span class="s0">if etree is not None:</span>
+            <span class="s0">doc = _documentOrRaise(etree)</span>
+            <span class="s0">root_node = _rootNodeOrRaise(etree)</span>
+            <span class="s0">c_doc = _copyDocRoot(doc._c_doc, root_node._c_node)</span>
+            <span class="s0">self._doc = _documentFactory(c_doc, doc._parser)</span>
+            <span class="s0">parser_ctxt = xmlschema.xmlSchemaNewDocParserCtxt(c_doc)</span>
+        <span class="s0">elif file is not None:</span>
+            <span class="s0">file = _getFSPathOrObject(file)</span>
+            <span class="s0">if _isString(file):</span>
+                <span class="s0">filename = _encodeFilename(file)</span>
+                <span class="s0">parser_ctxt = xmlschema.xmlSchemaNewParserCtxt(_cstr(filename))</span>
+            <span class="s0">else:</span>
+                <span class="s0">self._doc = _parseDocument(file, None, None)</span>
+                <span class="s0">parser_ctxt = xmlschema.xmlSchemaNewDocParserCtxt(self._doc._c_doc)</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise XMLSchemaParseError, &quot;No tree or file given&quot;</span>
+
+        <span class="s0">if parser_ctxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+
+        <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+        <span class="s0">xmlschema.xmlSchemaSetParserStructuredErrors(</span>
+            <span class="s0">parser_ctxt, &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveError, &lt;void*&gt;self._error_log)</span>
+        <span class="s0">if self._doc is not None:</span>
+            <span class="s0"># calling xmlSchemaParse on a schema with imports or</span>
+            <span class="s0"># includes will cause libxml2 to create an internal</span>
+            <span class="s0"># context for parsing, so push an implied context to route</span>
+            <span class="s0"># resolve requests to the document's parser</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.pushImpliedContextFromParser(self._doc._parser)</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">orig_loader = _register_document_loader()</span>
+            <span class="s0">self._c_schema = xmlschema.xmlSchemaParse(parser_ctxt)</span>
+            <span class="s0">_reset_document_loader(orig_loader)</span>
+        <span class="s0">if self._doc is not None:</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.popImpliedContext()</span>
+        <span class="s0">xmlschema.xmlSchemaFreeParserCtxt(parser_ctxt)</span>
+
+        <span class="s0">if self._c_schema is NULL:</span>
+            <span class="s0">raise XMLSchemaParseError(</span>
+                <span class="s0">self._error_log._buildExceptionMessage(</span>
+                    <span class="s0">&quot;Document is not valid XML Schema&quot;),</span>
+                <span class="s0">self._error_log)</span>
+
+        <span class="s0">if self._doc is not None:</span>
+            <span class="s0">self._has_default_attributes = _check_for_default_attributes(self._doc)</span>
+        <span class="s0">self._add_attribute_defaults = attribute_defaults and self._has_default_attributes</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">xmlschema.xmlSchemaFree(self._c_schema)</span>
+
+    <span class="s0">def __call__(self, etree):</span>
+        <span class="s0">&quot;&quot;&quot;__call__(self, etree)</span>
+
+        <span class="s0">Validate doc using XML Schema.</span>
+
+        <span class="s0">Returns true if document is valid, false if not.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlschema.xmlSchemaValidCtxt* valid_ctxt</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef _Element root_node</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef int ret</span>
+
+        <span class="s0">assert self._c_schema is not NULL, &quot;Schema instance not initialised&quot;</span>
+        <span class="s0">doc = _documentOrRaise(etree)</span>
+        <span class="s0">root_node = _rootNodeOrRaise(etree)</span>
+
+        <span class="s0">valid_ctxt = xmlschema.xmlSchemaNewValidCtxt(self._c_schema)</span>
+        <span class="s0">if valid_ctxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">if self._add_attribute_defaults:</span>
+                <span class="s0">xmlschema.xmlSchemaSetValidOptions(</span>
+                    <span class="s0">valid_ctxt, xmlschema.XML_SCHEMA_VAL_VC_I_CREATE)</span>
+
+            <span class="s0">self._error_log.clear()</span>
+            <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+            <span class="s0">xmlschema.xmlSchemaSetValidStructuredErrors(</span>
+                <span class="s0">valid_ctxt, &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveError, &lt;void*&gt;self._error_log)</span>
+
+            <span class="s0">c_doc = _fakeRootDoc(doc._c_doc, root_node._c_node)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">ret = xmlschema.xmlSchemaValidateDoc(valid_ctxt, c_doc)</span>
+            <span class="s0">_destroyFakeDoc(doc._c_doc, c_doc)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">xmlschema.xmlSchemaFreeValidCtxt(valid_ctxt)</span>
+
+        <span class="s0">if ret == -1:</span>
+            <span class="s0">raise XMLSchemaValidateError(</span>
+                <span class="s0">&quot;Internal error in XML Schema validation.&quot;,</span>
+                <span class="s0">self._error_log)</span>
+        <span class="s0">if ret == 0:</span>
+            <span class="s0">return True</span>
+        <span class="s0">else:</span>
+            <span class="s0">return False</span>
+
+    <span class="s0">cdef _ParserSchemaValidationContext _newSaxValidator(</span>
+            <span class="s0">self, bint add_default_attributes):</span>
+        <span class="s0">cdef _ParserSchemaValidationContext context</span>
+        <span class="s0">context = _ParserSchemaValidationContext.__new__(_ParserSchemaValidationContext)</span>
+        <span class="s0">context._schema = self</span>
+        <span class="s0">context._add_default_attributes = (self._has_default_attributes and (</span>
+            <span class="s0">add_default_attributes or self._add_attribute_defaults))</span>
+        <span class="s0">return context</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ParserSchemaValidationContext:</span>
+    <span class="s0">cdef XMLSchema _schema</span>
+    <span class="s0">cdef xmlschema.xmlSchemaValidCtxt* _valid_ctxt</span>
+    <span class="s0">cdef xmlschema.xmlSchemaSAXPlugStruct* _sax_plug</span>
+    <span class="s0">cdef bint _add_default_attributes</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._valid_ctxt = NULL</span>
+        <span class="s0">self._sax_plug = NULL</span>
+        <span class="s0">self._add_default_attributes = False</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">self.disconnect()</span>
+        <span class="s0">if self._valid_ctxt:</span>
+            <span class="s0">xmlschema.xmlSchemaFreeValidCtxt(self._valid_ctxt)</span>
+
+    <span class="s0">cdef _ParserSchemaValidationContext copy(self):</span>
+        <span class="s0">assert self._schema is not None, &quot;_ParserSchemaValidationContext not initialised&quot;</span>
+        <span class="s0">return self._schema._newSaxValidator(</span>
+            <span class="s0">self._add_default_attributes)</span>
+
+    <span class="s0">cdef void inject_default_attributes(self, xmlDoc* c_doc) noexcept:</span>
+        <span class="s0"># we currently need to insert default attributes manually</span>
+        <span class="s0"># after parsing, as libxml2 does not support this at parse</span>
+        <span class="s0"># time</span>
+        <span class="s0">if self._add_default_attributes:</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">xmlschema.xmlSchemaValidateDoc(self._valid_ctxt, c_doc)</span>
+
+    <span class="s0">cdef int connect(self, xmlparser.xmlParserCtxt* c_ctxt, _BaseErrorLog error_log) except -1:</span>
+        <span class="s0">if self._valid_ctxt is NULL:</span>
+            <span class="s0">self._valid_ctxt = xmlschema.xmlSchemaNewValidCtxt(</span>
+                <span class="s0">self._schema._c_schema)</span>
+            <span class="s0">if self._valid_ctxt is NULL:</span>
+                <span class="s0">raise MemoryError()</span>
+            <span class="s0">if self._add_default_attributes:</span>
+                <span class="s0">xmlschema.xmlSchemaSetValidOptions(</span>
+                    <span class="s0">self._valid_ctxt, xmlschema.XML_SCHEMA_VAL_VC_I_CREATE)</span>
+        <span class="s0">if error_log is not None:</span>
+            <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+            <span class="s0">xmlschema.xmlSchemaSetValidStructuredErrors(</span>
+                <span class="s0">self._valid_ctxt, &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveError, &lt;void*&gt;error_log)</span>
+        <span class="s0">self._sax_plug = xmlschema.xmlSchemaSAXPlug(</span>
+            <span class="s0">self._valid_ctxt, &amp;c_ctxt.sax, &amp;c_ctxt.userData)</span>
+
+    <span class="s0">cdef void disconnect(self) noexcept:</span>
+        <span class="s0">if self._sax_plug is not NULL:</span>
+            <span class="s0">xmlschema.xmlSchemaSAXUnplug(self._sax_plug)</span>
+            <span class="s0">self._sax_plug = NULL</span>
+        <span class="s0">if self._valid_ctxt is not NULL:</span>
+            <span class="s0">xmlschema.xmlSchemaSetValidStructuredErrors(</span>
+                <span class="s0">self._valid_ctxt, NULL, NULL)</span>
+
+    <span class="s0">cdef bint isvalid(self) noexcept:</span>
+        <span class="s0">if self._valid_ctxt is NULL:</span>
+            <span class="s0">return 1 # valid</span>
+        <span class="s0">return xmlschema.xmlSchemaIsValid(self._valid_ctxt)</span>
+</pre>
+</body>
+</html>

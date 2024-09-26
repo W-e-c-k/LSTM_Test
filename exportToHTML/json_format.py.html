@@ -1,0 +1,928 @@
+<html>
+<head>
+<title>json_format.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #cf8e6d;}
+.s6 { color: #2aacb8;}
+.s7 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+json_format.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Protocol Buffers - Google's data interchange format</span>
+<span class="s0"># Copyright 2008 Google Inc.  All rights reserved.</span>
+<span class="s0">#</span>
+<span class="s0"># Use of this source code is governed by a BSD-style</span>
+<span class="s0"># license that can be found in the LICENSE file or at</span>
+<span class="s0"># https://developers.google.com/open-source/licenses/bsd</span>
+
+<span class="s2">&quot;&quot;&quot;Contains routines for printing protocol messages in JSON format. 
+ 
+Simple usage example: 
+ 
+  # Create a proto object and serialize it to a json format string. 
+  message = my_proto_pb2.MyMessage(foo='bar') 
+  json_string = json_format.MessageToJson(message) 
+ 
+  # Parse a json format string to proto object. 
+  message = json_format.Parse(json_string, my_proto_pb2.MyMessage()) 
+&quot;&quot;&quot;</span>
+
+<span class="s1">__author__ </span><span class="s3">= </span><span class="s4">'jieluo@google.com (Jie Luo)'</span>
+
+
+<span class="s5">import </span><span class="s1">base64</span>
+<span class="s5">from </span><span class="s1">collections </span><span class="s5">import </span><span class="s1">OrderedDict</span>
+<span class="s5">import </span><span class="s1">json</span>
+<span class="s5">import </span><span class="s1">math</span>
+<span class="s5">from </span><span class="s1">operator </span><span class="s5">import </span><span class="s1">methodcaller</span>
+<span class="s5">import </span><span class="s1">re</span>
+
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf</span><span class="s3">.</span><span class="s1">internal </span><span class="s5">import </span><span class="s1">type_checkers</span>
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf </span><span class="s5">import </span><span class="s1">descriptor</span>
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf </span><span class="s5">import </span><span class="s1">message_factory</span>
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf </span><span class="s5">import </span><span class="s1">symbol_database</span>
+
+
+<span class="s1">_INT_TYPES </span><span class="s3">= </span><span class="s1">frozenset</span><span class="s3">([</span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_INT32</span><span class="s3">,</span>
+                        <span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_UINT32</span><span class="s3">,</span>
+                        <span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_INT64</span><span class="s3">,</span>
+                        <span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_UINT64</span><span class="s3">])</span>
+<span class="s1">_INT64_TYPES </span><span class="s3">= </span><span class="s1">frozenset</span><span class="s3">([</span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_INT64</span><span class="s3">,</span>
+                          <span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_UINT64</span><span class="s3">])</span>
+<span class="s1">_FLOAT_TYPES </span><span class="s3">= </span><span class="s1">frozenset</span><span class="s3">([</span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_FLOAT</span><span class="s3">,</span>
+                          <span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_DOUBLE</span><span class="s3">])</span>
+<span class="s1">_INFINITY </span><span class="s3">= </span><span class="s4">'Infinity'</span>
+<span class="s1">_NEG_INFINITY </span><span class="s3">= </span><span class="s4">'-Infinity'</span>
+<span class="s1">_NAN </span><span class="s3">= </span><span class="s4">'NaN'</span>
+
+<span class="s1">_UNPAIRED_SURROGATE_PATTERN </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span>
+    <span class="s4">u'[</span><span class="s5">\ud800</span><span class="s4">-</span><span class="s5">\udbff</span><span class="s4">](?![</span><span class="s5">\udc00</span><span class="s4">-</span><span class="s5">\udfff</span><span class="s4">])|(?&lt;![</span><span class="s5">\ud800</span><span class="s4">-</span><span class="s5">\udbff</span><span class="s4">])[</span><span class="s5">\udc00</span><span class="s4">-</span><span class="s5">\udfff</span><span class="s4">]'</span><span class="s3">)</span>
+
+<span class="s1">_VALID_EXTENSION_NAME </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">r'\[[a-zA-Z0-9\._]*\]$'</span><span class="s3">)</span>
+
+
+<span class="s5">class </span><span class="s1">Error</span><span class="s3">(</span><span class="s1">Exception</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Top-level module error for json_format.&quot;&quot;&quot;</span>
+
+
+<span class="s5">class </span><span class="s1">SerializeToJsonError</span><span class="s3">(</span><span class="s1">Error</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Thrown if serialization to JSON fails.&quot;&quot;&quot;</span>
+
+
+<span class="s5">class </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s1">Error</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Thrown in case of parsing error.&quot;&quot;&quot;</span>
+
+
+<span class="s5">def </span><span class="s1">MessageToJson</span><span class="s3">(</span>
+    <span class="s1">message</span><span class="s3">,</span>
+    <span class="s1">including_default_value_fields</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">preserving_proto_field_name</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">indent</span><span class="s3">=</span><span class="s6">2</span><span class="s3">,</span>
+    <span class="s1">sort_keys</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">use_integers_for_enums</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">descriptor_pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+    <span class="s1">float_precision</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+    <span class="s1">ensure_ascii</span><span class="s3">=</span><span class="s5">True</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Converts protobuf message to JSON format. 
+ 
+  Args: 
+    message: The protocol buffers message instance to serialize. 
+    including_default_value_fields: If True, singular primitive fields, 
+        repeated fields, and map fields will always be serialized.  If 
+        False, only serialize non-empty fields.  Singular message fields 
+        and oneof fields are not affected by this option. 
+    preserving_proto_field_name: If True, use the original proto field 
+        names as defined in the .proto file. If False, convert the field 
+        names to lowerCamelCase. 
+    indent: The JSON object will be pretty-printed with this indent level. 
+        An indent level of 0 or negative will only insert newlines. If the 
+        indent level is None, no newlines will be inserted. 
+    sort_keys: If True, then the output will be sorted by field names. 
+    use_integers_for_enums: If true, print integers instead of enum names. 
+    descriptor_pool: A Descriptor Pool for resolving types. If None use the 
+        default. 
+    float_precision: If set, use this to specify float field valid digits. 
+    ensure_ascii: If True, strings with non-ASCII characters are escaped. 
+        If False, Unicode strings are returned unchanged. 
+ 
+  Returns: 
+    A string containing the JSON formatted protocol buffer message. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">printer </span><span class="s3">= </span><span class="s1">_Printer</span><span class="s3">(</span>
+      <span class="s1">including_default_value_fields</span><span class="s3">,</span>
+      <span class="s1">preserving_proto_field_name</span><span class="s3">,</span>
+      <span class="s1">use_integers_for_enums</span><span class="s3">,</span>
+      <span class="s1">descriptor_pool</span><span class="s3">,</span>
+      <span class="s1">float_precision</span><span class="s3">=</span><span class="s1">float_precision</span><span class="s3">)</span>
+  <span class="s5">return </span><span class="s1">printer</span><span class="s3">.</span><span class="s1">ToJsonString</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">indent</span><span class="s3">, </span><span class="s1">sort_keys</span><span class="s3">, </span><span class="s1">ensure_ascii</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">MessageToDict</span><span class="s3">(</span>
+    <span class="s1">message</span><span class="s3">,</span>
+    <span class="s1">including_default_value_fields</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">preserving_proto_field_name</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">use_integers_for_enums</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+    <span class="s1">descriptor_pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+    <span class="s1">float_precision</span><span class="s3">=</span><span class="s5">None</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Converts protobuf message to a dictionary. 
+ 
+  When the dictionary is encoded to JSON, it conforms to proto3 JSON spec. 
+ 
+  Args: 
+    message: The protocol buffers message instance to serialize. 
+    including_default_value_fields: If True, singular primitive fields, 
+        repeated fields, and map fields will always be serialized.  If 
+        False, only serialize non-empty fields.  Singular message fields 
+        and oneof fields are not affected by this option. 
+    preserving_proto_field_name: If True, use the original proto field 
+        names as defined in the .proto file. If False, convert the field 
+        names to lowerCamelCase. 
+    use_integers_for_enums: If true, print integers instead of enum names. 
+    descriptor_pool: A Descriptor Pool for resolving types. If None use the 
+        default. 
+    float_precision: If set, use this to specify float field valid digits. 
+ 
+  Returns: 
+    A dict representation of the protocol buffer message. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">printer </span><span class="s3">= </span><span class="s1">_Printer</span><span class="s3">(</span>
+      <span class="s1">including_default_value_fields</span><span class="s3">,</span>
+      <span class="s1">preserving_proto_field_name</span><span class="s3">,</span>
+      <span class="s1">use_integers_for_enums</span><span class="s3">,</span>
+      <span class="s1">descriptor_pool</span><span class="s3">,</span>
+      <span class="s1">float_precision</span><span class="s3">=</span><span class="s1">float_precision</span><span class="s3">)</span>
+  <span class="s0"># pylint: disable=protected-access</span>
+  <span class="s5">return </span><span class="s1">printer</span><span class="s3">.</span><span class="s1">_MessageToJsonObject</span><span class="s3">(</span><span class="s1">message</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">_IsMapEntry</span><span class="s3">(</span><span class="s1">field</span><span class="s3">):</span>
+  <span class="s5">return </span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">TYPE_MESSAGE </span><span class="s5">and</span>
+          <span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">.</span><span class="s1">has_options </span><span class="s5">and</span>
+          <span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">.</span><span class="s1">GetOptions</span><span class="s3">().</span><span class="s1">map_entry</span><span class="s3">)</span>
+
+
+<span class="s5">class </span><span class="s1">_Printer</span><span class="s3">(</span><span class="s1">object</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;JSON format printer for protocol message.&quot;&quot;&quot;</span>
+
+  <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span>
+      <span class="s1">self</span><span class="s3">,</span>
+      <span class="s1">including_default_value_fields</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+      <span class="s1">preserving_proto_field_name</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+      <span class="s1">use_integers_for_enums</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+      <span class="s1">descriptor_pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+      <span class="s1">float_precision</span><span class="s3">=</span><span class="s5">None</span><span class="s3">):</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">including_default_value_fields </span><span class="s3">= </span><span class="s1">including_default_value_fields</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">preserving_proto_field_name </span><span class="s3">= </span><span class="s1">preserving_proto_field_name</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">use_integers_for_enums </span><span class="s3">= </span><span class="s1">use_integers_for_enums</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">descriptor_pool </span><span class="s3">= </span><span class="s1">descriptor_pool</span>
+    <span class="s5">if </span><span class="s1">float_precision</span><span class="s3">:</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">float_format </span><span class="s3">= </span><span class="s4">'.{}g'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">float_precision</span><span class="s3">)</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">float_format </span><span class="s3">= </span><span class="s5">None</span>
+
+  <span class="s5">def </span><span class="s1">ToJsonString</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">indent</span><span class="s3">, </span><span class="s1">sort_keys</span><span class="s3">, </span><span class="s1">ensure_ascii</span><span class="s3">):</span>
+    <span class="s1">js </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_MessageToJsonObject</span><span class="s3">(</span><span class="s1">message</span><span class="s3">)</span>
+    <span class="s5">return </span><span class="s1">json</span><span class="s3">.</span><span class="s1">dumps</span><span class="s3">(</span>
+        <span class="s1">js</span><span class="s3">, </span><span class="s1">indent</span><span class="s3">=</span><span class="s1">indent</span><span class="s3">, </span><span class="s1">sort_keys</span><span class="s3">=</span><span class="s1">sort_keys</span><span class="s3">, </span><span class="s1">ensure_ascii</span><span class="s3">=</span><span class="s1">ensure_ascii</span><span class="s3">)</span>
+
+  <span class="s5">def </span><span class="s1">_MessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts message to an object according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span>
+    <span class="s1">full_name </span><span class="s3">= </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">full_name</span>
+    <span class="s5">if </span><span class="s1">_IsWrapperMessage</span><span class="s3">(</span><span class="s1">message_descriptor</span><span class="s3">):</span>
+      <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_WrapperMessageToJsonObject</span><span class="s3">(</span><span class="s1">message</span><span class="s3">)</span>
+    <span class="s5">if </span><span class="s1">full_name </span><span class="s5">in </span><span class="s1">_WKTJSONMETHODS</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">methodcaller</span><span class="s3">(</span><span class="s1">_WKTJSONMETHODS</span><span class="s3">[</span><span class="s1">full_name</span><span class="s3">][</span><span class="s6">0</span><span class="s3">], </span><span class="s1">message</span><span class="s3">)(</span><span class="s1">self</span><span class="s3">)</span>
+    <span class="s1">js </span><span class="s3">= {}</span>
+    <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_RegularMessageToJsonObject</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">js</span><span class="s3">)</span>
+
+  <span class="s5">def </span><span class="s1">_RegularMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">js</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts normal message according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s1">fields </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">ListFields</span><span class="s3">()</span>
+
+    <span class="s5">try</span><span class="s3">:</span>
+      <span class="s5">for </span><span class="s1">field</span><span class="s3">, </span><span class="s1">value </span><span class="s5">in </span><span class="s1">fields</span><span class="s3">:</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">preserving_proto_field_name</span><span class="s3">:</span>
+          <span class="s1">name </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s1">name </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">json_name</span>
+        <span class="s5">if </span><span class="s1">_IsMapEntry</span><span class="s3">(</span><span class="s1">field</span><span class="s3">):</span>
+          <span class="s0"># Convert a map field.</span>
+          <span class="s1">v_field </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">]</span>
+          <span class="s1">js_map </span><span class="s3">= {}</span>
+          <span class="s5">for </span><span class="s1">key </span><span class="s5">in </span><span class="s1">value</span><span class="s3">:</span>
+            <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">key</span><span class="s3">, </span><span class="s1">bool</span><span class="s3">):</span>
+              <span class="s5">if </span><span class="s1">key</span><span class="s3">:</span>
+                <span class="s1">recorded_key </span><span class="s3">= </span><span class="s4">'true'</span>
+              <span class="s5">else</span><span class="s3">:</span>
+                <span class="s1">recorded_key </span><span class="s3">= </span><span class="s4">'false'</span>
+            <span class="s5">else</span><span class="s3">:</span>
+              <span class="s1">recorded_key </span><span class="s3">= </span><span class="s1">str</span><span class="s3">(</span><span class="s1">key</span><span class="s3">)</span>
+            <span class="s1">js_map</span><span class="s3">[</span><span class="s1">recorded_key</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span>
+                <span class="s1">v_field</span><span class="s3">, </span><span class="s1">value</span><span class="s3">[</span><span class="s1">key</span><span class="s3">])</span>
+          <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">js_map</span>
+        <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">label </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">LABEL_REPEATED</span><span class="s3">:</span>
+          <span class="s0"># Convert a repeated field.</span>
+          <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span><span class="s1">field</span><span class="s3">, </span><span class="s1">k</span><span class="s3">)</span>
+                      <span class="s5">for </span><span class="s1">k </span><span class="s5">in </span><span class="s1">value</span><span class="s3">]</span>
+        <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">is_extension</span><span class="s3">:</span>
+          <span class="s1">name </span><span class="s3">= </span><span class="s4">'[%s]' </span><span class="s3">% </span><span class="s1">field</span><span class="s3">.</span><span class="s1">full_name</span>
+          <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span><span class="s1">field</span><span class="s3">, </span><span class="s1">value</span><span class="s3">)</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span><span class="s1">field</span><span class="s3">, </span><span class="s1">value</span><span class="s3">)</span>
+
+      <span class="s0"># Serialize default value if including_default_value_fields is True.</span>
+      <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">including_default_value_fields</span><span class="s3">:</span>
+        <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span>
+        <span class="s5">for </span><span class="s1">field </span><span class="s5">in </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">fields</span><span class="s3">:</span>
+          <span class="s0"># Singular message fields and oneof fields will not be affected.</span>
+          <span class="s5">if </span><span class="s3">((</span><span class="s1">field</span><span class="s3">.</span><span class="s1">label </span><span class="s3">!= </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">LABEL_REPEATED </span><span class="s5">and</span>
+               <span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_MESSAGE</span><span class="s3">) </span><span class="s5">or</span>
+              <span class="s1">field</span><span class="s3">.</span><span class="s1">containing_oneof</span><span class="s3">):</span>
+            <span class="s5">continue</span>
+          <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">preserving_proto_field_name</span><span class="s3">:</span>
+            <span class="s1">name </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">name </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">json_name</span>
+          <span class="s5">if </span><span class="s1">name </span><span class="s5">in </span><span class="s1">js</span><span class="s3">:</span>
+            <span class="s0"># Skip the field which has been serialized already.</span>
+            <span class="s5">continue</span>
+          <span class="s5">if </span><span class="s1">_IsMapEntry</span><span class="s3">(</span><span class="s1">field</span><span class="s3">):</span>
+            <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = {}</span>
+          <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">label </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">LABEL_REPEATED</span><span class="s3">:</span>
+            <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = []</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span><span class="s1">field</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">default_value</span><span class="s3">)</span>
+
+    <span class="s5">except </span><span class="s1">ValueError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">SerializeToJsonError</span><span class="s3">(</span>
+          <span class="s4">'Failed to serialize {0} field: {1}.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">, </span><span class="s1">e</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+
+    <span class="s5">return </span><span class="s1">js</span>
+
+  <span class="s5">def </span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">field</span><span class="s3">, </span><span class="s1">value</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts field value according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_MESSAGE</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_MessageToJsonObject</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_ENUM</span><span class="s3">:</span>
+      <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_integers_for_enums</span><span class="s3">:</span>
+        <span class="s5">return </span><span class="s1">value</span>
+      <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">full_name </span><span class="s3">== </span><span class="s4">'google.protobuf.NullValue'</span><span class="s3">:</span>
+        <span class="s5">return None</span>
+      <span class="s1">enum_value </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">values_by_number</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s5">None</span><span class="s3">)</span>
+      <span class="s5">if </span><span class="s1">enum_value </span><span class="s5">is not None</span><span class="s3">:</span>
+        <span class="s5">return </span><span class="s1">enum_value</span><span class="s3">.</span><span class="s1">name</span>
+      <span class="s5">else</span><span class="s3">:</span>
+        <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">is_closed</span><span class="s3">:</span>
+          <span class="s5">raise </span><span class="s1">SerializeToJsonError</span><span class="s3">(</span><span class="s4">'Enum field contains an integer value '</span>
+                                     <span class="s4">'which can not mapped to an enum value.'</span><span class="s3">)</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s5">return </span><span class="s1">value</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_STRING</span><span class="s3">:</span>
+      <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">TYPE_BYTES</span><span class="s3">:</span>
+        <span class="s0"># Use base64 Data encoding for bytes</span>
+        <span class="s5">return </span><span class="s1">base64</span><span class="s3">.</span><span class="s1">b64encode</span><span class="s3">(</span><span class="s1">value</span><span class="s3">).</span><span class="s1">decode</span><span class="s3">(</span><span class="s4">'utf-8'</span><span class="s3">)</span>
+      <span class="s5">else</span><span class="s3">:</span>
+        <span class="s5">return </span><span class="s1">value</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_BOOL</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">bool</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s5">in </span><span class="s1">_INT64_TYPES</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">str</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s5">in </span><span class="s1">_FLOAT_TYPES</span><span class="s3">:</span>
+      <span class="s5">if </span><span class="s1">math</span><span class="s3">.</span><span class="s1">isinf</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+        <span class="s5">if </span><span class="s1">value </span><span class="s3">&lt; </span><span class="s6">0.0</span><span class="s3">:</span>
+          <span class="s5">return </span><span class="s1">_NEG_INFINITY</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s5">return </span><span class="s1">_INFINITY</span>
+      <span class="s5">if </span><span class="s1">math</span><span class="s3">.</span><span class="s1">isnan</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+        <span class="s5">return </span><span class="s1">_NAN</span>
+      <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_FLOAT</span><span class="s3">:</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">float_format</span><span class="s3">:</span>
+          <span class="s5">return </span><span class="s1">float</span><span class="s3">(</span><span class="s1">format</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">float_format</span><span class="s3">))</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s5">return </span><span class="s1">type_checkers</span><span class="s3">.</span><span class="s1">ToShortestFloat</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+
+    <span class="s5">return </span><span class="s1">value</span>
+
+  <span class="s5">def </span><span class="s1">_AnyMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts Any message according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s5">if not </span><span class="s1">message</span><span class="s3">.</span><span class="s1">ListFields</span><span class="s3">():</span>
+      <span class="s5">return </span><span class="s3">{}</span>
+    <span class="s0"># Must print @type first, use OrderedDict instead of {}</span>
+    <span class="s1">js </span><span class="s3">= </span><span class="s1">OrderedDict</span><span class="s3">()</span>
+    <span class="s1">type_url </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">type_url</span>
+    <span class="s1">js</span><span class="s3">[</span><span class="s4">'@type'</span><span class="s3">] = </span><span class="s1">type_url</span>
+    <span class="s1">sub_message </span><span class="s3">= </span><span class="s1">_CreateMessageFromTypeUrl</span><span class="s3">(</span><span class="s1">type_url</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">descriptor_pool</span><span class="s3">)</span>
+    <span class="s1">sub_message</span><span class="s3">.</span><span class="s1">ParseFromString</span><span class="s3">(</span><span class="s1">message</span><span class="s3">.</span><span class="s1">value</span><span class="s3">)</span>
+    <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">sub_message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span>
+    <span class="s1">full_name </span><span class="s3">= </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">full_name</span>
+    <span class="s5">if </span><span class="s1">_IsWrapperMessage</span><span class="s3">(</span><span class="s1">message_descriptor</span><span class="s3">):</span>
+      <span class="s1">js</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_WrapperMessageToJsonObject</span><span class="s3">(</span><span class="s1">sub_message</span><span class="s3">)</span>
+      <span class="s5">return </span><span class="s1">js</span>
+    <span class="s5">if </span><span class="s1">full_name </span><span class="s5">in </span><span class="s1">_WKTJSONMETHODS</span><span class="s3">:</span>
+      <span class="s1">js</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">] = </span><span class="s1">methodcaller</span><span class="s3">(</span><span class="s1">_WKTJSONMETHODS</span><span class="s3">[</span><span class="s1">full_name</span><span class="s3">][</span><span class="s6">0</span><span class="s3">],</span>
+                                 <span class="s1">sub_message</span><span class="s3">)(</span><span class="s1">self</span><span class="s3">)</span>
+      <span class="s5">return </span><span class="s1">js</span>
+    <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_RegularMessageToJsonObject</span><span class="s3">(</span><span class="s1">sub_message</span><span class="s3">, </span><span class="s1">js</span><span class="s3">)</span>
+
+  <span class="s5">def </span><span class="s1">_GenericMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts message according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s0"># Duration, Timestamp and FieldMask have ToJsonString method to do the</span>
+    <span class="s0"># convert. Users can also call the method directly.</span>
+    <span class="s5">return </span><span class="s1">message</span><span class="s3">.</span><span class="s1">ToJsonString</span><span class="s3">()</span>
+
+  <span class="s5">def </span><span class="s1">_ValueMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts Value message according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s1">which </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">WhichOneof</span><span class="s3">(</span><span class="s4">'kind'</span><span class="s3">)</span>
+    <span class="s0"># If the Value message is not set treat as null_value when serialize</span>
+    <span class="s0"># to JSON. The parse back result will be different from original message.</span>
+    <span class="s5">if </span><span class="s1">which </span><span class="s5">is None or </span><span class="s1">which </span><span class="s3">== </span><span class="s4">'null_value'</span><span class="s3">:</span>
+      <span class="s5">return None</span>
+    <span class="s5">if </span><span class="s1">which </span><span class="s3">== </span><span class="s4">'list_value'</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_ListValueMessageToJsonObject</span><span class="s3">(</span><span class="s1">message</span><span class="s3">.</span><span class="s1">list_value</span><span class="s3">)</span>
+    <span class="s5">if </span><span class="s1">which </span><span class="s3">== </span><span class="s4">'number_value'</span><span class="s3">:</span>
+      <span class="s1">value </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">number_value</span>
+      <span class="s5">if </span><span class="s1">math</span><span class="s3">.</span><span class="s1">isinf</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+        <span class="s5">raise </span><span class="s1">ValueError</span><span class="s3">(</span><span class="s4">'Fail to serialize Infinity for Value.number_value, '</span>
+                         <span class="s4">'which would parse as string_value'</span><span class="s3">)</span>
+      <span class="s5">if </span><span class="s1">math</span><span class="s3">.</span><span class="s1">isnan</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+        <span class="s5">raise </span><span class="s1">ValueError</span><span class="s3">(</span><span class="s4">'Fail to serialize NaN for Value.number_value, '</span>
+                         <span class="s4">'which would parse as string_value'</span><span class="s3">)</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s1">value </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">which</span><span class="s3">)</span>
+    <span class="s1">oneof_descriptor </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">[</span><span class="s1">which</span><span class="s3">]</span>
+    <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span><span class="s1">oneof_descriptor</span><span class="s3">, </span><span class="s1">value</span><span class="s3">)</span>
+
+  <span class="s5">def </span><span class="s1">_ListValueMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts ListValue message according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s5">return </span><span class="s3">[</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_ValueMessageToJsonObject</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+            <span class="s5">for </span><span class="s1">value </span><span class="s5">in </span><span class="s1">message</span><span class="s3">.</span><span class="s1">values</span><span class="s3">]</span>
+
+  <span class="s5">def </span><span class="s1">_StructMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Converts Struct message according to Proto3 JSON Specification.&quot;&quot;&quot;</span>
+    <span class="s1">fields </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">fields</span>
+    <span class="s1">ret </span><span class="s3">= {}</span>
+    <span class="s5">for </span><span class="s1">key </span><span class="s5">in </span><span class="s1">fields</span><span class="s3">:</span>
+      <span class="s1">ret</span><span class="s3">[</span><span class="s1">key</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_ValueMessageToJsonObject</span><span class="s3">(</span><span class="s1">fields</span><span class="s3">[</span><span class="s1">key</span><span class="s3">])</span>
+    <span class="s5">return </span><span class="s1">ret</span>
+
+  <span class="s5">def </span><span class="s1">_WrapperMessageToJsonObject</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+    <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_FieldToJsonObject</span><span class="s3">(</span>
+        <span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">], </span><span class="s1">message</span><span class="s3">.</span><span class="s1">value</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">_IsWrapperMessage</span><span class="s3">(</span><span class="s1">message_descriptor</span><span class="s3">):</span>
+  <span class="s5">return </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">file</span><span class="s3">.</span><span class="s1">name </span><span class="s3">== </span><span class="s4">'google/protobuf/wrappers.proto'</span>
+
+
+<span class="s5">def </span><span class="s1">_DuplicateChecker</span><span class="s3">(</span><span class="s1">js</span><span class="s3">):</span>
+  <span class="s1">result </span><span class="s3">= {}</span>
+  <span class="s5">for </span><span class="s1">name</span><span class="s3">, </span><span class="s1">value </span><span class="s5">in </span><span class="s1">js</span><span class="s3">:</span>
+    <span class="s5">if </span><span class="s1">name </span><span class="s5">in </span><span class="s1">result</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Failed to load JSON: duplicate key {0}.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">name</span><span class="s3">))</span>
+    <span class="s1">result</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">value</span>
+  <span class="s5">return </span><span class="s1">result</span>
+
+
+<span class="s5">def </span><span class="s1">_CreateMessageFromTypeUrl</span><span class="s3">(</span><span class="s1">type_url</span><span class="s3">, </span><span class="s1">descriptor_pool</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Creates a message from a type URL.&quot;&quot;&quot;</span>
+  <span class="s1">db </span><span class="s3">= </span><span class="s1">symbol_database</span><span class="s3">.</span><span class="s1">Default</span><span class="s3">()</span>
+  <span class="s1">pool </span><span class="s3">= </span><span class="s1">db</span><span class="s3">.</span><span class="s1">pool </span><span class="s5">if </span><span class="s1">descriptor_pool </span><span class="s5">is None else </span><span class="s1">descriptor_pool</span>
+  <span class="s1">type_name </span><span class="s3">= </span><span class="s1">type_url</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s4">'/'</span><span class="s3">)[-</span><span class="s6">1</span><span class="s3">]</span>
+  <span class="s5">try</span><span class="s3">:</span>
+    <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">pool</span><span class="s3">.</span><span class="s1">FindMessageTypeByName</span><span class="s3">(</span><span class="s1">type_name</span><span class="s3">)</span>
+  <span class="s5">except </span><span class="s1">KeyError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+    <span class="s5">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+        <span class="s4">'Can not find message descriptor by type_url: {0}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">type_url</span><span class="s3">)</span>
+      <span class="s3">) </span><span class="s5">from </span><span class="s1">e</span>
+  <span class="s1">message_class </span><span class="s3">= </span><span class="s1">message_factory</span><span class="s3">.</span><span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">message_descriptor</span><span class="s3">)</span>
+  <span class="s5">return </span><span class="s1">message_class</span><span class="s3">()</span>
+
+
+<span class="s5">def </span><span class="s1">Parse</span><span class="s3">(</span><span class="s1">text</span><span class="s3">,</span>
+          <span class="s1">message</span><span class="s3">,</span>
+          <span class="s1">ignore_unknown_fields</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+          <span class="s1">descriptor_pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+          <span class="s1">max_recursion_depth</span><span class="s3">=</span><span class="s6">100</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Parses a JSON representation of a protocol message into a message. 
+ 
+  Args: 
+    text: Message JSON representation. 
+    message: A protocol buffer message to merge into. 
+    ignore_unknown_fields: If True, do not raise errors for unknown fields. 
+    descriptor_pool: A Descriptor Pool for resolving types. If None use the 
+      default. 
+    max_recursion_depth: max recursion depth of JSON message to be 
+      deserialized. JSON messages over this depth will fail to be 
+      deserialized. Default value is 100. 
+ 
+  Returns: 
+    The same message passed as argument. 
+ 
+  Raises:: 
+    ParseError: On JSON parsing problems. 
+  &quot;&quot;&quot;</span>
+  <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">text</span><span class="s3">, </span><span class="s1">str</span><span class="s3">):</span>
+    <span class="s1">text </span><span class="s3">= </span><span class="s1">text</span><span class="s3">.</span><span class="s1">decode</span><span class="s3">(</span><span class="s4">'utf-8'</span><span class="s3">)</span>
+  <span class="s5">try</span><span class="s3">:</span>
+    <span class="s1">js </span><span class="s3">= </span><span class="s1">json</span><span class="s3">.</span><span class="s1">loads</span><span class="s3">(</span><span class="s1">text</span><span class="s3">, </span><span class="s1">object_pairs_hook</span><span class="s3">=</span><span class="s1">_DuplicateChecker</span><span class="s3">)</span>
+  <span class="s5">except </span><span class="s1">ValueError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Failed to load JSON: {0}.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">str</span><span class="s3">(</span><span class="s1">e</span><span class="s3">))) </span><span class="s5">from </span><span class="s1">e</span>
+  <span class="s5">return </span><span class="s1">ParseDict</span><span class="s3">(</span><span class="s1">js</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">ignore_unknown_fields</span><span class="s3">, </span><span class="s1">descriptor_pool</span><span class="s3">,</span>
+                   <span class="s1">max_recursion_depth</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">ParseDict</span><span class="s3">(</span><span class="s1">js_dict</span><span class="s3">,</span>
+              <span class="s1">message</span><span class="s3">,</span>
+              <span class="s1">ignore_unknown_fields</span><span class="s3">=</span><span class="s5">False</span><span class="s3">,</span>
+              <span class="s1">descriptor_pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+              <span class="s1">max_recursion_depth</span><span class="s3">=</span><span class="s6">100</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Parses a JSON dictionary representation into a message. 
+ 
+  Args: 
+    js_dict: Dict representation of a JSON message. 
+    message: A protocol buffer message to merge into. 
+    ignore_unknown_fields: If True, do not raise errors for unknown fields. 
+    descriptor_pool: A Descriptor Pool for resolving types. If None use the 
+      default. 
+    max_recursion_depth: max recursion depth of JSON message to be 
+      deserialized. JSON messages over this depth will fail to be 
+      deserialized. Default value is 100. 
+ 
+  Returns: 
+    The same message passed as argument. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">parser </span><span class="s3">= </span><span class="s1">_Parser</span><span class="s3">(</span><span class="s1">ignore_unknown_fields</span><span class="s3">, </span><span class="s1">descriptor_pool</span><span class="s3">, </span><span class="s1">max_recursion_depth</span><span class="s3">)</span>
+  <span class="s1">parser</span><span class="s3">.</span><span class="s1">ConvertMessage</span><span class="s3">(</span><span class="s1">js_dict</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s4">''</span><span class="s3">)</span>
+  <span class="s5">return </span><span class="s1">message</span>
+
+
+<span class="s1">_INT_OR_FLOAT </span><span class="s3">= (</span><span class="s1">int</span><span class="s3">, </span><span class="s1">float</span><span class="s3">)</span>
+
+
+<span class="s5">class </span><span class="s1">_Parser</span><span class="s3">(</span><span class="s1">object</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;JSON format parser for protocol message.&quot;&quot;&quot;</span>
+
+  <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">ignore_unknown_fields</span><span class="s3">, </span><span class="s1">descriptor_pool</span><span class="s3">,</span>
+               <span class="s1">max_recursion_depth</span><span class="s3">):</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">ignore_unknown_fields </span><span class="s3">= </span><span class="s1">ignore_unknown_fields</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">descriptor_pool </span><span class="s3">= </span><span class="s1">descriptor_pool</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">max_recursion_depth </span><span class="s3">= </span><span class="s1">max_recursion_depth</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">recursion_depth </span><span class="s3">= </span><span class="s6">0</span>
+
+  <span class="s5">def </span><span class="s1">ConvertMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON object into a message. 
+ 
+    Args: 
+      value: A JSON object. 
+      message: A WKT or regular protocol message to record the data. 
+      path: parent path to log parse error info. 
+ 
+    Raises: 
+      ParseError: In case of convert problems. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">recursion_depth </span><span class="s3">+= </span><span class="s6">1</span>
+    <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">recursion_depth </span><span class="s3">&gt; </span><span class="s1">self</span><span class="s3">.</span><span class="s1">max_recursion_depth</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Message too deep. Max recursion depth is {0}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+          <span class="s1">self</span><span class="s3">.</span><span class="s1">max_recursion_depth</span><span class="s3">))</span>
+    <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span>
+    <span class="s1">full_name </span><span class="s3">= </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">full_name</span>
+    <span class="s5">if not </span><span class="s1">path</span><span class="s3">:</span>
+      <span class="s1">path </span><span class="s3">= </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">name</span>
+    <span class="s5">if </span><span class="s1">_IsWrapperMessage</span><span class="s3">(</span><span class="s1">message_descriptor</span><span class="s3">):</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertWrapperMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">full_name </span><span class="s5">in </span><span class="s1">_WKTJSONMETHODS</span><span class="s3">:</span>
+      <span class="s1">methodcaller</span><span class="s3">(</span><span class="s1">_WKTJSONMETHODS</span><span class="s3">[</span><span class="s1">full_name</span><span class="s3">][</span><span class="s6">1</span><span class="s3">], </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)(</span><span class="s1">self</span><span class="s3">)</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertFieldValuePair</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">recursion_depth </span><span class="s3">-= </span><span class="s6">1</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertFieldValuePair</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">js</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert field value pairs into regular message. 
+ 
+    Args: 
+      js: A JSON object to convert the field value pairs. 
+      message: A regular protocol message to record the data. 
+      path: parent path to log parse error info. 
+ 
+    Raises: 
+      ParseError: In case of problems converting. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">names </span><span class="s3">= []</span>
+    <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span>
+    <span class="s1">fields_by_json_name </span><span class="s3">= </span><span class="s1">dict</span><span class="s3">((</span><span class="s1">f</span><span class="s3">.</span><span class="s1">json_name</span><span class="s3">, </span><span class="s1">f</span><span class="s3">)</span>
+                               <span class="s5">for </span><span class="s1">f </span><span class="s5">in </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">fields</span><span class="s3">)</span>
+    <span class="s5">for </span><span class="s1">name </span><span class="s5">in </span><span class="s1">js</span><span class="s3">:</span>
+      <span class="s5">try</span><span class="s3">:</span>
+        <span class="s1">field </span><span class="s3">= </span><span class="s1">fields_by_json_name</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s5">None</span><span class="s3">)</span>
+        <span class="s5">if not </span><span class="s1">field</span><span class="s3">:</span>
+          <span class="s1">field </span><span class="s3">= </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s5">None</span><span class="s3">)</span>
+        <span class="s5">if not </span><span class="s1">field </span><span class="s5">and </span><span class="s1">_VALID_EXTENSION_NAME</span><span class="s3">.</span><span class="s1">match</span><span class="s3">(</span><span class="s1">name</span><span class="s3">):</span>
+          <span class="s5">if not </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">is_extendable</span><span class="s3">:</span>
+            <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+                <span class="s4">'Message type {0} does not have extensions at {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+                    <span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">, </span><span class="s1">path</span><span class="s3">))</span>
+          <span class="s1">identifier </span><span class="s3">= </span><span class="s1">name</span><span class="s3">[</span><span class="s6">1</span><span class="s3">:-</span><span class="s6">1</span><span class="s3">]  </span><span class="s0"># strip [] brackets</span>
+          <span class="s0"># pylint: disable=protected-access</span>
+          <span class="s1">field </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">Extensions</span><span class="s3">.</span><span class="s1">_FindExtensionByName</span><span class="s3">(</span><span class="s1">identifier</span><span class="s3">)</span>
+          <span class="s0"># pylint: enable=protected-access</span>
+          <span class="s5">if not </span><span class="s1">field</span><span class="s3">:</span>
+            <span class="s0"># Try looking for extension by the message type name, dropping the</span>
+            <span class="s0"># field name following the final . separator in full_name.</span>
+            <span class="s1">identifier </span><span class="s3">= </span><span class="s4">'.'</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">identifier</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s4">'.'</span><span class="s3">)[:-</span><span class="s6">1</span><span class="s3">])</span>
+            <span class="s0"># pylint: disable=protected-access</span>
+            <span class="s1">field </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">Extensions</span><span class="s3">.</span><span class="s1">_FindExtensionByName</span><span class="s3">(</span><span class="s1">identifier</span><span class="s3">)</span>
+            <span class="s0"># pylint: enable=protected-access</span>
+        <span class="s5">if not </span><span class="s1">field</span><span class="s3">:</span>
+          <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">ignore_unknown_fields</span><span class="s3">:</span>
+            <span class="s5">continue</span>
+          <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+              <span class="s3">(</span><span class="s4">'Message type &quot;{0}&quot; has no field named &quot;{1}&quot; at &quot;{2}&quot;.</span><span class="s5">\n</span><span class="s4">'</span>
+               <span class="s4">' Available Fields(except extensions): &quot;{3}&quot;'</span><span class="s3">).</span><span class="s1">format</span><span class="s3">(</span>
+                   <span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">path</span><span class="s3">,</span>
+                   <span class="s3">[</span><span class="s1">f</span><span class="s3">.</span><span class="s1">json_name </span><span class="s5">for </span><span class="s1">f </span><span class="s5">in </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">fields</span><span class="s3">]))</span>
+        <span class="s5">if </span><span class="s1">name </span><span class="s5">in </span><span class="s1">names</span><span class="s3">:</span>
+          <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Message type &quot;{0}&quot; should not have multiple '</span>
+                           <span class="s4">'&quot;{1}&quot; fields at &quot;{2}&quot;.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+                               <span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">path</span><span class="s3">))</span>
+        <span class="s1">names</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+        <span class="s1">value </span><span class="s3">= </span><span class="s1">js</span><span class="s3">[</span><span class="s1">name</span><span class="s3">]</span>
+        <span class="s0"># Check no other oneof field is parsed.</span>
+        <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">containing_oneof </span><span class="s5">is not None and </span><span class="s1">value </span><span class="s5">is not None</span><span class="s3">:</span>
+          <span class="s1">oneof_name </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">containing_oneof</span><span class="s3">.</span><span class="s1">name</span>
+          <span class="s5">if </span><span class="s1">oneof_name </span><span class="s5">in </span><span class="s1">names</span><span class="s3">:</span>
+            <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Message type &quot;{0}&quot; should not have multiple '</span>
+                             <span class="s4">'&quot;{1}&quot; oneof fields at &quot;{2}&quot;.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+                                 <span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">, </span><span class="s1">oneof_name</span><span class="s3">,</span>
+                                 <span class="s1">path</span><span class="s3">))</span>
+          <span class="s1">names</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">oneof_name</span><span class="s3">)</span>
+
+        <span class="s5">if </span><span class="s1">value </span><span class="s5">is None</span><span class="s3">:</span>
+          <span class="s5">if </span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_MESSAGE</span>
+              <span class="s5">and </span><span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">.</span><span class="s1">full_name </span><span class="s3">== </span><span class="s4">'google.protobuf.Value'</span><span class="s3">):</span>
+            <span class="s1">sub_message </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)</span>
+            <span class="s1">sub_message</span><span class="s3">.</span><span class="s1">null_value </span><span class="s3">= </span><span class="s6">0</span>
+          <span class="s5">elif </span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_ENUM</span>
+                <span class="s5">and </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">full_name </span><span class="s3">== </span><span class="s4">'google.protobuf.NullValue'</span><span class="s3">):</span>
+            <span class="s1">setattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">, </span><span class="s6">0</span><span class="s3">)</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">message</span><span class="s3">.</span><span class="s1">ClearField</span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)</span>
+          <span class="s5">continue</span>
+
+        <span class="s0"># Parse field value.</span>
+        <span class="s5">if </span><span class="s1">_IsMapEntry</span><span class="s3">(</span><span class="s1">field</span><span class="s3">):</span>
+          <span class="s1">message</span><span class="s3">.</span><span class="s1">ClearField</span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)</span>
+          <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertMapFieldValue</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">,</span>
+                                     <span class="s4">'{0}.{1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">))</span>
+        <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">label </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">LABEL_REPEATED</span><span class="s3">:</span>
+          <span class="s1">message</span><span class="s3">.</span><span class="s1">ClearField</span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)</span>
+          <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">list</span><span class="s3">):</span>
+            <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'repeated field {0} must be in [] which is '</span>
+                             <span class="s4">'{1} at {2}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">path</span><span class="s3">))</span>
+          <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_MESSAGE</span><span class="s3">:</span>
+            <span class="s0"># Repeated message field.</span>
+            <span class="s5">for </span><span class="s1">index</span><span class="s3">, </span><span class="s1">item </span><span class="s5">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+              <span class="s1">sub_message </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">).</span><span class="s1">add</span><span class="s3">()</span>
+              <span class="s0"># None is a null_value in Value.</span>
+              <span class="s5">if </span><span class="s3">(</span><span class="s1">item </span><span class="s5">is None and</span>
+                  <span class="s1">sub_message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">full_name </span><span class="s3">!= </span><span class="s4">'google.protobuf.Value'</span><span class="s3">):</span>
+                <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'null is not allowed to be used as an element'</span>
+                                 <span class="s4">' in a repeated field at {0}.{1}[{2}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+                                     <span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">index</span><span class="s3">))</span>
+              <span class="s1">self</span><span class="s3">.</span><span class="s1">ConvertMessage</span><span class="s3">(</span><span class="s1">item</span><span class="s3">, </span><span class="s1">sub_message</span><span class="s3">,</span>
+                                  <span class="s4">'{0}.{1}[{2}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">index</span><span class="s3">))</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s0"># Repeated scalar field.</span>
+            <span class="s5">for </span><span class="s1">index</span><span class="s3">, </span><span class="s1">item </span><span class="s5">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+              <span class="s5">if </span><span class="s1">item </span><span class="s5">is None</span><span class="s3">:</span>
+                <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'null is not allowed to be used as an element'</span>
+                                 <span class="s4">' in a repeated field at {0}.{1}[{2}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+                                     <span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">index</span><span class="s3">))</span>
+              <span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">).</span><span class="s1">append</span><span class="s3">(</span>
+                  <span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span>
+                      <span class="s1">item</span><span class="s3">, </span><span class="s1">field</span><span class="s3">, </span><span class="s4">'{0}.{1}[{2}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">index</span><span class="s3">)))</span>
+        <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_MESSAGE</span><span class="s3">:</span>
+          <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">is_extension</span><span class="s3">:</span>
+            <span class="s1">sub_message </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">Extensions</span><span class="s3">[</span><span class="s1">field</span><span class="s3">]</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">sub_message </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)</span>
+          <span class="s1">sub_message</span><span class="s3">.</span><span class="s1">SetInParent</span><span class="s3">()</span>
+          <span class="s1">self</span><span class="s3">.</span><span class="s1">ConvertMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">sub_message</span><span class="s3">, </span><span class="s4">'{0}.{1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">))</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">is_extension</span><span class="s3">:</span>
+            <span class="s1">message</span><span class="s3">.</span><span class="s1">Extensions</span><span class="s3">[</span><span class="s1">field</span><span class="s3">] = </span><span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span>
+                <span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">, </span><span class="s4">'{0}.{1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">))</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">setattr</span><span class="s3">(</span>
+                <span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">,</span>
+                <span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">,</span>
+                                         <span class="s4">'{0}.{1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">name</span><span class="s3">)))</span>
+      <span class="s5">except </span><span class="s1">ParseError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+        <span class="s5">if </span><span class="s1">field </span><span class="s5">and </span><span class="s1">field</span><span class="s3">.</span><span class="s1">containing_oneof </span><span class="s5">is None</span><span class="s3">:</span>
+          <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+            <span class="s4">'Failed to parse {0} field: {1}.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s1">e</span><span class="s3">)</span>
+          <span class="s3">) </span><span class="s5">from </span><span class="s1">e</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s1">str</span><span class="s3">(</span><span class="s1">e</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+      <span class="s5">except </span><span class="s1">ValueError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+        <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+          <span class="s4">'Failed to parse {0} field: {1}.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s1">e</span><span class="s3">)</span>
+        <span class="s3">) </span><span class="s5">from </span><span class="s1">e</span>
+      <span class="s5">except </span><span class="s1">TypeError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+        <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+          <span class="s4">'Failed to parse {0} field: {1}.'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s1">e</span><span class="s3">)</span>
+        <span class="s3">) </span><span class="s5">from </span><span class="s1">e</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertAnyMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON representation into Any message.&quot;&quot;&quot;</span>
+    <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">) </span><span class="s5">and not </span><span class="s1">value</span><span class="s3">:</span>
+      <span class="s5">return</span>
+    <span class="s5">try</span><span class="s3">:</span>
+      <span class="s1">type_url </span><span class="s3">= </span><span class="s1">value</span><span class="s3">[</span><span class="s4">'@type'</span><span class="s3">]</span>
+    <span class="s5">except </span><span class="s1">KeyError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+        <span class="s4">'@type is missing when parsing any message at {0}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">)</span>
+      <span class="s3">) </span><span class="s5">from </span><span class="s1">e</span>
+
+    <span class="s5">try</span><span class="s3">:</span>
+      <span class="s1">sub_message </span><span class="s3">= </span><span class="s1">_CreateMessageFromTypeUrl</span><span class="s3">(</span><span class="s1">type_url</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">descriptor_pool</span><span class="s3">)</span>
+    <span class="s5">except </span><span class="s1">TypeError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'{0} at {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">e</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+    <span class="s1">message_descriptor </span><span class="s3">= </span><span class="s1">sub_message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span>
+    <span class="s1">full_name </span><span class="s3">= </span><span class="s1">message_descriptor</span><span class="s3">.</span><span class="s1">full_name</span>
+    <span class="s5">if </span><span class="s1">_IsWrapperMessage</span><span class="s3">(</span><span class="s1">message_descriptor</span><span class="s3">):</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertWrapperMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">], </span><span class="s1">sub_message</span><span class="s3">,</span>
+                                  <span class="s4">'{0}.value'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">))</span>
+    <span class="s5">elif </span><span class="s1">full_name </span><span class="s5">in </span><span class="s1">_WKTJSONMETHODS</span><span class="s3">:</span>
+      <span class="s1">methodcaller</span><span class="s3">(</span><span class="s1">_WKTJSONMETHODS</span><span class="s3">[</span><span class="s1">full_name</span><span class="s3">][</span><span class="s6">1</span><span class="s3">], </span><span class="s1">value</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">], </span><span class="s1">sub_message</span><span class="s3">,</span>
+                   <span class="s4">'{0}.value'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">))(</span>
+                       <span class="s1">self</span><span class="s3">)</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s5">del </span><span class="s1">value</span><span class="s3">[</span><span class="s4">'@type'</span><span class="s3">]</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertFieldValuePair</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">sub_message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)</span>
+      <span class="s1">value</span><span class="s3">[</span><span class="s4">'@type'</span><span class="s3">] = </span><span class="s1">type_url</span>
+    <span class="s0"># Sets Any message</span>
+    <span class="s1">message</span><span class="s3">.</span><span class="s1">value </span><span class="s3">= </span><span class="s1">sub_message</span><span class="s3">.</span><span class="s1">SerializeToString</span><span class="s3">()</span>
+    <span class="s1">message</span><span class="s3">.</span><span class="s1">type_url </span><span class="s3">= </span><span class="s1">type_url</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertGenericMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON representation into message with FromJsonString.&quot;&quot;&quot;</span>
+    <span class="s0"># Duration, Timestamp, FieldMask have a FromJsonString method to do the</span>
+    <span class="s0"># conversion. Users can also call the method directly.</span>
+    <span class="s5">try</span><span class="s3">:</span>
+      <span class="s1">message</span><span class="s3">.</span><span class="s1">FromJsonString</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+    <span class="s5">except </span><span class="s1">ValueError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'{0} at {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">e</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertValueMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON representation into Value message.&quot;&quot;&quot;</span>
+    <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertStructMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">.</span><span class="s1">struct_value</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">list</span><span class="s3">):</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertListValueMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">.</span><span class="s1">list_value</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">value </span><span class="s5">is None</span><span class="s3">:</span>
+      <span class="s1">message</span><span class="s3">.</span><span class="s1">null_value </span><span class="s3">= </span><span class="s6">0</span>
+    <span class="s5">elif </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">bool</span><span class="s3">):</span>
+      <span class="s1">message</span><span class="s3">.</span><span class="s1">bool_value </span><span class="s3">= </span><span class="s1">value</span>
+    <span class="s5">elif </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">str</span><span class="s3">):</span>
+      <span class="s1">message</span><span class="s3">.</span><span class="s1">string_value </span><span class="s3">= </span><span class="s1">value</span>
+    <span class="s5">elif </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">_INT_OR_FLOAT</span><span class="s3">):</span>
+      <span class="s1">message</span><span class="s3">.</span><span class="s1">number_value </span><span class="s3">= </span><span class="s1">value</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Value {0} has unexpected type {1} at {2}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+          <span class="s1">value</span><span class="s3">, </span><span class="s1">type</span><span class="s3">(</span><span class="s1">value</span><span class="s3">), </span><span class="s1">path</span><span class="s3">))</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertListValueMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON representation into ListValue message.&quot;&quot;&quot;</span>
+    <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">list</span><span class="s3">):</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'ListValue must be in [] which is {0} at {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+          <span class="s1">value</span><span class="s3">, </span><span class="s1">path</span><span class="s3">))</span>
+    <span class="s1">message</span><span class="s3">.</span><span class="s1">ClearField</span><span class="s3">(</span><span class="s4">'values'</span><span class="s3">)</span>
+    <span class="s5">for </span><span class="s1">index</span><span class="s3">, </span><span class="s1">item </span><span class="s5">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertValueMessage</span><span class="s3">(</span><span class="s1">item</span><span class="s3">, </span><span class="s1">message</span><span class="s3">.</span><span class="s1">values</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(),</span>
+                                <span class="s4">'{0}[{1}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">index</span><span class="s3">))</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertStructMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON representation into Struct message.&quot;&quot;&quot;</span>
+    <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Struct must be in a dict which is {0} at {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+          <span class="s1">value</span><span class="s3">, </span><span class="s1">path</span><span class="s3">))</span>
+    <span class="s0"># Clear will mark the struct as modified so it will be created even if</span>
+    <span class="s0"># there are no values.</span>
+    <span class="s1">message</span><span class="s3">.</span><span class="s1">Clear</span><span class="s3">()</span>
+    <span class="s5">for </span><span class="s1">key </span><span class="s5">in </span><span class="s1">value</span><span class="s3">:</span>
+      <span class="s1">self</span><span class="s3">.</span><span class="s1">_ConvertValueMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">[</span><span class="s1">key</span><span class="s3">], </span><span class="s1">message</span><span class="s3">.</span><span class="s1">fields</span><span class="s3">[</span><span class="s1">key</span><span class="s3">],</span>
+                                <span class="s4">'{0}.{1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">key</span><span class="s3">))</span>
+    <span class="s5">return</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertWrapperMessage</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert a JSON representation into Wrapper message.&quot;&quot;&quot;</span>
+    <span class="s1">field </span><span class="s3">= </span><span class="s1">message</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">]</span>
+    <span class="s1">setattr</span><span class="s3">(</span>
+        <span class="s1">message</span><span class="s3">, </span><span class="s4">'value'</span><span class="s3">,</span>
+        <span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">, </span><span class="s1">path</span><span class="s3">=</span><span class="s4">'{0}.value'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">)))</span>
+
+  <span class="s5">def </span><span class="s1">_ConvertMapFieldValue</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">, </span><span class="s1">path</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Convert map field value for a message map field. 
+ 
+    Args: 
+      value: A JSON object to convert the map field value. 
+      message: A protocol message to record the converted data. 
+      field: The descriptor of the map field to be converted. 
+      path: parent path to log parse error info. 
+ 
+    Raises: 
+      ParseError: In case of convert problems. 
+    &quot;&quot;&quot;</span>
+    <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span>
+          <span class="s4">'Map field {0} must be in a dict which is {1} at {2}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+              <span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">path</span><span class="s3">))</span>
+    <span class="s1">key_field </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">[</span><span class="s4">'key'</span><span class="s3">]</span>
+    <span class="s1">value_field </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">.</span><span class="s1">fields_by_name</span><span class="s3">[</span><span class="s4">'value'</span><span class="s3">]</span>
+    <span class="s5">for </span><span class="s1">key </span><span class="s5">in </span><span class="s1">value</span><span class="s3">:</span>
+      <span class="s1">key_value </span><span class="s3">= </span><span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span><span class="s1">key</span><span class="s3">, </span><span class="s1">key_field</span><span class="s3">,</span>
+                                           <span class="s4">'{0}.key'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">), </span><span class="s5">True</span><span class="s3">)</span>
+      <span class="s5">if </span><span class="s1">value_field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_MESSAGE</span><span class="s3">:</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">ConvertMessage</span><span class="s3">(</span><span class="s1">value</span><span class="s3">[</span><span class="s1">key</span><span class="s3">],</span>
+                            <span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)[</span><span class="s1">key_value</span><span class="s3">],</span>
+                            <span class="s4">'{0}[{1}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">key_value</span><span class="s3">))</span>
+      <span class="s5">else</span><span class="s3">:</span>
+        <span class="s1">getattr</span><span class="s3">(</span><span class="s1">message</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)[</span><span class="s1">key_value</span><span class="s3">] = </span><span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span>
+            <span class="s1">value</span><span class="s3">[</span><span class="s1">key</span><span class="s3">], </span><span class="s1">value_field</span><span class="s3">, </span><span class="s1">path</span><span class="s3">=</span><span class="s4">'{0}[{1}]'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">path</span><span class="s3">, </span><span class="s1">key_value</span><span class="s3">))</span>
+
+
+<span class="s5">def </span><span class="s1">_ConvertScalarFieldValue</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">, </span><span class="s1">path</span><span class="s3">, </span><span class="s1">require_str</span><span class="s3">=</span><span class="s5">False</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Convert a single scalar field value. 
+ 
+  Args: 
+    value: A scalar value to convert the scalar field value. 
+    field: The descriptor of the field to convert. 
+    path: parent path to log parse error info. 
+    require_str: If True, the field value must be a str. 
+ 
+  Returns: 
+    The converted scalar field value 
+ 
+  Raises: 
+    ParseError: In case of convert problems. 
+  &quot;&quot;&quot;</span>
+  <span class="s5">try</span><span class="s3">:</span>
+    <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s5">in </span><span class="s1">_INT_TYPES</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">_ConvertInteger</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s5">in </span><span class="s1">_FLOAT_TYPES</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">_ConvertFloat</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_BOOL</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">_ConvertBool</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">require_str</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_STRING</span><span class="s3">:</span>
+      <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">TYPE_BYTES</span><span class="s3">:</span>
+        <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">str</span><span class="s3">):</span>
+          <span class="s1">encoded </span><span class="s3">= </span><span class="s1">value</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">(</span><span class="s4">'utf-8'</span><span class="s3">)</span>
+        <span class="s5">else</span><span class="s3">:</span>
+          <span class="s1">encoded </span><span class="s3">= </span><span class="s1">value</span>
+        <span class="s0"># Add extra padding '='</span>
+        <span class="s1">padded_value </span><span class="s3">= </span><span class="s1">encoded </span><span class="s3">+ </span><span class="s7">b'=' </span><span class="s3">* (</span><span class="s6">4 </span><span class="s3">- </span><span class="s1">len</span><span class="s3">(</span><span class="s1">encoded</span><span class="s3">) % </span><span class="s6">4</span><span class="s3">)</span>
+        <span class="s5">return </span><span class="s1">base64</span><span class="s3">.</span><span class="s1">urlsafe_b64decode</span><span class="s3">(</span><span class="s1">padded_value</span><span class="s3">)</span>
+      <span class="s5">else</span><span class="s3">:</span>
+        <span class="s0"># Checking for unpaired surrogates appears to be unreliable,</span>
+        <span class="s0"># depending on the specific Python version, so we check manually.</span>
+        <span class="s5">if </span><span class="s1">_UNPAIRED_SURROGATE_PATTERN</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+          <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Unpaired surrogate'</span><span class="s3">)</span>
+        <span class="s5">return </span><span class="s1">value</span>
+    <span class="s5">elif </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_ENUM</span><span class="s3">:</span>
+      <span class="s0"># Convert an enum value.</span>
+      <span class="s1">enum_value </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">values_by_name</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s5">None</span><span class="s3">)</span>
+      <span class="s5">if </span><span class="s1">enum_value </span><span class="s5">is None</span><span class="s3">:</span>
+        <span class="s5">try</span><span class="s3">:</span>
+          <span class="s1">number </span><span class="s3">= </span><span class="s1">int</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+          <span class="s1">enum_value </span><span class="s3">= </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">values_by_number</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">number</span><span class="s3">, </span><span class="s5">None</span><span class="s3">)</span>
+        <span class="s5">except </span><span class="s1">ValueError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+          <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Invalid enum value {0} for enum type {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+              <span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+        <span class="s5">if </span><span class="s1">enum_value </span><span class="s5">is None</span><span class="s3">:</span>
+          <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">is_closed</span><span class="s3">:</span>
+            <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Invalid enum value {0} for enum type {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span>
+                <span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">.</span><span class="s1">enum_type</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">))</span>
+          <span class="s5">else</span><span class="s3">:</span>
+            <span class="s5">return </span><span class="s1">number</span>
+      <span class="s5">return </span><span class="s1">enum_value</span><span class="s3">.</span><span class="s1">number</span>
+  <span class="s5">except </span><span class="s1">ParseError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'{0} at {1}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">e</span><span class="s3">, </span><span class="s1">path</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+
+
+<span class="s5">def </span><span class="s1">_ConvertInteger</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Convert an integer. 
+ 
+  Args: 
+    value: A scalar value to convert. 
+ 
+  Returns: 
+    The integer value. 
+ 
+  Raises: 
+    ParseError: If an integer couldn't be consumed. 
+  &quot;&quot;&quot;</span>
+  <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">float</span><span class="s3">) </span><span class="s5">and not </span><span class="s1">value</span><span class="s3">.</span><span class="s1">is_integer</span><span class="s3">():</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse integer: {0}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">value</span><span class="s3">))</span>
+
+  <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">str</span><span class="s3">) </span><span class="s5">and </span><span class="s1">value</span><span class="s3">.</span><span class="s1">find</span><span class="s3">(</span><span class="s4">' '</span><span class="s3">) != -</span><span class="s6">1</span><span class="s3">:</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse integer: &quot;{0}&quot;'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">value</span><span class="s3">))</span>
+
+  <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">bool</span><span class="s3">):</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Bool value {0} is not acceptable for '</span>
+                     <span class="s4">'integer field'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">value</span><span class="s3">))</span>
+
+  <span class="s5">return </span><span class="s1">int</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">_ConvertFloat</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">field</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Convert an floating point number.&quot;&quot;&quot;</span>
+  <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">float</span><span class="s3">):</span>
+    <span class="s5">if </span><span class="s1">math</span><span class="s3">.</span><span class="s1">isnan</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse NaN, use quoted &quot;NaN&quot; instead'</span><span class="s3">)</span>
+    <span class="s5">if </span><span class="s1">math</span><span class="s3">.</span><span class="s1">isinf</span><span class="s3">(</span><span class="s1">value</span><span class="s3">):</span>
+      <span class="s5">if </span><span class="s1">value </span><span class="s3">&gt; </span><span class="s6">0</span><span class="s3">:</span>
+        <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse Infinity or value too large, '</span>
+                         <span class="s4">'use quoted &quot;Infinity&quot; instead'</span><span class="s3">)</span>
+      <span class="s5">else</span><span class="s3">:</span>
+        <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse -Infinity or value too small, '</span>
+                         <span class="s4">'use quoted &quot;-Infinity&quot; instead'</span><span class="s3">)</span>
+    <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">cpp_type </span><span class="s3">== </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">FieldDescriptor</span><span class="s3">.</span><span class="s1">CPPTYPE_FLOAT</span><span class="s3">:</span>
+      <span class="s0"># pylint: disable=protected-access</span>
+      <span class="s5">if </span><span class="s1">value </span><span class="s3">&gt; </span><span class="s1">type_checkers</span><span class="s3">.</span><span class="s1">_FLOAT_MAX</span><span class="s3">:</span>
+        <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Float value too large'</span><span class="s3">)</span>
+      <span class="s0"># pylint: disable=protected-access</span>
+      <span class="s5">if </span><span class="s1">value </span><span class="s3">&lt; </span><span class="s1">type_checkers</span><span class="s3">.</span><span class="s1">_FLOAT_MIN</span><span class="s3">:</span>
+        <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Float value too small'</span><span class="s3">)</span>
+  <span class="s5">if </span><span class="s1">value </span><span class="s3">== </span><span class="s4">'nan'</span><span class="s3">:</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse float &quot;nan&quot;, use &quot;NaN&quot; instead'</span><span class="s3">)</span>
+  <span class="s5">try</span><span class="s3">:</span>
+    <span class="s0"># Assume Python compatible syntax.</span>
+    <span class="s5">return </span><span class="s1">float</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+  <span class="s5">except </span><span class="s1">ValueError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+    <span class="s0"># Check alternative spellings.</span>
+    <span class="s5">if </span><span class="s1">value </span><span class="s3">== </span><span class="s1">_NEG_INFINITY</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">float</span><span class="s3">(</span><span class="s4">'-inf'</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">value </span><span class="s3">== </span><span class="s1">_INFINITY</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">float</span><span class="s3">(</span><span class="s4">'inf'</span><span class="s3">)</span>
+    <span class="s5">elif </span><span class="s1">value </span><span class="s3">== </span><span class="s1">_NAN</span><span class="s3">:</span>
+      <span class="s5">return </span><span class="s1">float</span><span class="s3">(</span><span class="s4">'nan'</span><span class="s3">)</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Couldn</span><span class="s5">\'</span><span class="s4">t parse float: {0}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)) </span><span class="s5">from </span><span class="s1">e</span>
+
+
+<span class="s5">def </span><span class="s1">_ConvertBool</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">require_str</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Convert a boolean value. 
+ 
+  Args: 
+    value: A scalar value to convert. 
+    require_str: If True, value must be a str. 
+ 
+  Returns: 
+    The bool parsed. 
+ 
+  Raises: 
+    ParseError: If a boolean value couldn't be consumed. 
+  &quot;&quot;&quot;</span>
+  <span class="s5">if </span><span class="s1">require_str</span><span class="s3">:</span>
+    <span class="s5">if </span><span class="s1">value </span><span class="s3">== </span><span class="s4">'true'</span><span class="s3">:</span>
+      <span class="s5">return True</span>
+    <span class="s5">elif </span><span class="s1">value </span><span class="s3">== </span><span class="s4">'false'</span><span class="s3">:</span>
+      <span class="s5">return False</span>
+    <span class="s5">else</span><span class="s3">:</span>
+      <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Expected &quot;true&quot; or &quot;false&quot;, not {0}'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">value</span><span class="s3">))</span>
+
+  <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">value</span><span class="s3">, </span><span class="s1">bool</span><span class="s3">):</span>
+    <span class="s5">raise </span><span class="s1">ParseError</span><span class="s3">(</span><span class="s4">'Expected true or false without quotes'</span><span class="s3">)</span>
+  <span class="s5">return </span><span class="s1">value</span>
+
+<span class="s1">_WKTJSONMETHODS </span><span class="s3">= {</span>
+    <span class="s4">'google.protobuf.Any'</span><span class="s3">: [</span><span class="s4">'_AnyMessageToJsonObject'</span><span class="s3">,</span>
+                            <span class="s4">'_ConvertAnyMessage'</span><span class="s3">],</span>
+    <span class="s4">'google.protobuf.Duration'</span><span class="s3">: [</span><span class="s4">'_GenericMessageToJsonObject'</span><span class="s3">,</span>
+                                 <span class="s4">'_ConvertGenericMessage'</span><span class="s3">],</span>
+    <span class="s4">'google.protobuf.FieldMask'</span><span class="s3">: [</span><span class="s4">'_GenericMessageToJsonObject'</span><span class="s3">,</span>
+                                  <span class="s4">'_ConvertGenericMessage'</span><span class="s3">],</span>
+    <span class="s4">'google.protobuf.ListValue'</span><span class="s3">: [</span><span class="s4">'_ListValueMessageToJsonObject'</span><span class="s3">,</span>
+                                  <span class="s4">'_ConvertListValueMessage'</span><span class="s3">],</span>
+    <span class="s4">'google.protobuf.Struct'</span><span class="s3">: [</span><span class="s4">'_StructMessageToJsonObject'</span><span class="s3">,</span>
+                               <span class="s4">'_ConvertStructMessage'</span><span class="s3">],</span>
+    <span class="s4">'google.protobuf.Timestamp'</span><span class="s3">: [</span><span class="s4">'_GenericMessageToJsonObject'</span><span class="s3">,</span>
+                                  <span class="s4">'_ConvertGenericMessage'</span><span class="s3">],</span>
+    <span class="s4">'google.protobuf.Value'</span><span class="s3">: [</span><span class="s4">'_ValueMessageToJsonObject'</span><span class="s3">,</span>
+                              <span class="s4">'_ConvertValueMessage'</span><span class="s3">]</span>
+<span class="s3">}</span>
+</pre>
+</body>
+</html>

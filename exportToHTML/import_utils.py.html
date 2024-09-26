@@ -1,0 +1,240 @@
+<html>
+<head>
+<title>import_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #2aacb8;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+import_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># coding=utf-8</span>
+<span class="s2">&quot;&quot;&quot;Functions for dealing with import statements.&quot;&quot;&quot;</span>
+<span class="s0"># Copyright 2017 Google LLC</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     https://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">division</span>
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">print_function</span>
+
+<span class="s3">import </span><span class="s1">ast</span>
+<span class="s3">import </span><span class="s1">copy</span>
+<span class="s3">import </span><span class="s1">logging</span>
+
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">augment </span><span class="s3">import </span><span class="s1">errors</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">ast_utils</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">scope</span>
+
+
+<span class="s3">def </span><span class="s1">add_import</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">, </span><span class="s1">name_to_import</span><span class="s4">, </span><span class="s1">asname</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">from_import</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">merge_from_imports</span><span class="s4">=</span><span class="s3">True</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Adds an import to the module. 
+   
+  This function will try to ensure not to create duplicate imports. If name_to_import is 
+  already imported, it will return the existing import. This is true even if asname is set 
+  (asname will be ignored, and the existing name will be returned). 
+   
+  If the import would create a name that already exists in the scope given by tree, this 
+  function will &quot;import as&quot;, and append &quot;_x&quot; to the asname where x is the smallest positive 
+  integer generating a unique name. 
+ 
+  Arguments: 
+    tree: (ast.Module) Module AST to modify. 
+    name_to_import: (string) The absolute name to import. 
+    asname: (string) The alias for the import (&quot;import name_to_import as asname&quot;) 
+    from_import: (boolean) If True, import the name using an ImportFrom node. 
+    merge_from_imports: (boolean) If True, merge a newly inserted ImportFrom 
+      node into an existing ImportFrom node, if applicable. 
+ 
+  Returns: 
+    The name (as a string) that can be used to reference the imported name. This 
+      can be the fully-qualified name, the basename, or an alias name. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">sc </span><span class="s4">= </span><span class="s1">scope</span><span class="s4">.</span><span class="s1">analyze</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">)</span>
+
+  <span class="s0"># Don't add anything if it's already imported</span>
+  <span class="s3">if </span><span class="s1">name_to_import </span><span class="s3">in </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">external_references</span><span class="s4">:</span>
+    <span class="s1">existing_ref </span><span class="s4">= </span><span class="s1">next</span><span class="s4">((</span><span class="s1">ref </span><span class="s3">for </span><span class="s1">ref </span><span class="s3">in </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">external_references</span><span class="s4">[</span><span class="s1">name_to_import</span><span class="s4">]</span>
+                         <span class="s3">if </span><span class="s1">ref</span><span class="s4">.</span><span class="s1">name_ref </span><span class="s3">is not None</span><span class="s4">), </span><span class="s3">None</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">existing_ref</span><span class="s4">:</span>
+      <span class="s3">return </span><span class="s1">existing_ref</span><span class="s4">.</span><span class="s1">name_ref</span><span class="s4">.</span><span class="s1">id</span>
+
+  <span class="s1">import_node </span><span class="s4">= </span><span class="s3">None</span>
+  <span class="s1">added_name </span><span class="s4">= </span><span class="s3">None</span>
+  
+  <span class="s3">def </span><span class="s1">make_safe_alias_node</span><span class="s4">(</span><span class="s1">alias_name</span><span class="s4">, </span><span class="s1">asname</span><span class="s4">):</span>
+    <span class="s0"># Try to avoid name conflicts</span>
+    <span class="s1">new_alias </span><span class="s4">= </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">alias</span><span class="s4">(</span><span class="s1">name</span><span class="s4">=</span><span class="s1">alias_name</span><span class="s4">, </span><span class="s1">asname</span><span class="s4">=</span><span class="s1">asname</span><span class="s4">)</span>
+    <span class="s1">imported_name </span><span class="s4">= </span><span class="s1">asname </span><span class="s3">or </span><span class="s1">alias_name</span>
+    <span class="s1">counter </span><span class="s4">= </span><span class="s5">0</span>
+    <span class="s3">while </span><span class="s1">imported_name </span><span class="s3">in </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">names</span><span class="s4">:</span>
+      <span class="s1">counter </span><span class="s4">+= </span><span class="s5">1</span>
+      <span class="s1">imported_name </span><span class="s4">= </span><span class="s1">new_alias</span><span class="s4">.</span><span class="s1">asname </span><span class="s4">= </span><span class="s6">'%s_%d' </span><span class="s4">% (</span><span class="s1">asname </span><span class="s3">or </span><span class="s1">alias_name</span><span class="s4">, </span>
+                                                    <span class="s1">counter</span><span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">new_alias</span>
+        
+  <span class="s0"># Add an ImportFrom node if requested and possible</span>
+  <span class="s3">if </span><span class="s1">from_import </span><span class="s3">and </span><span class="s6">'.' </span><span class="s3">in </span><span class="s1">name_to_import</span><span class="s4">:</span>
+    <span class="s1">from_module</span><span class="s4">, </span><span class="s1">alias_name </span><span class="s4">= </span><span class="s1">name_to_import</span><span class="s4">.</span><span class="s1">rsplit</span><span class="s4">(</span><span class="s6">'.'</span><span class="s4">, </span><span class="s5">1</span><span class="s4">)</span>
+
+    <span class="s1">new_alias </span><span class="s4">= </span><span class="s1">make_safe_alias_node</span><span class="s4">(</span><span class="s1">alias_name</span><span class="s4">, </span><span class="s1">asname</span><span class="s4">)</span>
+    
+    <span class="s3">if </span><span class="s1">merge_from_imports</span><span class="s4">:</span>
+      <span class="s0"># Try to add to an existing ImportFrom from the same module</span>
+      <span class="s1">existing_from_import </span><span class="s4">= </span><span class="s1">next</span><span class="s4">(</span>
+          <span class="s4">(</span><span class="s1">node </span><span class="s3">for </span><span class="s1">node </span><span class="s3">in </span><span class="s1">tree</span><span class="s4">.</span><span class="s1">body </span><span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">ImportFrom</span><span class="s4">)</span>
+           <span class="s3">and </span><span class="s1">node</span><span class="s4">.</span><span class="s1">module </span><span class="s4">== </span><span class="s1">from_module </span><span class="s3">and </span><span class="s1">node</span><span class="s4">.</span><span class="s1">level </span><span class="s4">== </span><span class="s5">0</span><span class="s4">), </span><span class="s3">None</span><span class="s4">)</span>
+      <span class="s3">if </span><span class="s1">existing_from_import</span><span class="s4">:</span>
+        <span class="s1">existing_from_import</span><span class="s4">.</span><span class="s1">names</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">new_alias</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">new_alias</span><span class="s4">.</span><span class="s1">asname </span><span class="s3">or </span><span class="s1">new_alias</span><span class="s4">.</span><span class="s1">name</span>
+
+    <span class="s0"># Create a new node for this import</span>
+    <span class="s1">import_node </span><span class="s4">= </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">ImportFrom</span><span class="s4">(</span><span class="s1">module</span><span class="s4">=</span><span class="s1">from_module</span><span class="s4">, </span><span class="s1">names</span><span class="s4">=[</span><span class="s1">new_alias</span><span class="s4">], </span><span class="s1">level</span><span class="s4">=</span><span class="s5">0</span><span class="s4">)</span>
+
+  <span class="s0"># If not already created as an ImportFrom, create a normal Import node</span>
+  <span class="s3">if not </span><span class="s1">import_node</span><span class="s4">:</span>
+    <span class="s1">new_alias </span><span class="s4">= </span><span class="s1">make_safe_alias_node</span><span class="s4">(</span><span class="s1">alias_name</span><span class="s4">=</span><span class="s1">name_to_import</span><span class="s4">, </span><span class="s1">asname</span><span class="s4">=</span><span class="s1">asname</span><span class="s4">)</span>
+    <span class="s1">import_node </span><span class="s4">= </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Import</span><span class="s4">(</span>
+        <span class="s1">names</span><span class="s4">=[</span><span class="s1">new_alias</span><span class="s4">])</span>
+
+  <span class="s0"># Insert the node at the top of the module and return the name in scope</span>
+  <span class="s1">tree</span><span class="s4">.</span><span class="s1">body</span><span class="s4">.</span><span class="s1">insert</span><span class="s4">(</span><span class="s5">1 </span><span class="s3">if </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">has_docstring</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">) </span><span class="s3">else </span><span class="s5">0</span><span class="s4">, </span><span class="s1">import_node</span><span class="s4">)</span>
+  <span class="s3">return </span><span class="s1">new_alias</span><span class="s4">.</span><span class="s1">asname </span><span class="s3">or </span><span class="s1">new_alias</span><span class="s4">.</span><span class="s1">name</span>
+
+
+<span class="s3">def </span><span class="s1">split_import</span><span class="s4">(</span><span class="s1">sc</span><span class="s4">, </span><span class="s1">node</span><span class="s4">, </span><span class="s1">alias_to_remove</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Split an import node by moving the given imported alias into a new import. 
+ 
+  Arguments: 
+    sc: (scope.Scope) Scope computed on whole tree of the code being modified. 
+    node: (ast.Import|ast.ImportFrom) An import node to split. 
+    alias_to_remove: (ast.alias) The import alias node to remove. This must be a 
+      child of the given `node` argument. 
+ 
+  Raises: 
+    errors.InvalidAstError: if `node` is not appropriately contained in the tree 
+      represented by the scope `sc`. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">parent </span><span class="s4">= </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">parent</span><span class="s4">(</span><span class="s1">node</span><span class="s4">)</span>
+  <span class="s1">parent_list </span><span class="s4">= </span><span class="s3">None</span>
+  <span class="s3">for </span><span class="s1">a </span><span class="s3">in </span><span class="s4">(</span><span class="s6">'body'</span><span class="s4">, </span><span class="s6">'orelse'</span><span class="s4">, </span><span class="s6">'finalbody'</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">, </span><span class="s1">a</span><span class="s4">) </span><span class="s3">and </span><span class="s1">node </span><span class="s3">in </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">, </span><span class="s1">a</span><span class="s4">):</span>
+      <span class="s1">parent_list </span><span class="s4">= </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">, </span><span class="s1">a</span><span class="s4">)</span>
+      <span class="s3">break</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s3">raise </span><span class="s1">errors</span><span class="s4">.</span><span class="s1">InvalidAstError</span><span class="s4">(</span><span class="s6">'Unable to find list containing import %r on '</span>
+                                 <span class="s6">'parent node %r' </span><span class="s4">% (</span><span class="s1">node</span><span class="s4">, </span><span class="s1">parent</span><span class="s4">))</span>
+
+  <span class="s1">idx </span><span class="s4">= </span><span class="s1">parent_list</span><span class="s4">.</span><span class="s1">index</span><span class="s4">(</span><span class="s1">node</span><span class="s4">)</span>
+  <span class="s1">new_import </span><span class="s4">= </span><span class="s1">copy</span><span class="s4">.</span><span class="s1">deepcopy</span><span class="s4">(</span><span class="s1">node</span><span class="s4">)</span>
+  <span class="s1">new_import</span><span class="s4">.</span><span class="s1">names </span><span class="s4">= [</span><span class="s1">alias_to_remove</span><span class="s4">]</span>
+  <span class="s1">node</span><span class="s4">.</span><span class="s1">names</span><span class="s4">.</span><span class="s1">remove</span><span class="s4">(</span><span class="s1">alias_to_remove</span><span class="s4">)</span>
+
+  <span class="s1">parent_list</span><span class="s4">.</span><span class="s1">insert</span><span class="s4">(</span><span class="s1">idx </span><span class="s4">+ </span><span class="s5">1</span><span class="s4">, </span><span class="s1">new_import</span><span class="s4">)</span>
+  <span class="s3">return </span><span class="s1">new_import</span>
+
+
+<span class="s3">def </span><span class="s1">get_unused_import_aliases</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">, </span><span class="s1">sc</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Get the import aliases that aren't used. 
+ 
+  Arguments: 
+    tree: (ast.AST) An ast to find imports in. 
+    sc: A scope.Scope representing tree (generated from scratch if not 
+    provided). 
+ 
+  Returns: 
+    A list of ast.alias representing imported aliases that aren't referenced in 
+    the given tree. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">sc </span><span class="s3">is None</span><span class="s4">:</span>
+    <span class="s1">sc </span><span class="s4">= </span><span class="s1">scope</span><span class="s4">.</span><span class="s1">analyze</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">)</span>
+  <span class="s1">unused_aliases </span><span class="s4">= </span><span class="s1">set</span><span class="s4">()</span>
+  <span class="s3">for </span><span class="s1">node </span><span class="s3">in </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">walk</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">alias</span><span class="s4">):</span>
+      <span class="s1">str_name </span><span class="s4">= </span><span class="s1">node</span><span class="s4">.</span><span class="s1">asname </span><span class="s3">if </span><span class="s1">node</span><span class="s4">.</span><span class="s1">asname </span><span class="s3">is not None else </span><span class="s1">node</span><span class="s4">.</span><span class="s1">name</span>
+      <span class="s3">if </span><span class="s1">str_name </span><span class="s3">in </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">names</span><span class="s4">:</span>
+        <span class="s1">name </span><span class="s4">= </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">names</span><span class="s4">[</span><span class="s1">str_name</span><span class="s4">]</span>
+        <span class="s3">if not </span><span class="s1">name</span><span class="s4">.</span><span class="s1">reads</span><span class="s4">:</span>
+          <span class="s1">unused_aliases</span><span class="s4">.</span><span class="s1">add</span><span class="s4">(</span><span class="s1">node</span><span class="s4">)</span>
+      <span class="s3">else</span><span class="s4">:</span>
+        <span class="s0"># This happens because of https://github.com/google/pasta/issues/32</span>
+        <span class="s1">logging</span><span class="s4">.</span><span class="s1">warning</span><span class="s4">(</span><span class="s6">'Imported name %s not found in scope (perhaps it</span><span class="s3">\'</span><span class="s6">s '</span>
+                        <span class="s6">'imported dynamically)'</span><span class="s4">, </span><span class="s1">str_name</span><span class="s4">)</span>
+
+  <span class="s3">return </span><span class="s1">unused_aliases</span>
+
+
+<span class="s3">def </span><span class="s1">remove_import_alias_node</span><span class="s4">(</span><span class="s1">sc</span><span class="s4">, </span><span class="s1">node</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Remove an alias and if applicable remove their entire import. 
+ 
+  Arguments: 
+    sc: (scope.Scope) Scope computed on whole tree of the code being modified. 
+    node: (ast.Import|ast.ImportFrom|ast.alias) The node to remove. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">import_node </span><span class="s4">= </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">parent</span><span class="s4">(</span><span class="s1">node</span><span class="s4">)</span>
+  <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">import_node</span><span class="s4">.</span><span class="s1">names</span><span class="s4">) == </span><span class="s5">1</span><span class="s4">:</span>
+    <span class="s1">import_parent </span><span class="s4">= </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">parent</span><span class="s4">(</span><span class="s1">import_node</span><span class="s4">)</span>
+    <span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">remove_child</span><span class="s4">(</span><span class="s1">import_parent</span><span class="s4">, </span><span class="s1">import_node</span><span class="s4">)</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">remove_child</span><span class="s4">(</span><span class="s1">import_node</span><span class="s4">, </span><span class="s1">node</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">remove_duplicates</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">, </span><span class="s1">sc</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Remove duplicate imports, where it is safe to do so. 
+ 
+  This does NOT remove imports that create new aliases 
+ 
+  Arguments: 
+    tree: (ast.AST) An ast to modify imports in. 
+    sc: A scope.Scope representing tree (generated from scratch if not 
+    provided). 
+ 
+  Returns: 
+    Whether any changes were made. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">sc </span><span class="s3">is None</span><span class="s4">:</span>
+    <span class="s1">sc </span><span class="s4">= </span><span class="s1">scope</span><span class="s4">.</span><span class="s1">analyze</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">)</span>
+
+  <span class="s1">modified </span><span class="s4">= </span><span class="s3">False</span>
+  <span class="s1">seen_names </span><span class="s4">= </span><span class="s1">set</span><span class="s4">()</span>
+  <span class="s3">for </span><span class="s1">node </span><span class="s3">in </span><span class="s1">tree</span><span class="s4">.</span><span class="s1">body</span><span class="s4">:</span>
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, (</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Import</span><span class="s4">, </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">ImportFrom</span><span class="s4">)):</span>
+      <span class="s3">for </span><span class="s1">alias </span><span class="s3">in </span><span class="s1">list</span><span class="s4">(</span><span class="s1">node</span><span class="s4">.</span><span class="s1">names</span><span class="s4">):</span>
+        <span class="s1">import_node </span><span class="s4">= </span><span class="s1">sc</span><span class="s4">.</span><span class="s1">parent</span><span class="s4">(</span><span class="s1">alias</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">import_node</span><span class="s4">, </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Import</span><span class="s4">):</span>
+          <span class="s1">full_name </span><span class="s4">= </span><span class="s1">alias</span><span class="s4">.</span><span class="s1">name</span>
+        <span class="s3">elif </span><span class="s1">import_node</span><span class="s4">.</span><span class="s1">module</span><span class="s4">:</span>
+          <span class="s1">full_name </span><span class="s4">= </span><span class="s6">'%s%s.%s' </span><span class="s4">% (</span><span class="s6">'.' </span><span class="s4">* </span><span class="s1">import_node</span><span class="s4">.</span><span class="s1">level</span><span class="s4">,</span>
+                                   <span class="s1">import_node</span><span class="s4">.</span><span class="s1">module</span><span class="s4">, </span><span class="s1">alias</span><span class="s4">.</span><span class="s1">name</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+          <span class="s1">full_name </span><span class="s4">= </span><span class="s6">'%s%s' </span><span class="s4">% (</span><span class="s6">'.' </span><span class="s4">* </span><span class="s1">import_node</span><span class="s4">.</span><span class="s1">level</span><span class="s4">, </span><span class="s1">alias</span><span class="s4">.</span><span class="s1">name</span><span class="s4">)</span>
+        <span class="s1">full_name </span><span class="s4">+= </span><span class="s6">':' </span><span class="s4">+ (</span><span class="s1">alias</span><span class="s4">.</span><span class="s1">asname </span><span class="s3">or </span><span class="s1">alias</span><span class="s4">.</span><span class="s1">name</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">full_name </span><span class="s3">in </span><span class="s1">seen_names</span><span class="s4">:</span>
+          <span class="s1">remove_import_alias_node</span><span class="s4">(</span><span class="s1">sc</span><span class="s4">, </span><span class="s1">alias</span><span class="s4">)</span>
+          <span class="s1">modified </span><span class="s4">= </span><span class="s3">True</span>
+        <span class="s3">else</span><span class="s4">:</span>
+          <span class="s1">seen_names</span><span class="s4">.</span><span class="s1">add</span><span class="s4">(</span><span class="s1">full_name</span><span class="s4">)</span>
+  <span class="s3">return </span><span class="s1">modified</span>
+</pre>
+</body>
+</html>

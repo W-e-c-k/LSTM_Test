@@ -1,0 +1,179 @@
+<html>
+<head>
+<title>ipy_completer.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+ipy_completer.py</font>
+</center></td></tr></table>
+<pre><span class="s0">#+</span>
+<span class="s0">#</span>
+<span class="s0"># This file is part of h5py, a low-level Python interface to the HDF5 library.</span>
+<span class="s0">#</span>
+<span class="s0"># Contributed by Darren Dale</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright (C) 2009 Darren Dale</span>
+<span class="s0">#</span>
+<span class="s0"># http://h5py.org</span>
+<span class="s0"># License: BSD  (See LICENSE.txt for full license)</span>
+<span class="s0">#</span>
+<span class="s0">#-</span>
+
+<span class="s0"># pylint: disable=eval-used,protected-access</span>
+
+<span class="s2">&quot;&quot;&quot; 
+    This is the h5py completer extension for ipython.  It is loaded by 
+    calling the function h5py.enable_ipython_completer() from within an 
+    interactive IPython session. 
+ 
+    It will let you do things like:: 
+ 
+      f=File('foo.h5') 
+      f['&lt;tab&gt; 
+      # or: 
+      f['ite&lt;tab&gt; 
+ 
+    which will do tab completion based on the subgroups of `f`. Also:: 
+ 
+      f['item1'].at&lt;tab&gt; 
+ 
+    will perform tab completion for the attributes in the usual way. This should 
+    also work:: 
+ 
+      a = b = f['item1'].attrs.&lt;tab&gt; 
+ 
+    as should:: 
+ 
+      f['item1/item2/it&lt;tab&gt; 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">posixpath</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_hl</span><span class="s4">.</span><span class="s1">attrs </span><span class="s3">import </span><span class="s1">AttributeManager</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_hl</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">HLObject</span>
+
+
+<span class="s3">from </span><span class="s1">IPython </span><span class="s3">import </span><span class="s1">get_ipython</span>
+
+<span class="s3">from </span><span class="s1">IPython</span><span class="s4">.</span><span class="s1">core</span><span class="s4">.</span><span class="s1">error </span><span class="s3">import </span><span class="s1">TryNext</span>
+<span class="s3">from </span><span class="s1">IPython</span><span class="s4">.</span><span class="s1">utils </span><span class="s3">import </span><span class="s1">generics</span>
+
+<span class="s1">re_attr_match </span><span class="s4">= </span><span class="s1">re</span><span class="s4">.</span><span class="s1">compile</span><span class="s4">(</span><span class="s5">r&quot;(?:.*\=)?(.+\[.*\].*)\.(\w*)$&quot;</span><span class="s4">)</span>
+<span class="s1">re_item_match </span><span class="s4">= </span><span class="s1">re</span><span class="s4">.</span><span class="s1">compile</span><span class="s4">(</span><span class="s5">r&quot;&quot;&quot;(?:.*\=)?(.*)\[(?P&lt;s&gt;['|&quot;])(?!.*(?P=s))(.*)$&quot;&quot;&quot;</span><span class="s4">)</span>
+<span class="s1">re_object_match </span><span class="s4">= </span><span class="s1">re</span><span class="s4">.</span><span class="s1">compile</span><span class="s4">(</span><span class="s5">r&quot;(?:.*\=)?(.+?)(?:\[)&quot;</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_retrieve_obj</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">context</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Filter function for completion. &quot;&quot;&quot;</span>
+
+    <span class="s0"># we don't want to call any functions, but I couldn't find a robust regex</span>
+    <span class="s0"># that filtered them without unintended side effects. So keys containing</span>
+    <span class="s0"># &quot;(&quot; will not complete.</span>
+
+    <span class="s3">if </span><span class="s5">'(' </span><span class="s3">in </span><span class="s1">name</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">()</span>
+
+    <span class="s3">return </span><span class="s1">eval</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">context</span><span class="s4">.</span><span class="s1">user_ns</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">h5py_item_completer</span><span class="s4">(</span><span class="s1">context</span><span class="s4">, </span><span class="s1">command</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Compute possible item matches for dict-like objects&quot;&quot;&quot;</span>
+
+    <span class="s1">base</span><span class="s4">, </span><span class="s1">item </span><span class="s4">= </span><span class="s1">re_item_match</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s1">command</span><span class="s4">)[</span><span class="s6">1</span><span class="s4">:</span><span class="s6">4</span><span class="s4">:</span><span class="s6">2</span><span class="s4">]</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s1">obj </span><span class="s4">= </span><span class="s1">_retrieve_obj</span><span class="s4">(</span><span class="s1">base</span><span class="s4">, </span><span class="s1">context</span><span class="s4">)</span>
+    <span class="s3">except </span><span class="s1">Exception</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s4">[]</span>
+
+    <span class="s1">path</span><span class="s4">, </span><span class="s1">_ </span><span class="s4">= </span><span class="s1">posixpath</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s1">item</span><span class="s4">)</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">path</span><span class="s4">:</span>
+            <span class="s1">items </span><span class="s4">= (</span><span class="s1">posixpath</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">path</span><span class="s4">, </span><span class="s1">name</span><span class="s4">) </span><span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">obj</span><span class="s4">[</span><span class="s1">path</span><span class="s4">].</span><span class="s1">keys</span><span class="s4">())</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">items </span><span class="s4">= </span><span class="s1">obj</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">()</span>
+    <span class="s3">except </span><span class="s1">AttributeError</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s4">[]</span>
+
+    <span class="s1">items </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">items</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s4">[</span><span class="s1">i </span><span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">items </span><span class="s3">if </span><span class="s1">i</span><span class="s4">[:</span><span class="s1">len</span><span class="s4">(</span><span class="s1">item</span><span class="s4">)] == </span><span class="s1">item</span><span class="s4">]</span>
+
+
+<span class="s3">def </span><span class="s1">h5py_attr_completer</span><span class="s4">(</span><span class="s1">context</span><span class="s4">, </span><span class="s1">command</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Compute possible attr matches for nested dict-like objects&quot;&quot;&quot;</span>
+
+    <span class="s1">base</span><span class="s4">, </span><span class="s1">attr </span><span class="s4">= </span><span class="s1">re_attr_match</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s1">command</span><span class="s4">)[</span><span class="s6">1</span><span class="s4">:</span><span class="s6">3</span><span class="s4">]</span>
+    <span class="s1">base </span><span class="s4">= </span><span class="s1">base</span><span class="s4">.</span><span class="s1">strip</span><span class="s4">()</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s1">obj </span><span class="s4">= </span><span class="s1">_retrieve_obj</span><span class="s4">(</span><span class="s1">base</span><span class="s4">, </span><span class="s1">context</span><span class="s4">)</span>
+    <span class="s3">except </span><span class="s1">Exception</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s4">[]</span>
+
+    <span class="s1">attrs </span><span class="s4">= </span><span class="s1">dir</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">)</span>
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s1">attrs </span><span class="s4">= </span><span class="s1">generics</span><span class="s4">.</span><span class="s1">complete_object</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">attrs</span><span class="s4">)</span>
+    <span class="s3">except </span><span class="s1">TryNext</span><span class="s4">:</span>
+        <span class="s3">pass</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s0"># support &gt;=ipython-0.12</span>
+        <span class="s1">omit__names </span><span class="s4">= </span><span class="s1">get_ipython</span><span class="s4">().</span><span class="s1">Completer</span><span class="s4">.</span><span class="s1">omit__names</span>
+    <span class="s3">except </span><span class="s1">AttributeError</span><span class="s4">:</span>
+        <span class="s1">omit__names </span><span class="s4">= </span><span class="s6">0</span>
+
+    <span class="s3">if </span><span class="s1">omit__names </span><span class="s4">== </span><span class="s6">1</span><span class="s4">:</span>
+        <span class="s1">attrs </span><span class="s4">= [</span><span class="s1">a </span><span class="s3">for </span><span class="s1">a </span><span class="s3">in </span><span class="s1">attrs </span><span class="s3">if not </span><span class="s1">a</span><span class="s4">.</span><span class="s1">startswith</span><span class="s4">(</span><span class="s5">'__'</span><span class="s4">)]</span>
+    <span class="s3">elif </span><span class="s1">omit__names </span><span class="s4">== </span><span class="s6">2</span><span class="s4">:</span>
+        <span class="s1">attrs </span><span class="s4">= [</span><span class="s1">a </span><span class="s3">for </span><span class="s1">a </span><span class="s3">in </span><span class="s1">attrs </span><span class="s3">if not </span><span class="s1">a</span><span class="s4">.</span><span class="s1">startswith</span><span class="s4">(</span><span class="s5">'_'</span><span class="s4">)]</span>
+
+    <span class="s3">return </span><span class="s4">[</span><span class="s5">&quot;%s.%s&quot; </span><span class="s4">% (</span><span class="s1">base</span><span class="s4">, </span><span class="s1">a</span><span class="s4">) </span><span class="s3">for </span><span class="s1">a </span><span class="s3">in </span><span class="s1">attrs </span><span class="s3">if </span><span class="s1">a</span><span class="s4">[:</span><span class="s1">len</span><span class="s4">(</span><span class="s1">attr</span><span class="s4">)] == </span><span class="s1">attr</span><span class="s4">]</span>
+
+
+<span class="s3">def </span><span class="s1">h5py_completer</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">event</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Completer function to be loaded into IPython &quot;&quot;&quot;</span>
+    <span class="s1">base </span><span class="s4">= </span><span class="s1">re_object_match</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s1">event</span><span class="s4">.</span><span class="s1">line</span><span class="s4">)[</span><span class="s6">1</span><span class="s4">]</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s1">obj </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_ofind</span><span class="s4">(</span><span class="s1">base</span><span class="s4">).</span><span class="s1">obj</span>
+    <span class="s3">except </span><span class="s1">AttributeError</span><span class="s4">:</span>
+        <span class="s1">obj </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_ofind</span><span class="s4">(</span><span class="s1">base</span><span class="s4">).</span><span class="s1">get</span><span class="s4">(</span><span class="s5">'obj'</span><span class="s4">)</span>
+
+    <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, (</span><span class="s1">AttributeManager</span><span class="s4">, </span><span class="s1">HLObject</span><span class="s4">)):</span>
+        <span class="s3">raise </span><span class="s1">TryNext</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">h5py_attr_completer</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">event</span><span class="s4">.</span><span class="s1">line</span><span class="s4">)</span>
+    <span class="s3">except </span><span class="s1">ValueError</span><span class="s4">:</span>
+        <span class="s3">pass</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">h5py_item_completer</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">event</span><span class="s4">.</span><span class="s1">line</span><span class="s4">)</span>
+    <span class="s3">except </span><span class="s1">ValueError</span><span class="s4">:</span>
+        <span class="s3">pass</span>
+
+    <span class="s3">return </span><span class="s4">[]</span>
+
+
+<span class="s3">def </span><span class="s1">load_ipython_extension</span><span class="s4">(</span><span class="s1">ip</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Load completer function into IPython &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">ip </span><span class="s3">is None</span><span class="s4">:</span>
+        <span class="s1">ip </span><span class="s4">= </span><span class="s1">get_ipython</span><span class="s4">()</span>
+    <span class="s1">ip</span><span class="s4">.</span><span class="s1">set_hook</span><span class="s4">(</span><span class="s5">'complete_command'</span><span class="s4">, </span><span class="s1">h5py_completer</span><span class="s4">, </span><span class="s1">re_key</span><span class="s4">=</span><span class="s5">r&quot;(?:.*\=)?(.+?)\[&quot;</span><span class="s4">)</span>
+</pre>
+</body>
+</html>

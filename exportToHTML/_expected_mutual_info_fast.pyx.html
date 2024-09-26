@@ -1,0 +1,87 @@
+<html>
+<head>
+<title>_expected_mutual_info_fast.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_expected_mutual_info_fast.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Authors: Robert Layton &lt;robertlayton@gmail.com&gt;</span>
+<span class="s0">#           Corey Lynch &lt;coreylynch9@gmail.com&gt;</span>
+<span class="s0"># License: BSD 3 clause</span>
+
+<span class="s0">from libc.math cimport exp, lgamma</span>
+
+<span class="s0">from ...utils._typedefs cimport float64_t, int64_t</span>
+
+<span class="s0">import numpy as np</span>
+<span class="s0">from scipy.special import gammaln</span>
+
+
+<span class="s0">def expected_mutual_information(contingency, int64_t n_samples):</span>
+    <span class="s0">&quot;&quot;&quot;Calculate the expected mutual information for two labelings.&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">float64_t emi = 0</span>
+        <span class="s0">int64_t n_rows, n_cols</span>
+        <span class="s0">float64_t term2, term3, gln</span>
+        <span class="s0">int64_t[::1] a_view, b_view</span>
+        <span class="s0">float64_t[::1] term1</span>
+        <span class="s0">float64_t[::1] gln_a, gln_b, gln_Na, gln_Nb, gln_Nnij, log_Nnij</span>
+        <span class="s0">float64_t[::1] log_a, log_b</span>
+        <span class="s0">Py_ssize_t i, j, nij</span>
+        <span class="s0">int64_t start, end</span>
+
+    <span class="s0">n_rows, n_cols = contingency.shape</span>
+    <span class="s0">a = np.ravel(contingency.sum(axis=1).astype(np.int64, copy=False))</span>
+    <span class="s0">b = np.ravel(contingency.sum(axis=0).astype(np.int64, copy=False))</span>
+    <span class="s0">a_view = a</span>
+    <span class="s0">b_view = b</span>
+
+    <span class="s0"># any labelling with zero entropy implies EMI = 0</span>
+    <span class="s0">if a.size == 1 or b.size == 1:</span>
+        <span class="s0">return 0.0</span>
+
+    <span class="s0"># There are three major terms to the EMI equation, which are multiplied to</span>
+    <span class="s0"># and then summed over varying nij values.</span>
+    <span class="s0"># While nijs[0] will never be used, having it simplifies the indexing.</span>
+    <span class="s0">nijs = np.arange(0, max(np.max(a), np.max(b)) + 1, dtype='float')</span>
+    <span class="s0">nijs[0] = 1  # Stops divide by zero warnings. As its not used, no issue.</span>
+    <span class="s0"># term1 is nij / N</span>
+    <span class="s0">term1 = nijs / n_samples</span>
+    <span class="s0"># term2 is log((N*nij) / (a * b)) == log(N * nij) - log(a * b)</span>
+    <span class="s0">log_a = np.log(a)</span>
+    <span class="s0">log_b = np.log(b)</span>
+    <span class="s0"># term2 uses log(N * nij) = log(N) + log(nij)</span>
+    <span class="s0">log_Nnij = np.log(n_samples) + np.log(nijs)</span>
+    <span class="s0"># term3 is large, and involved many factorials. Calculate these in log</span>
+    <span class="s0"># space to stop overflows.</span>
+    <span class="s0">gln_a = gammaln(a + 1)</span>
+    <span class="s0">gln_b = gammaln(b + 1)</span>
+    <span class="s0">gln_Na = gammaln(n_samples - a + 1)</span>
+    <span class="s0">gln_Nb = gammaln(n_samples - b + 1)</span>
+    <span class="s0">gln_Nnij = gammaln(nijs + 1) + gammaln(n_samples + 1)</span>
+
+    <span class="s0"># emi itself is a summation over the various values.</span>
+    <span class="s0">for i in range(n_rows):</span>
+        <span class="s0">for j in range(n_cols):</span>
+            <span class="s0">start = max(1, a_view[i] - n_samples + b_view[j])</span>
+            <span class="s0">end = min(a_view[i], b_view[j]) + 1</span>
+            <span class="s0">for nij in range(start, end):</span>
+                <span class="s0">term2 = log_Nnij[nij] - log_a[i] - log_b[j]</span>
+                <span class="s0"># Numerators are positive, denominators are negative.</span>
+                <span class="s0">gln = (gln_a[i] + gln_b[j] + gln_Na[i] + gln_Nb[j]</span>
+                       <span class="s0">- gln_Nnij[nij] - lgamma(a_view[i] - nij + 1)</span>
+                       <span class="s0">- lgamma(b_view[j] - nij + 1)</span>
+                       <span class="s0">- lgamma(n_samples - a_view[i] - b_view[j] + nij + 1))</span>
+                <span class="s0">term3 = exp(gln)</span>
+                <span class="s0">emi += (term1[nij] * term2 * term3)</span>
+    <span class="s0">return emi</span>
+</pre>
+</body>
+</html>

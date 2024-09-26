@@ -1,0 +1,195 @@
+<html>
+<head>
+<title>docloader.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+docloader.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># Custom resolver API</span>
+
+<span class="s0">ctypedef enum _InputDocumentDataType:</span>
+    <span class="s0">PARSER_DATA_INVALID</span>
+    <span class="s0">PARSER_DATA_EMPTY</span>
+    <span class="s0">PARSER_DATA_STRING</span>
+    <span class="s0">PARSER_DATA_FILENAME</span>
+    <span class="s0">PARSER_DATA_FILE</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _InputDocument:</span>
+    <span class="s0">cdef _InputDocumentDataType _type</span>
+    <span class="s0">cdef bytes _data_bytes</span>
+    <span class="s0">cdef object _filename</span>
+    <span class="s0">cdef object _file</span>
+    <span class="s0">cdef bint _close_file</span>
+
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._type = PARSER_DATA_INVALID</span>
+
+
+<span class="s0">cdef class Resolver:</span>
+    <span class="s0">&quot;This is the base class of all resolvers.&quot;</span>
+    <span class="s0">def resolve(self, system_url, public_id, context):</span>
+        <span class="s0">&quot;&quot;&quot;resolve(self, system_url, public_id, context)</span>
+
+        <span class="s0">Override this method to resolve an external source by</span>
+        <span class="s0">``system_url`` and ``public_id``.  The third argument is an</span>
+        <span class="s0">opaque context object.</span>
+
+        <span class="s0">Return the result of one of the ``resolve_*()`` methods.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">def resolve_empty(self, context):</span>
+        <span class="s0">&quot;&quot;&quot;resolve_empty(self, context)</span>
+
+        <span class="s0">Return an empty input document.</span>
+
+        <span class="s0">Pass context as parameter.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _InputDocument doc_ref</span>
+        <span class="s0">doc_ref = _InputDocument()</span>
+        <span class="s0">doc_ref._type = PARSER_DATA_EMPTY</span>
+        <span class="s0">return doc_ref</span>
+
+    <span class="s0">def resolve_string(self, string, context, *, base_url=None):</span>
+        <span class="s0">&quot;&quot;&quot;resolve_string(self, string, context, base_url=None)</span>
+
+        <span class="s0">Return a parsable string as input document.</span>
+
+        <span class="s0">Pass data string and context as parameters.  You can pass the</span>
+        <span class="s0">source URL or filename through the ``base_url`` keyword</span>
+        <span class="s0">argument.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _InputDocument doc_ref</span>
+        <span class="s0">if isinstance(string, unicode):</span>
+            <span class="s0">string = (&lt;unicode&gt;string).encode('utf8')</span>
+        <span class="s0">elif not isinstance(string, bytes):</span>
+            <span class="s0">raise TypeError, &quot;argument must be a byte string or unicode string&quot;</span>
+        <span class="s0">doc_ref = _InputDocument()</span>
+        <span class="s0">doc_ref._type = PARSER_DATA_STRING</span>
+        <span class="s0">doc_ref._data_bytes = string</span>
+        <span class="s0">if base_url is not None:</span>
+            <span class="s0">doc_ref._filename = _encodeFilename(base_url)</span>
+        <span class="s0">return doc_ref</span>
+
+    <span class="s0">def resolve_filename(self, filename, context):</span>
+        <span class="s0">&quot;&quot;&quot;resolve_filename(self, filename, context)</span>
+
+        <span class="s0">Return the name of a parsable file as input document.</span>
+
+        <span class="s0">Pass filename and context as parameters.  You can also pass a</span>
+        <span class="s0">URL with an HTTP, FTP or file target.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _InputDocument doc_ref</span>
+        <span class="s0">doc_ref = _InputDocument()</span>
+        <span class="s0">doc_ref._type = PARSER_DATA_FILENAME</span>
+        <span class="s0">doc_ref._filename = _encodeFilename(filename)</span>
+        <span class="s0">return doc_ref</span>
+
+    <span class="s0">def resolve_file(self, f, context, *, base_url=None, bint close=True):</span>
+        <span class="s0">&quot;&quot;&quot;resolve_file(self, f, context, base_url=None, close=True)</span>
+
+        <span class="s0">Return an open file-like object as input document.</span>
+
+        <span class="s0">Pass open file and context as parameters.  You can pass the</span>
+        <span class="s0">base URL or filename of the file through the ``base_url``</span>
+        <span class="s0">keyword argument.  If the ``close`` flag is True (the</span>
+        <span class="s0">default), the file will be closed after reading.</span>
+
+        <span class="s0">Note that using ``.resolve_filename()`` is more efficient,</span>
+        <span class="s0">especially in threaded environments.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _InputDocument doc_ref</span>
+        <span class="s0">try:</span>
+            <span class="s0">f.read</span>
+        <span class="s0">except AttributeError:</span>
+            <span class="s0">raise TypeError, &quot;Argument is not a file-like object&quot;</span>
+        <span class="s0">doc_ref = _InputDocument()</span>
+        <span class="s0">doc_ref._type = PARSER_DATA_FILE</span>
+        <span class="s0">if base_url is not None:</span>
+            <span class="s0">doc_ref._filename = _encodeFilename(base_url)</span>
+        <span class="s0">else:</span>
+            <span class="s0">doc_ref._filename = _getFilenameForFile(f)</span>
+        <span class="s0">doc_ref._close_file = close</span>
+        <span class="s0">doc_ref._file = f</span>
+        <span class="s0">return doc_ref</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ResolverRegistry:</span>
+    <span class="s0">cdef object _resolvers</span>
+    <span class="s0">cdef Resolver _default_resolver</span>
+    <span class="s0">def __cinit__(self, Resolver default_resolver=None):</span>
+        <span class="s0">self._resolvers = set()</span>
+        <span class="s0">self._default_resolver = default_resolver</span>
+
+    <span class="s0">def add(self, Resolver resolver not None):</span>
+        <span class="s0">&quot;&quot;&quot;add(self, resolver)</span>
+
+        <span class="s0">Register a resolver.</span>
+
+        <span class="s0">For each requested entity, the 'resolve' method of the resolver will</span>
+        <span class="s0">be called and the result will be passed to the parser.  If this method</span>
+        <span class="s0">returns None, the request will be delegated to other resolvers or the</span>
+        <span class="s0">default resolver.  The resolvers will be tested in an arbitrary order</span>
+        <span class="s0">until the first match is found.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._resolvers.add(resolver)</span>
+
+    <span class="s0">def remove(self, resolver):</span>
+        <span class="s0">&quot;remove(self, resolver)&quot;</span>
+        <span class="s0">self._resolvers.discard(resolver)</span>
+
+    <span class="s0">cdef _ResolverRegistry _copy(self):</span>
+        <span class="s0">cdef _ResolverRegistry registry</span>
+        <span class="s0">registry = _ResolverRegistry(self._default_resolver)</span>
+        <span class="s0">registry._resolvers = self._resolvers.copy()</span>
+        <span class="s0">return registry</span>
+
+    <span class="s0">def copy(self):</span>
+        <span class="s0">&quot;copy(self)&quot;</span>
+        <span class="s0">return self._copy()</span>
+
+    <span class="s0">def resolve(self, system_url, public_id, context):</span>
+        <span class="s0">&quot;resolve(self, system_url, public_id, context)&quot;</span>
+        <span class="s0">for resolver in self._resolvers:</span>
+            <span class="s0">result = resolver.resolve(system_url, public_id, context)</span>
+            <span class="s0">if result is not None:</span>
+                <span class="s0">return result</span>
+        <span class="s0">if self._default_resolver is None:</span>
+            <span class="s0">return None</span>
+        <span class="s0">return self._default_resolver.resolve(system_url, public_id, context)</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return repr(self._resolvers)</span>
+
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ResolverContext(_ExceptionContext):</span>
+    <span class="s0">cdef _ResolverRegistry _resolvers</span>
+    <span class="s0">cdef _TempStore _storage</span>
+
+    <span class="s0">cdef int clear(self) except -1:</span>
+        <span class="s0">_ExceptionContext.clear(self)</span>
+        <span class="s0">self._storage.clear()</span>
+        <span class="s0">return 0</span>
+
+
+<span class="s0">cdef _initResolverContext(_ResolverContext context,</span>
+                          <span class="s0">_ResolverRegistry resolvers):</span>
+    <span class="s0">if resolvers is None:</span>
+        <span class="s0">context._resolvers = _ResolverRegistry()</span>
+    <span class="s0">else:</span>
+        <span class="s0">context._resolvers = resolvers</span>
+    <span class="s0">context._storage = _TempStore()</span>
+</pre>
+</body>
+</html>

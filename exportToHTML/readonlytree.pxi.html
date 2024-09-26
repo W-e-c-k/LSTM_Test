@@ -1,0 +1,582 @@
+<html>
+<head>
+<title>readonlytree.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+readonlytree.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># read-only tree implementation</span>
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ReadOnlyProxy:</span>
+    <span class="s0">&quot;A read-only proxy class suitable for PIs/Comments (for internal use only!).&quot;</span>
+    <span class="s0">cdef bint _free_after_use</span>
+    <span class="s0">cdef xmlNode* _c_node</span>
+    <span class="s0">cdef _ReadOnlyProxy _source_proxy</span>
+    <span class="s0">cdef list _dependent_proxies</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._c_node = NULL</span>
+        <span class="s0">self._free_after_use = 0</span>
+
+    <span class="s0">cdef int _assertNode(self) except -1:</span>
+        <span class="s0">&quot;&quot;&quot;This is our way of saying: this proxy is invalid!</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if not self._c_node:</span>
+            <span class="s0">raise ReferenceError(&quot;Proxy invalidated!&quot;)</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef int _raise_unsupported_type(self) except -1:</span>
+        <span class="s0">raise TypeError(f&quot;Unsupported node type: {self._c_node.type}&quot;)</span>
+
+    <span class="s0">cdef void free_after_use(self) noexcept:</span>
+        <span class="s0">&quot;&quot;&quot;Should the xmlNode* be freed when releasing the proxy?</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._free_after_use = 1</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def tag(self):</span>
+        <span class="s0">&quot;&quot;&quot;Element tag</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">if self._c_node.type == tree.XML_ELEMENT_NODE:</span>
+            <span class="s0">return _namespacedName(self._c_node)</span>
+        <span class="s0">elif self._c_node.type == tree.XML_PI_NODE:</span>
+            <span class="s0">return ProcessingInstruction</span>
+        <span class="s0">elif self._c_node.type == tree.XML_COMMENT_NODE:</span>
+            <span class="s0">return Comment</span>
+        <span class="s0">elif self._c_node.type == tree.XML_ENTITY_REF_NODE:</span>
+            <span class="s0">return Entity</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._raise_unsupported_type()</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def text(self):</span>
+        <span class="s0">&quot;&quot;&quot;Text before the first subelement. This is either a string or</span>
+        <span class="s0">the value None, if there was no text.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">if self._c_node.type == tree.XML_ELEMENT_NODE:</span>
+            <span class="s0">return _collectText(self._c_node.children)</span>
+        <span class="s0">elif self._c_node.type in (tree.XML_PI_NODE,</span>
+                                   <span class="s0">tree.XML_COMMENT_NODE):</span>
+            <span class="s0">if self._c_node.content is NULL:</span>
+                <span class="s0">return ''</span>
+            <span class="s0">else:</span>
+                <span class="s0">return funicode(self._c_node.content)</span>
+        <span class="s0">elif self._c_node.type == tree.XML_ENTITY_REF_NODE:</span>
+            <span class="s0">return f'&amp;{funicode(self._c_node.name)};'</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._raise_unsupported_type()</span>
+        
+    <span class="s0">@property</span>
+    <span class="s0">def tail(self):</span>
+        <span class="s0">&quot;&quot;&quot;Text after this element's end tag, but before the next sibling</span>
+        <span class="s0">element's start tag. This is either a string or the value None, if</span>
+        <span class="s0">there was no text.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return _collectText(self._c_node.next)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def sourceline(self):</span>
+        <span class="s0">&quot;&quot;&quot;Original line number as found by the parser or None if unknown.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef long line</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">line = tree.xmlGetLineNo(self._c_node)</span>
+        <span class="s0">if line &gt; 0:</span>
+            <span class="s0">return line</span>
+        <span class="s0">else:</span>
+            <span class="s0">return None</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">if self._c_node.type == tree.XML_ELEMENT_NODE:</span>
+            <span class="s0">return &quot;&lt;Element %s at 0x%x&gt;&quot; % (self.tag, id(self))</span>
+        <span class="s0">elif self._c_node.type == tree.XML_COMMENT_NODE:</span>
+            <span class="s0">return &quot;&lt;!--%s--&gt;&quot; % self.text</span>
+        <span class="s0">elif self._c_node.type == tree.XML_ENTITY_NODE:</span>
+            <span class="s0">return &quot;&amp;%s;&quot; % funicode(self._c_node.name)</span>
+        <span class="s0">elif self._c_node.type == tree.XML_PI_NODE:</span>
+            <span class="s0">text = self.text</span>
+            <span class="s0">if text:</span>
+                <span class="s0">return &quot;&lt;?%s %s?&gt;&quot; % (self.target, text)</span>
+            <span class="s0">else:</span>
+                <span class="s0">return &quot;&lt;?%s?&gt;&quot; % self.target</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._raise_unsupported_type()</span>
+
+    <span class="s0">def __getitem__(self, x):</span>
+        <span class="s0">&quot;&quot;&quot;Returns the subelement at the given position or the requested</span>
+        <span class="s0">slice.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_node = NULL</span>
+        <span class="s0">cdef Py_ssize_t step = 0, slicelength = 0</span>
+        <span class="s0">cdef Py_ssize_t c, i</span>
+        <span class="s0">cdef _node_to_node_function next_element</span>
+        <span class="s0">cdef list result</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">if isinstance(x, slice):</span>
+            <span class="s0"># slicing</span>
+            <span class="s0">if _isFullSlice(&lt;slice&gt;x):</span>
+                <span class="s0">return _collectChildren(self)</span>
+            <span class="s0">_findChildSlice(&lt;slice&gt;x, self._c_node, &amp;c_node, &amp;step, &amp;slicelength)</span>
+            <span class="s0">if c_node is NULL:</span>
+                <span class="s0">return []</span>
+            <span class="s0">if step &gt; 0:</span>
+                <span class="s0">next_element = _nextElement</span>
+            <span class="s0">else:</span>
+                <span class="s0">step = -step</span>
+                <span class="s0">next_element = _previousElement</span>
+            <span class="s0">result = []</span>
+            <span class="s0">c = 0</span>
+            <span class="s0">while c_node is not NULL and c &lt; slicelength:</span>
+                <span class="s0">result.append(_newReadOnlyProxy(self._source_proxy, c_node))</span>
+                <span class="s0">result.append(_elementFactory(self._doc, c_node))</span>
+                <span class="s0">c = c + 1</span>
+                <span class="s0">for i from 0 &lt;= i &lt; step:</span>
+                    <span class="s0">c_node = next_element(c_node)</span>
+            <span class="s0">return result</span>
+        <span class="s0">else:</span>
+            <span class="s0"># indexing</span>
+            <span class="s0">c_node = _findChild(self._c_node, x)</span>
+            <span class="s0">if c_node is NULL:</span>
+                <span class="s0">raise IndexError, &quot;list index out of range&quot;</span>
+            <span class="s0">return _newReadOnlyProxy(self._source_proxy, c_node)</span>
+
+    <span class="s0">def __len__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Returns the number of subelements.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef Py_ssize_t c</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c = 0</span>
+        <span class="s0">c_node = self._c_node.children</span>
+        <span class="s0">while c_node is not NULL:</span>
+            <span class="s0">if tree._isElement(c_node):</span>
+                <span class="s0">c = c + 1</span>
+            <span class="s0">c_node = c_node.next</span>
+        <span class="s0">return c</span>
+
+    <span class="s0">def __bool__(self):</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c_node = _findChildBackwards(self._c_node, 0)</span>
+        <span class="s0">return c_node != NULL</span>
+
+    <span class="s0">def __deepcopy__(self, memo):</span>
+        <span class="s0">&quot;__deepcopy__(self, memo)&quot;</span>
+        <span class="s0">return self.__copy__()</span>
+        
+    <span class="s0">cpdef __copy__(self):</span>
+        <span class="s0">&quot;__copy__(self)&quot;</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">cdef _Document new_doc</span>
+        <span class="s0">if self._c_node is NULL:</span>
+            <span class="s0">return self</span>
+        <span class="s0">c_doc = _copyDocRoot(self._c_node.doc, self._c_node) # recursive</span>
+        <span class="s0">new_doc = _documentFactory(c_doc, None)</span>
+        <span class="s0">root = new_doc.getroot()</span>
+        <span class="s0">if root is not None:</span>
+            <span class="s0">return root</span>
+        <span class="s0"># Comment/PI</span>
+        <span class="s0">c_node = c_doc.children</span>
+        <span class="s0">while c_node is not NULL and c_node.type != self._c_node.type:</span>
+            <span class="s0">c_node = c_node.next</span>
+        <span class="s0">if c_node is NULL:</span>
+            <span class="s0">return None</span>
+        <span class="s0">return _elementFactory(new_doc, c_node)</span>
+
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">return iter(self.getchildren())</span>
+
+    <span class="s0">def iterchildren(self, tag=None, *, reversed=False):</span>
+        <span class="s0">&quot;&quot;&quot;iterchildren(self, tag=None, reversed=False)</span>
+
+        <span class="s0">Iterate over the children of this element.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">children = self.getchildren()</span>
+        <span class="s0">if tag is not None and tag != '*':</span>
+            <span class="s0">children = [ el for el in children if el.tag == tag ]</span>
+        <span class="s0">if reversed:</span>
+            <span class="s0">children = children[::-1]</span>
+        <span class="s0">return iter(children)</span>
+
+    <span class="s0">cpdef getchildren(self):</span>
+        <span class="s0">&quot;&quot;&quot;Returns all subelements. The elements are returned in document</span>
+        <span class="s0">order.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">cdef list result</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">result = []</span>
+        <span class="s0">c_node = self._c_node.children</span>
+        <span class="s0">while c_node is not NULL:</span>
+            <span class="s0">if tree._isElement(c_node):</span>
+                <span class="s0">result.append(_newReadOnlyProxy(self._source_proxy, c_node))</span>
+            <span class="s0">c_node = c_node.next</span>
+        <span class="s0">return result</span>
+
+    <span class="s0">def getparent(self):</span>
+        <span class="s0">&quot;&quot;&quot;Returns the parent of this element or None for the root element.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_parent</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c_parent = self._c_node.parent</span>
+        <span class="s0">if c_parent is NULL or not tree._isElement(c_parent):</span>
+            <span class="s0">return None</span>
+        <span class="s0">else:</span>
+            <span class="s0">return _newReadOnlyProxy(self._source_proxy, c_parent)</span>
+
+    <span class="s0">def getnext(self):</span>
+        <span class="s0">&quot;&quot;&quot;Returns the following sibling of this element or None.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c_node = _nextElement(self._c_node)</span>
+        <span class="s0">if c_node is not NULL:</span>
+            <span class="s0">return _newReadOnlyProxy(self._source_proxy, c_node)</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">def getprevious(self):</span>
+        <span class="s0">&quot;&quot;&quot;Returns the preceding sibling of this element or None.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c_node = _previousElement(self._c_node)</span>
+        <span class="s0">if c_node is not NULL:</span>
+            <span class="s0">return _newReadOnlyProxy(self._source_proxy, c_node)</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ReadOnlyPIProxy(_ReadOnlyProxy):</span>
+    <span class="s0">&quot;&quot;&quot;A read-only proxy for processing instructions (for internal use only!)&quot;&quot;&quot;</span>
+    <span class="s0">@property</span>
+    <span class="s0">def target(self):</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return funicode(self._c_node.name)</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ReadOnlyEntityProxy(_ReadOnlyProxy):</span>
+    <span class="s0">&quot;&quot;&quot;A read-only proxy for entity references (for internal use only!)&quot;&quot;&quot;</span>
+    <span class="s0">property name:</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">return funicode(self._c_node.name)</span>
+
+        <span class="s0">def __set__(self, value):</span>
+            <span class="s0">value_utf = _utf8(value)</span>
+            <span class="s0">if '&amp;' in value or ';' in value:</span>
+                <span class="s0">raise ValueError(f&quot;Invalid entity name '{value}'&quot;)</span>
+            <span class="s0">tree.xmlNodeSetName(self._c_node, _xcstr(value_utf))</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def text(self):</span>
+        <span class="s0">return f'&amp;{funicode(self._c_node.name)};'</span>
+
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ReadOnlyElementProxy(_ReadOnlyProxy):</span>
+    <span class="s0">&quot;&quot;&quot;The main read-only Element proxy class (for internal use only!).&quot;&quot;&quot;</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def attrib(self):</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return dict(_collectAttributes(self._c_node, 3))</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def prefix(self):</span>
+        <span class="s0">&quot;&quot;&quot;Namespace prefix or None.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">if self._c_node.ns is not NULL:</span>
+            <span class="s0">if self._c_node.ns.prefix is not NULL:</span>
+                <span class="s0">return funicode(self._c_node.ns.prefix)</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def nsmap(self):</span>
+        <span class="s0">&quot;&quot;&quot;Namespace prefix-&gt;URI mapping known in the context of this</span>
+        <span class="s0">Element.  This includes all namespace declarations of the</span>
+        <span class="s0">parents.</span>
+
+        <span class="s0">Note that changing the returned dict has no effect on the Element.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return _build_nsmap(self._c_node)</span>
+
+    <span class="s0">def get(self, key, default=None):</span>
+        <span class="s0">&quot;&quot;&quot;Gets an element attribute.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return _getNodeAttributeValue(self._c_node, key, default)</span>
+
+    <span class="s0">def keys(self):</span>
+        <span class="s0">&quot;&quot;&quot;Gets a list of attribute names. The names are returned in an</span>
+        <span class="s0">arbitrary order (just like for an ordinary Python dictionary).</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return _collectAttributes(self._c_node, 1)</span>
+
+    <span class="s0">def values(self):</span>
+        <span class="s0">&quot;&quot;&quot;Gets element attributes, as a sequence. The attributes are returned</span>
+        <span class="s0">in an arbitrary order.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return _collectAttributes(self._c_node, 2)</span>
+
+    <span class="s0">def items(self):</span>
+        <span class="s0">&quot;&quot;&quot;Gets element attributes, as a sequence. The attributes are returned</span>
+        <span class="s0">in an arbitrary order.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">return _collectAttributes(self._c_node, 3)</span>
+
+<span class="s0">cdef _ReadOnlyProxy _newReadOnlyProxy(</span>
+    <span class="s0">_ReadOnlyProxy source_proxy, xmlNode* c_node):</span>
+    <span class="s0">cdef _ReadOnlyProxy el</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">el = _ReadOnlyElementProxy.__new__(_ReadOnlyElementProxy)</span>
+    <span class="s0">elif c_node.type == tree.XML_PI_NODE:</span>
+        <span class="s0">el = _ReadOnlyPIProxy.__new__(_ReadOnlyPIProxy)</span>
+    <span class="s0">elif c_node.type in (tree.XML_COMMENT_NODE,</span>
+                         <span class="s0">tree.XML_ENTITY_REF_NODE):</span>
+        <span class="s0">el = _ReadOnlyProxy.__new__(_ReadOnlyProxy)</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError(f&quot;Unsupported element type: {c_node.type}&quot;)</span>
+    <span class="s0">el._c_node = c_node</span>
+    <span class="s0">_initReadOnlyProxy(el, source_proxy)</span>
+    <span class="s0">return el</span>
+
+<span class="s0">cdef inline _initReadOnlyProxy(_ReadOnlyProxy el,</span>
+                               <span class="s0">_ReadOnlyProxy source_proxy):</span>
+    <span class="s0">if source_proxy is None:</span>
+        <span class="s0">el._source_proxy = el</span>
+        <span class="s0">el._dependent_proxies = [el]</span>
+    <span class="s0">else:</span>
+        <span class="s0">el._source_proxy = source_proxy</span>
+        <span class="s0">source_proxy._dependent_proxies.append(el)</span>
+
+<span class="s0">cdef _freeReadOnlyProxies(_ReadOnlyProxy sourceProxy):</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef _ReadOnlyProxy el</span>
+    <span class="s0">if sourceProxy is None:</span>
+        <span class="s0">return</span>
+    <span class="s0">if sourceProxy._dependent_proxies is None:</span>
+        <span class="s0">return</span>
+    <span class="s0">for el in sourceProxy._dependent_proxies:</span>
+        <span class="s0">c_node = el._c_node</span>
+        <span class="s0">el._c_node = NULL</span>
+        <span class="s0">if el._free_after_use:</span>
+            <span class="s0">tree.xmlFreeNode(c_node)</span>
+    <span class="s0">del sourceProxy._dependent_proxies[:]</span>
+
+<span class="s0"># opaque wrapper around non-element nodes, e.g. the document node</span>
+<span class="s0">#</span>
+<span class="s0"># This class does not imply any restrictions on modifiability or</span>
+<span class="s0"># read-only status of the node, so use with caution.</span>
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _OpaqueNodeWrapper:</span>
+    <span class="s0">cdef tree.xmlNode* _c_node</span>
+    <span class="s0">def __init__(self):</span>
+        <span class="s0">raise TypeError, &quot;This type cannot be instantiated from Python&quot;</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _OpaqueDocumentWrapper(_OpaqueNodeWrapper):</span>
+    <span class="s0">cdef int _assertNode(self) except -1:</span>
+        <span class="s0">&quot;&quot;&quot;This is our way of saying: this proxy is invalid!</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._c_node is not NULL, &quot;Proxy invalidated!&quot;</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cpdef append(self, other_element):</span>
+        <span class="s0">&quot;&quot;&quot;Append a copy of an Element to the list of children.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_next</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c_node = _roNodeOf(other_element)</span>
+        <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+            <span class="s0">if tree.xmlDocGetRootElement(&lt;tree.xmlDoc*&gt;self._c_node) is not NULL:</span>
+                <span class="s0">raise ValueError, &quot;cannot append, document already has a root element&quot;</span>
+        <span class="s0">elif c_node.type not in (tree.XML_PI_NODE, tree.XML_COMMENT_NODE):</span>
+            <span class="s0">raise TypeError, f&quot;unsupported element type for top-level node: {c_node.type}&quot;</span>
+        <span class="s0">c_node = _copyNodeToDoc(c_node, &lt;tree.xmlDoc*&gt;self._c_node)</span>
+        <span class="s0">c_next = c_node.next</span>
+        <span class="s0">tree.xmlAddChild(self._c_node, c_node)</span>
+        <span class="s0">_moveTail(c_next, c_node)</span>
+
+    <span class="s0">def extend(self, elements):</span>
+        <span class="s0">&quot;&quot;&quot;Append a copy of all Elements from a sequence to the list of</span>
+        <span class="s0">children.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">for element in elements:</span>
+            <span class="s0">self.append(element)</span>
+
+<span class="s0">cdef _OpaqueNodeWrapper _newOpaqueAppendOnlyNodeWrapper(xmlNode* c_node):</span>
+    <span class="s0">cdef _OpaqueNodeWrapper node</span>
+    <span class="s0">if c_node.type in (tree.XML_DOCUMENT_NODE, tree.XML_HTML_DOCUMENT_NODE):</span>
+        <span class="s0">node = _OpaqueDocumentWrapper.__new__(_OpaqueDocumentWrapper)</span>
+    <span class="s0">else:</span>
+        <span class="s0">node = _OpaqueNodeWrapper.__new__(_OpaqueNodeWrapper)</span>
+    <span class="s0">node._c_node = c_node</span>
+    <span class="s0">return node</span>
+
+<span class="s0"># element proxies that allow restricted modification</span>
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ModifyContentOnlyProxy(_ReadOnlyProxy):</span>
+    <span class="s0">&quot;&quot;&quot;A read-only proxy that allows changing the text content.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">property text:</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">self._assertNode()</span>
+            <span class="s0">if self._c_node.content is NULL:</span>
+                <span class="s0">return ''</span>
+            <span class="s0">else:</span>
+                <span class="s0">return funicode(self._c_node.content)</span>
+
+        <span class="s0">def __set__(self, value):</span>
+            <span class="s0">cdef tree.xmlDict* c_dict</span>
+            <span class="s0">self._assertNode()</span>
+            <span class="s0">if value is None:</span>
+                <span class="s0">c_text = &lt;const_xmlChar*&gt;NULL</span>
+            <span class="s0">else:</span>
+                <span class="s0">value = _utf8(value)</span>
+                <span class="s0">c_text = _xcstr(value)</span>
+            <span class="s0">tree.xmlNodeSetContent(self._c_node, c_text)</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ModifyContentOnlyPIProxy(_ModifyContentOnlyProxy):</span>
+    <span class="s0">&quot;&quot;&quot;A read-only proxy that allows changing the text/target content of a</span>
+    <span class="s0">processing instruction.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">property target:</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">self._assertNode()</span>
+            <span class="s0">return funicode(self._c_node.name)</span>
+
+        <span class="s0">def __set__(self, value):</span>
+            <span class="s0">self._assertNode()</span>
+            <span class="s0">value = _utf8(value)</span>
+            <span class="s0">c_text = _xcstr(value)</span>
+            <span class="s0">tree.xmlNodeSetName(self._c_node, c_text)</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ModifyContentOnlyEntityProxy(_ModifyContentOnlyProxy):</span>
+    <span class="s0">&quot;A read-only proxy for entity references (for internal use only!)&quot;</span>
+    <span class="s0">property name:</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">return funicode(self._c_node.name)</span>
+
+        <span class="s0">def __set__(self, value):</span>
+            <span class="s0">value = _utf8(value)</span>
+            <span class="s0">assert '&amp;' not in value and ';' not in value, \</span>
+                <span class="s0">f&quot;Invalid entity name '{value}'&quot;</span>
+            <span class="s0">c_text = _xcstr(value)</span>
+            <span class="s0">tree.xmlNodeSetName(self._c_node, c_text)</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _AppendOnlyElementProxy(_ReadOnlyElementProxy):</span>
+    <span class="s0">&quot;&quot;&quot;A read-only element that allows adding children and changing the</span>
+    <span class="s0">text content (i.e. everything that adds to the subtree).</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cpdef append(self, other_element):</span>
+        <span class="s0">&quot;&quot;&quot;Append a copy of an Element to the list of children.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xmlNode* c_next</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">c_node = _roNodeOf(other_element)</span>
+        <span class="s0">c_node = _copyNodeToDoc(c_node, self._c_node.doc)</span>
+        <span class="s0">c_next = c_node.next</span>
+        <span class="s0">tree.xmlAddChild(self._c_node, c_node)</span>
+        <span class="s0">_moveTail(c_next, c_node)</span>
+            
+    <span class="s0">def extend(self, elements):</span>
+        <span class="s0">&quot;&quot;&quot;Append a copy of all Elements from a sequence to the list of</span>
+        <span class="s0">children.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._assertNode()</span>
+        <span class="s0">for element in elements:</span>
+            <span class="s0">self.append(element)</span>
+
+    <span class="s0">property text:</span>
+        <span class="s0">&quot;&quot;&quot;Text before the first subelement. This is either a string or the</span>
+        <span class="s0">value None, if there was no text.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">self._assertNode()</span>
+            <span class="s0">return _collectText(self._c_node.children)</span>
+
+        <span class="s0">def __set__(self, value):</span>
+            <span class="s0">self._assertNode()</span>
+            <span class="s0">if isinstance(value, QName):</span>
+                <span class="s0">value = _resolveQNameText(self, value).decode('utf8')</span>
+            <span class="s0">_setNodeText(self._c_node, value)</span>
+
+
+<span class="s0">cdef _ReadOnlyProxy _newAppendOnlyProxy(</span>
+    <span class="s0">_ReadOnlyProxy source_proxy, xmlNode* c_node):</span>
+    <span class="s0">cdef _ReadOnlyProxy el</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">el = _AppendOnlyElementProxy.__new__(_AppendOnlyElementProxy)</span>
+    <span class="s0">elif c_node.type == tree.XML_PI_NODE:</span>
+        <span class="s0">el = _ModifyContentOnlyPIProxy.__new__(_ModifyContentOnlyPIProxy)</span>
+    <span class="s0">elif c_node.type == tree.XML_COMMENT_NODE:</span>
+        <span class="s0">el = _ModifyContentOnlyProxy.__new__(_ModifyContentOnlyProxy)</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError(f&quot;Unsupported element type: {c_node.type}&quot;)</span>
+    <span class="s0">el._c_node = c_node</span>
+    <span class="s0">_initReadOnlyProxy(el, source_proxy)</span>
+    <span class="s0">return el</span>
+
+<span class="s0">cdef xmlNode* _roNodeOf(element) except NULL:</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">if isinstance(element, _Element):</span>
+        <span class="s0">c_node = (&lt;_Element&gt;element)._c_node</span>
+    <span class="s0">elif isinstance(element, _ReadOnlyProxy):</span>
+        <span class="s0">c_node = (&lt;_ReadOnlyProxy&gt;element)._c_node</span>
+    <span class="s0">elif isinstance(element, _OpaqueNodeWrapper):</span>
+        <span class="s0">c_node = (&lt;_OpaqueNodeWrapper&gt;element)._c_node</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError, f&quot;invalid argument type {type(element)}&quot;</span>
+
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">raise TypeError, &quot;invalid element&quot;</span>
+    <span class="s0">return c_node</span>
+
+<span class="s0">cdef xmlNode* _nonRoNodeOf(element) except NULL:</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">if isinstance(element, _Element):</span>
+        <span class="s0">c_node = (&lt;_Element&gt;element)._c_node</span>
+    <span class="s0">elif isinstance(element, _AppendOnlyElementProxy):</span>
+        <span class="s0">c_node = (&lt;_AppendOnlyElementProxy&gt;element)._c_node</span>
+    <span class="s0">elif isinstance(element, _OpaqueNodeWrapper):</span>
+        <span class="s0">c_node = (&lt;_OpaqueNodeWrapper&gt;element)._c_node</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError, f&quot;invalid argument type {type(element)}&quot;</span>
+
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">raise TypeError, &quot;invalid element&quot;</span>
+    <span class="s0">return c_node</span>
+</pre>
+</body>
+</html>

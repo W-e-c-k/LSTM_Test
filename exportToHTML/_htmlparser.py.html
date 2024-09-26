@@ -1,0 +1,410 @@
+<html>
+<head>
+<title>_htmlparser.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #cf8e6d;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_htmlparser.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># encoding: utf-8</span>
+<span class="s2">&quot;&quot;&quot;Use the HTMLParser library to parse HTML files that aren't too bad.&quot;&quot;&quot;</span>
+
+<span class="s0"># Use of this source code is governed by the MIT license.</span>
+<span class="s1">__license__ </span><span class="s3">= </span><span class="s4">&quot;MIT&quot;</span>
+
+<span class="s1">__all__ </span><span class="s3">= [</span>
+    <span class="s4">'HTMLParserTreeBuilder'</span><span class="s3">,</span>
+    <span class="s3">]</span>
+
+<span class="s5">from </span><span class="s1">html</span><span class="s3">.</span><span class="s1">parser </span><span class="s5">import </span><span class="s1">HTMLParser</span>
+
+<span class="s5">import </span><span class="s1">sys</span>
+<span class="s5">import </span><span class="s1">warnings</span>
+
+<span class="s5">from </span><span class="s1">bs4</span><span class="s3">.</span><span class="s1">element </span><span class="s5">import </span><span class="s3">(</span>
+    <span class="s1">CData</span><span class="s3">,</span>
+    <span class="s1">Comment</span><span class="s3">,</span>
+    <span class="s1">Declaration</span><span class="s3">,</span>
+    <span class="s1">Doctype</span><span class="s3">,</span>
+    <span class="s1">ProcessingInstruction</span><span class="s3">,</span>
+    <span class="s3">)</span>
+<span class="s5">from </span><span class="s1">bs4</span><span class="s3">.</span><span class="s1">dammit </span><span class="s5">import </span><span class="s1">EntitySubstitution</span><span class="s3">, </span><span class="s1">UnicodeDammit</span>
+
+<span class="s5">from </span><span class="s1">bs4</span><span class="s3">.</span><span class="s1">builder </span><span class="s5">import </span><span class="s3">(</span>
+    <span class="s1">DetectsXMLParsedAsHTML</span><span class="s3">,</span>
+    <span class="s1">ParserRejectedMarkup</span><span class="s3">,</span>
+    <span class="s1">HTML</span><span class="s3">,</span>
+    <span class="s1">HTMLTreeBuilder</span><span class="s3">,</span>
+    <span class="s1">STRICT</span><span class="s3">,</span>
+    <span class="s3">)</span>
+
+
+<span class="s1">HTMLPARSER </span><span class="s3">= </span><span class="s4">'html.parser'</span>
+
+<span class="s5">class </span><span class="s1">BeautifulSoupHTMLParser</span><span class="s3">(</span><span class="s1">HTMLParser</span><span class="s3">, </span><span class="s1">DetectsXMLParsedAsHTML</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;A subclass of the Python standard library's HTMLParser class, which 
+    listens for HTMLParser events and translates them into calls 
+    to Beautiful Soup's tree construction API. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0"># Strategies for handling duplicate attributes</span>
+    <span class="s1">IGNORE </span><span class="s3">= </span><span class="s4">'ignore'</span>
+    <span class="s1">REPLACE </span><span class="s3">= </span><span class="s4">'replace'</span>
+    
+    <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Constructor. 
+ 
+        :param on_duplicate_attribute: A strategy for what to do if a 
+            tag includes the same attribute more than once. Accepted 
+            values are: REPLACE (replace earlier values with later 
+            ones, the default), IGNORE (keep the earliest value 
+            encountered), or a callable. A callable must take three 
+            arguments: the dictionary of attributes already processed, 
+            the name of the duplicate attribute, and the most recent value 
+            encountered.            
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">on_duplicate_attribute </span><span class="s3">= </span><span class="s1">kwargs</span><span class="s3">.</span><span class="s1">pop</span><span class="s3">(</span>
+            <span class="s4">'on_duplicate_attribute'</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">REPLACE</span>
+        <span class="s3">)</span>
+        <span class="s1">HTMLParser</span><span class="s3">.</span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+
+        <span class="s0"># Keep a list of empty-element tags that were encountered</span>
+        <span class="s0"># without an explicit closing tag. If we encounter a closing tag</span>
+        <span class="s0"># of this type, we'll associate it with one of those entries.</span>
+        <span class="s0">#</span>
+        <span class="s0"># This isn't a stack because we don't care about the</span>
+        <span class="s0"># order. It's a list of closing tags we've already handled and</span>
+        <span class="s0"># will ignore, assuming they ever show up.</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">already_closed_empty_element </span><span class="s3">= []</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_initialize_xml_detector</span><span class="s3">()</span>
+
+    <span class="s5">def </span><span class="s1">error</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">message</span><span class="s3">):</span>
+        <span class="s0"># NOTE: This method is required so long as Python 3.9 is</span>
+        <span class="s0"># supported. The corresponding code is removed from HTMLParser</span>
+        <span class="s0"># in 3.5, but not removed from ParserBase until 3.10.</span>
+        <span class="s0"># https://github.com/python/cpython/issues/76025</span>
+        <span class="s0">#</span>
+        <span class="s0"># The original implementation turned the error into a warning,</span>
+        <span class="s0"># but in every case I discovered, this made HTMLParser</span>
+        <span class="s0"># immediately crash with an error message that was less</span>
+        <span class="s0"># helpful than the warning. The new implementation makes it</span>
+        <span class="s0"># more clear that html.parser just can't parse this</span>
+        <span class="s0"># markup. The 3.10 implementation does the same, though it</span>
+        <span class="s0"># raises AssertionError rather than calling a method. (We</span>
+        <span class="s0"># catch this error and wrap it in a ParserRejectedMarkup.)</span>
+        <span class="s5">raise </span><span class="s1">ParserRejectedMarkup</span><span class="s3">(</span><span class="s1">message</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">handle_startendtag</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">attrs</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle an incoming empty-element tag. 
+ 
+        This is only called when the markup looks like &lt;tag/&gt;. 
+ 
+        :param name: Name of the tag. 
+        :param attrs: Dictionary of the tag's attributes. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># is_startend() tells handle_starttag not to close the tag</span>
+        <span class="s0"># just because its name matches a known empty-element tag. We</span>
+        <span class="s0"># know that this is an empty-element tag and we want to call</span>
+        <span class="s0"># handle_endtag ourselves.</span>
+        <span class="s1">tag </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">handle_starttag</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s1">attrs</span><span class="s3">, </span><span class="s1">handle_empty_element</span><span class="s3">=</span><span class="s5">False</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">handle_endtag</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+        
+    <span class="s5">def </span><span class="s1">handle_starttag</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">attrs</span><span class="s3">, </span><span class="s1">handle_empty_element</span><span class="s3">=</span><span class="s5">True</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle an opening tag, e.g. '&lt;tag&gt;' 
+ 
+        :param name: Name of the tag. 
+        :param attrs: Dictionary of the tag's attributes. 
+        :param handle_empty_element: True if this tag is known to be 
+            an empty-element tag (i.e. there is not expected to be any 
+            closing tag). 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># XXX namespace</span>
+        <span class="s1">attr_dict </span><span class="s3">= {}</span>
+        <span class="s5">for </span><span class="s1">key</span><span class="s3">, </span><span class="s1">value </span><span class="s5">in </span><span class="s1">attrs</span><span class="s3">:</span>
+            <span class="s0"># Change None attribute values to the empty string</span>
+            <span class="s0"># for consistency with the other tree builders.</span>
+            <span class="s5">if </span><span class="s1">value </span><span class="s5">is None</span><span class="s3">:</span>
+                <span class="s1">value </span><span class="s3">= </span><span class="s4">''</span>
+            <span class="s5">if </span><span class="s1">key </span><span class="s5">in </span><span class="s1">attr_dict</span><span class="s3">:</span>
+                <span class="s0"># A single attribute shows up multiple times in this</span>
+                <span class="s0"># tag. How to handle it depends on the</span>
+                <span class="s0"># on_duplicate_attribute setting.</span>
+                <span class="s1">on_dupe </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">on_duplicate_attribute</span>
+                <span class="s5">if </span><span class="s1">on_dupe </span><span class="s3">== </span><span class="s1">self</span><span class="s3">.</span><span class="s1">IGNORE</span><span class="s3">:</span>
+                    <span class="s5">pass</span>
+                <span class="s5">elif </span><span class="s1">on_dupe </span><span class="s5">in </span><span class="s3">(</span><span class="s5">None</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">REPLACE</span><span class="s3">):</span>
+                    <span class="s1">attr_dict</span><span class="s3">[</span><span class="s1">key</span><span class="s3">] = </span><span class="s1">value</span>
+                <span class="s5">else</span><span class="s3">:</span>
+                    <span class="s1">on_dupe</span><span class="s3">(</span><span class="s1">attr_dict</span><span class="s3">, </span><span class="s1">key</span><span class="s3">, </span><span class="s1">value</span><span class="s3">)</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s1">attr_dict</span><span class="s3">[</span><span class="s1">key</span><span class="s3">] = </span><span class="s1">value</span>
+            <span class="s1">attrvalue </span><span class="s3">= </span><span class="s4">'&quot;&quot;'</span>
+        <span class="s0">#print(&quot;START&quot;, name)</span>
+        <span class="s1">sourceline</span><span class="s3">, </span><span class="s1">sourcepos </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">getpos</span><span class="s3">()</span>
+        <span class="s1">tag </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_starttag</span><span class="s3">(</span>
+            <span class="s1">name</span><span class="s3">, </span><span class="s5">None</span><span class="s3">, </span><span class="s5">None</span><span class="s3">, </span><span class="s1">attr_dict</span><span class="s3">, </span><span class="s1">sourceline</span><span class="s3">=</span><span class="s1">sourceline</span><span class="s3">,</span>
+            <span class="s1">sourcepos</span><span class="s3">=</span><span class="s1">sourcepos</span>
+        <span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">tag </span><span class="s5">and </span><span class="s1">tag</span><span class="s3">.</span><span class="s1">is_empty_element </span><span class="s5">and </span><span class="s1">handle_empty_element</span><span class="s3">:</span>
+            <span class="s0"># Unlike other parsers, html.parser doesn't send separate end tag</span>
+            <span class="s0"># events for empty-element tags. (It's handled in</span>
+            <span class="s0"># handle_startendtag, but only if the original markup looked like</span>
+            <span class="s0"># &lt;tag/&gt;.)</span>
+            <span class="s0">#</span>
+            <span class="s0"># So we need to call handle_endtag() ourselves. Since we</span>
+            <span class="s0"># know the start event is identical to the end event, we</span>
+            <span class="s0"># don't want handle_endtag() to cross off any previous end</span>
+            <span class="s0"># events for tags of this name.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">handle_endtag</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s1">check_already_closed</span><span class="s3">=</span><span class="s5">False</span><span class="s3">)</span>
+
+            <span class="s0"># But we might encounter an explicit closing tag for this tag</span>
+            <span class="s0"># later on. If so, we want to ignore it.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">already_closed_empty_element</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_root_tag </span><span class="s5">is None</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_root_tag_encountered</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+            
+    <span class="s5">def </span><span class="s1">handle_endtag</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">check_already_closed</span><span class="s3">=</span><span class="s5">True</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle a closing tag, e.g. '&lt;/tag&gt;' 
+         
+        :param name: A tag name. 
+        :param check_already_closed: True if this tag is expected to 
+           be the closing portion of an empty-element tag, 
+           e.g. '&lt;tag&gt;&lt;/tag&gt;'. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">#print(&quot;END&quot;, name)</span>
+        <span class="s5">if </span><span class="s1">check_already_closed </span><span class="s5">and </span><span class="s1">name </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">already_closed_empty_element</span><span class="s3">:</span>
+            <span class="s0"># This is a redundant end tag for an empty-element tag.</span>
+            <span class="s0"># We've already called handle_endtag() for it, so just</span>
+            <span class="s0"># check it off the list.</span>
+            <span class="s0">#print(&quot;ALREADY CLOSED&quot;, name)</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">already_closed_empty_element</span><span class="s3">.</span><span class="s1">remove</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_endtag</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+            
+    <span class="s5">def </span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">data</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle some textual data that shows up between tags.&quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">handle_charref</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle a numeric character reference by converting it to the 
+        corresponding Unicode character and treating it as textual 
+        data. 
+ 
+        :param name: Character number, possibly in hexadecimal. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># TODO: This was originally a workaround for a bug in</span>
+        <span class="s0"># HTMLParser. (http://bugs.python.org/issue13633) The bug has</span>
+        <span class="s0"># been fixed, but removing this code still makes some</span>
+        <span class="s0"># Beautiful Soup tests fail. This needs investigation.</span>
+        <span class="s5">if </span><span class="s1">name</span><span class="s3">.</span><span class="s1">startswith</span><span class="s3">(</span><span class="s4">'x'</span><span class="s3">):</span>
+            <span class="s1">real_name </span><span class="s3">= </span><span class="s1">int</span><span class="s3">(</span><span class="s1">name</span><span class="s3">.</span><span class="s1">lstrip</span><span class="s3">(</span><span class="s4">'x'</span><span class="s3">), </span><span class="s6">16</span><span class="s3">)</span>
+        <span class="s5">elif </span><span class="s1">name</span><span class="s3">.</span><span class="s1">startswith</span><span class="s3">(</span><span class="s4">'X'</span><span class="s3">):</span>
+            <span class="s1">real_name </span><span class="s3">= </span><span class="s1">int</span><span class="s3">(</span><span class="s1">name</span><span class="s3">.</span><span class="s1">lstrip</span><span class="s3">(</span><span class="s4">'X'</span><span class="s3">), </span><span class="s6">16</span><span class="s3">)</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">real_name </span><span class="s3">= </span><span class="s1">int</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+
+        <span class="s1">data </span><span class="s3">= </span><span class="s5">None</span>
+        <span class="s5">if </span><span class="s1">real_name </span><span class="s3">&lt; </span><span class="s6">256</span><span class="s3">:</span>
+            <span class="s0"># HTML numeric entities are supposed to reference Unicode</span>
+            <span class="s0"># code points, but sometimes they reference code points in</span>
+            <span class="s0"># some other encoding (ahem, Windows-1252). E.g. &amp;#147;</span>
+            <span class="s0"># instead of &amp;#201; for LEFT DOUBLE QUOTATION MARK. This</span>
+            <span class="s0"># code tries to detect this situation and compensate.</span>
+            <span class="s5">for </span><span class="s1">encoding </span><span class="s5">in </span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">original_encoding</span><span class="s3">, </span><span class="s4">'windows-1252'</span><span class="s3">):</span>
+                <span class="s5">if not </span><span class="s1">encoding</span><span class="s3">:</span>
+                    <span class="s5">continue</span>
+                <span class="s5">try</span><span class="s3">:</span>
+                    <span class="s1">data </span><span class="s3">= </span><span class="s1">bytearray</span><span class="s3">([</span><span class="s1">real_name</span><span class="s3">]).</span><span class="s1">decode</span><span class="s3">(</span><span class="s1">encoding</span><span class="s3">)</span>
+                <span class="s5">except </span><span class="s1">UnicodeDecodeError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+                    <span class="s5">pass</span>
+        <span class="s5">if not </span><span class="s1">data</span><span class="s3">:</span>
+            <span class="s5">try</span><span class="s3">:</span>
+                <span class="s1">data </span><span class="s3">= </span><span class="s1">chr</span><span class="s3">(</span><span class="s1">real_name</span><span class="s3">)</span>
+            <span class="s5">except </span><span class="s3">(</span><span class="s1">ValueError</span><span class="s3">, </span><span class="s1">OverflowError</span><span class="s3">) </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+                <span class="s5">pass</span>
+        <span class="s1">data </span><span class="s3">= </span><span class="s1">data </span><span class="s5">or </span><span class="s4">&quot;</span><span class="s5">\N{REPLACEMENT CHARACTER}</span><span class="s4">&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">handle_entityref</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle a named entity reference by converting it to the 
+        corresponding Unicode character(s) and treating it as textual 
+        data. 
+ 
+        :param name: Name of the entity reference. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">character </span><span class="s3">= </span><span class="s1">EntitySubstitution</span><span class="s3">.</span><span class="s1">HTML_ENTITY_TO_CHARACTER</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">character </span><span class="s5">is not None</span><span class="s3">:</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">character</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s0"># If this were XML, it would be ambiguous whether &quot;&amp;foo&quot;</span>
+            <span class="s0"># was an character entity reference with a missing</span>
+            <span class="s0"># semicolon or the literal string &quot;&amp;foo&quot;. Since this is</span>
+            <span class="s0"># HTML, we have a complete list of all character entity references,</span>
+            <span class="s0"># and this one wasn't found, so assume it's the literal string &quot;&amp;foo&quot;.</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s4">&quot;&amp;%s&quot; </span><span class="s3">% </span><span class="s1">name</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">handle_comment</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">data</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle an HTML comment. 
+ 
+        :param data: The text of the comment. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">(</span><span class="s1">Comment</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">handle_decl</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">data</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle a DOCTYPE declaration. 
+ 
+        :param data: The text of the declaration. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">()</span>
+        <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s1">len</span><span class="s3">(</span><span class="s4">&quot;DOCTYPE &quot;</span><span class="s3">):]</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">(</span><span class="s1">Doctype</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">unknown_decl</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">data</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle a declaration of unknown type -- probably a CDATA block. 
+ 
+        :param data: The text of the declaration. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">if </span><span class="s1">data</span><span class="s3">.</span><span class="s1">upper</span><span class="s3">().</span><span class="s1">startswith</span><span class="s3">(</span><span class="s4">'CDATA['</span><span class="s3">):</span>
+            <span class="s1">cls </span><span class="s3">= </span><span class="s1">CData</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s1">len</span><span class="s3">(</span><span class="s4">'CDATA['</span><span class="s3">):]</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">cls </span><span class="s3">= </span><span class="s1">Declaration</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">handle_pi</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">data</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Handle a processing instruction. 
+ 
+        :param data: The text of the instruction. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">handle_data</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_document_might_be_xml</span><span class="s3">(</span><span class="s1">data</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span><span class="s3">.</span><span class="s1">endData</span><span class="s3">(</span><span class="s1">ProcessingInstruction</span><span class="s3">)</span>
+
+
+<span class="s5">class </span><span class="s1">HTMLParserTreeBuilder</span><span class="s3">(</span><span class="s1">HTMLTreeBuilder</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;A Beautiful soup `TreeBuilder` that uses the `HTMLParser` parser, 
+    found in the Python standard library. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">is_xml </span><span class="s3">= </span><span class="s5">False</span>
+    <span class="s1">picklable </span><span class="s3">= </span><span class="s5">True</span>
+    <span class="s1">NAME </span><span class="s3">= </span><span class="s1">HTMLPARSER</span>
+    <span class="s1">features </span><span class="s3">= [</span><span class="s1">NAME</span><span class="s3">, </span><span class="s1">HTML</span><span class="s3">, </span><span class="s1">STRICT</span><span class="s3">]</span>
+
+    <span class="s0"># The html.parser knows which line number and position in the</span>
+    <span class="s0"># original file is the source of an element.</span>
+    <span class="s1">TRACKS_LINE_NUMBERS </span><span class="s3">= </span><span class="s5">True</span>
+
+    <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">parser_args</span><span class="s3">=</span><span class="s5">None</span><span class="s3">, </span><span class="s1">parser_kwargs</span><span class="s3">=</span><span class="s5">None</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Constructor. 
+ 
+        :param parser_args: Positional arguments to pass into  
+            the BeautifulSoupHTMLParser constructor, once it's 
+            invoked. 
+        :param parser_kwargs: Keyword arguments to pass into  
+            the BeautifulSoupHTMLParser constructor, once it's 
+            invoked. 
+        :param kwargs: Keyword arguments for the superclass constructor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># Some keyword arguments will be pulled out of kwargs and placed</span>
+        <span class="s0"># into parser_kwargs.</span>
+        <span class="s1">extra_parser_kwargs </span><span class="s3">= </span><span class="s1">dict</span><span class="s3">()</span>
+        <span class="s5">for </span><span class="s1">arg </span><span class="s5">in </span><span class="s3">(</span><span class="s4">'on_duplicate_attribute'</span><span class="s3">,):</span>
+            <span class="s5">if </span><span class="s1">arg </span><span class="s5">in </span><span class="s1">kwargs</span><span class="s3">:</span>
+                <span class="s1">value </span><span class="s3">= </span><span class="s1">kwargs</span><span class="s3">.</span><span class="s1">pop</span><span class="s3">(</span><span class="s1">arg</span><span class="s3">)</span>
+                <span class="s1">extra_parser_kwargs</span><span class="s3">[</span><span class="s1">arg</span><span class="s3">] = </span><span class="s1">value</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">HTMLParserTreeBuilder</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">(**</span><span class="s1">kwargs</span><span class="s3">)</span>
+        <span class="s1">parser_args </span><span class="s3">= </span><span class="s1">parser_args </span><span class="s5">or </span><span class="s3">[]</span>
+        <span class="s1">parser_kwargs </span><span class="s3">= </span><span class="s1">parser_kwargs </span><span class="s5">or </span><span class="s3">{}</span>
+        <span class="s1">parser_kwargs</span><span class="s3">.</span><span class="s1">update</span><span class="s3">(</span><span class="s1">extra_parser_kwargs</span><span class="s3">)</span>
+        <span class="s1">parser_kwargs</span><span class="s3">[</span><span class="s4">'convert_charrefs'</span><span class="s3">] = </span><span class="s5">False</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">parser_args </span><span class="s3">= (</span><span class="s1">parser_args</span><span class="s3">, </span><span class="s1">parser_kwargs</span><span class="s3">)</span>
+        
+    <span class="s5">def </span><span class="s1">prepare_markup</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">markup</span><span class="s3">, </span><span class="s1">user_specified_encoding</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+                       <span class="s1">document_declared_encoding</span><span class="s3">=</span><span class="s5">None</span><span class="s3">, </span><span class="s1">exclude_encodings</span><span class="s3">=</span><span class="s5">None</span><span class="s3">):</span>
+
+        <span class="s2">&quot;&quot;&quot;Run any preliminary steps necessary to make incoming markup 
+        acceptable to the parser. 
+ 
+        :param markup: Some markup -- probably a bytestring. 
+        :param user_specified_encoding: The user asked to try this encoding. 
+        :param document_declared_encoding: The markup itself claims to be 
+            in this encoding. 
+        :param exclude_encodings: The user asked _not_ to try any of 
+            these encodings. 
+ 
+        :yield: A series of 4-tuples: 
+         (markup, encoding, declared encoding, 
+          has undergone character replacement) 
+ 
+         Each 4-tuple represents a strategy for converting the 
+         document to Unicode and parsing it. Each strategy will be tried  
+         in turn. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">str</span><span class="s3">):</span>
+            <span class="s0"># Parse Unicode as-is.</span>
+            <span class="s5">yield </span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s5">None</span><span class="s3">, </span><span class="s5">None</span><span class="s3">, </span><span class="s5">False</span><span class="s3">)</span>
+            <span class="s5">return</span>
+
+        <span class="s0"># Ask UnicodeDammit to sniff the most likely encoding.</span>
+
+        <span class="s0"># This was provided by the end-user; treat it as a known</span>
+        <span class="s0"># definite encoding per the algorithm laid out in the HTML5</span>
+        <span class="s0"># spec.  (See the EncodingDetector class for details.)</span>
+        <span class="s1">known_definite_encodings </span><span class="s3">= [</span><span class="s1">user_specified_encoding</span><span class="s3">]</span>
+
+        <span class="s0"># This was found in the document; treat it as a slightly lower-priority</span>
+        <span class="s0"># user encoding.</span>
+        <span class="s1">user_encodings </span><span class="s3">= [</span><span class="s1">document_declared_encoding</span><span class="s3">]</span>
+
+        <span class="s1">try_encodings </span><span class="s3">= [</span><span class="s1">user_specified_encoding</span><span class="s3">, </span><span class="s1">document_declared_encoding</span><span class="s3">]</span>
+        <span class="s1">dammit </span><span class="s3">= </span><span class="s1">UnicodeDammit</span><span class="s3">(</span>
+            <span class="s1">markup</span><span class="s3">,</span>
+            <span class="s1">known_definite_encodings</span><span class="s3">=</span><span class="s1">known_definite_encodings</span><span class="s3">,</span>
+            <span class="s1">user_encodings</span><span class="s3">=</span><span class="s1">user_encodings</span><span class="s3">,</span>
+            <span class="s1">is_html</span><span class="s3">=</span><span class="s5">True</span><span class="s3">,</span>
+            <span class="s1">exclude_encodings</span><span class="s3">=</span><span class="s1">exclude_encodings</span>
+        <span class="s3">)</span>
+        <span class="s5">yield </span><span class="s3">(</span><span class="s1">dammit</span><span class="s3">.</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">dammit</span><span class="s3">.</span><span class="s1">original_encoding</span><span class="s3">,</span>
+               <span class="s1">dammit</span><span class="s3">.</span><span class="s1">declared_html_encoding</span><span class="s3">,</span>
+               <span class="s1">dammit</span><span class="s3">.</span><span class="s1">contains_replacement_characters</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">feed</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">markup</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Run some incoming markup through some parsing process, 
+        populating the `BeautifulSoup` object in self.soup. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">args</span><span class="s3">, </span><span class="s1">kwargs </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">parser_args</span>
+        <span class="s1">parser </span><span class="s3">= </span><span class="s1">BeautifulSoupHTMLParser</span><span class="s3">(*</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+        <span class="s1">parser</span><span class="s3">.</span><span class="s1">soup </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">soup</span>
+        <span class="s5">try</span><span class="s3">:</span>
+            <span class="s1">parser</span><span class="s3">.</span><span class="s1">feed</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">)</span>
+            <span class="s1">parser</span><span class="s3">.</span><span class="s1">close</span><span class="s3">()</span>
+        <span class="s5">except </span><span class="s1">AssertionError </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+            <span class="s0"># html.parser raises AssertionError in rare cases to</span>
+            <span class="s0"># indicate a fatal problem with the markup, especially</span>
+            <span class="s0"># when there's an error in the doctype declaration.</span>
+            <span class="s5">raise </span><span class="s1">ParserRejectedMarkup</span><span class="s3">(</span><span class="s1">e</span><span class="s3">)</span>
+        <span class="s1">parser</span><span class="s3">.</span><span class="s1">already_closed_empty_element </span><span class="s3">= []</span>
+</pre>
+</body>
+</html>

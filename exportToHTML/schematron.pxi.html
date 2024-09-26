@@ -1,0 +1,185 @@
+<html>
+<head>
+<title>schematron.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+schematron.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># support for Schematron validation</span>
+<span class="s0">from lxml.includes cimport schematron</span>
+
+
+<span class="s0">cdef class SchematronError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;Base class of all Schematron errors.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class SchematronParseError(SchematronError):</span>
+    <span class="s0">&quot;&quot;&quot;Error while parsing an XML document as Schematron schema.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class SchematronValidateError(SchematronError):</span>
+    <span class="s0">&quot;&quot;&quot;Error while validating an XML document with a Schematron schema.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Schematron</span>
+
+<span class="s0">cdef class Schematron(_Validator):</span>
+    <span class="s0">&quot;&quot;&quot;Schematron(self, etree=None, file=None)</span>
+    <span class="s0">A Schematron validator.</span>
+
+    <span class="s0">Pass a root Element or an ElementTree to turn it into a validator.</span>
+    <span class="s0">Alternatively, pass a filename as keyword argument 'file' to parse from</span>
+    <span class="s0">the file system.</span>
+
+    <span class="s0">Schematron is a less well known, but very powerful schema language.  The main</span>
+    <span class="s0">idea is to use the capabilities of XPath to put restrictions on the structure</span>
+    <span class="s0">and the content of XML documents.  Here is a simple example::</span>
+
+      <span class="s0">&gt;&gt;&gt; schematron = Schematron(XML('''</span>
+      <span class="s0">... &lt;schema xmlns=&quot;http://www.ascc.net/xml/schematron&quot; &gt;</span>
+      <span class="s0">...   &lt;pattern name=&quot;id is the only permitted attribute name&quot;&gt;</span>
+      <span class="s0">...     &lt;rule context=&quot;*&quot;&gt;</span>
+      <span class="s0">...       &lt;report test=&quot;@*[not(name()='id')]&quot;&gt;Attribute</span>
+      <span class="s0">...         &lt;name path=&quot;@*[not(name()='id')]&quot;/&gt; is forbidden&lt;name/&gt;</span>
+      <span class="s0">...       &lt;/report&gt;</span>
+      <span class="s0">...     &lt;/rule&gt;</span>
+      <span class="s0">...   &lt;/pattern&gt;</span>
+      <span class="s0">... &lt;/schema&gt;</span>
+      <span class="s0">... '''))</span>
+
+      <span class="s0">&gt;&gt;&gt; xml = XML('''</span>
+      <span class="s0">... &lt;AAA name=&quot;aaa&quot;&gt;</span>
+      <span class="s0">...   &lt;BBB id=&quot;bbb&quot;/&gt;</span>
+      <span class="s0">...   &lt;CCC color=&quot;ccc&quot;/&gt;</span>
+      <span class="s0">... &lt;/AAA&gt;</span>
+      <span class="s0">... ''')</span>
+
+      <span class="s0">&gt;&gt;&gt; schematron.validate(xml)</span>
+      <span class="s0">0</span>
+
+      <span class="s0">&gt;&gt;&gt; xml = XML('''</span>
+      <span class="s0">... &lt;AAA id=&quot;aaa&quot;&gt;</span>
+      <span class="s0">...   &lt;BBB id=&quot;bbb&quot;/&gt;</span>
+      <span class="s0">...   &lt;CCC/&gt;</span>
+      <span class="s0">... &lt;/AAA&gt;</span>
+      <span class="s0">... ''')</span>
+
+      <span class="s0">&gt;&gt;&gt; schematron.validate(xml)</span>
+      <span class="s0">1</span>
+
+    <span class="s0">Schematron was added to libxml2 in version 2.6.21.  Before version 2.6.32,</span>
+    <span class="s0">however, Schematron lacked support for error reporting other than to stderr.</span>
+    <span class="s0">This version is therefore required to retrieve validation warnings and</span>
+    <span class="s0">errors in lxml.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef schematron.xmlSchematron* _c_schema</span>
+    <span class="s0">cdef xmlDoc* _c_schema_doc</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._c_schema = NULL</span>
+        <span class="s0">self._c_schema_doc = NULL</span>
+
+    <span class="s0">def __init__(self, etree=None, *, file=None):</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef _Element root_node</span>
+        <span class="s0">cdef xmlNode* c_node</span>
+        <span class="s0">cdef char* c_href</span>
+        <span class="s0">cdef schematron.xmlSchematronParserCtxt* parser_ctxt = NULL</span>
+        <span class="s0">_Validator.__init__(self)</span>
+        <span class="s0">if not config.ENABLE_SCHEMATRON:</span>
+            <span class="s0">raise SchematronError, \</span>
+                <span class="s0">&quot;lxml.etree was compiled without Schematron support.&quot;</span>
+        <span class="s0">if etree is not None:</span>
+            <span class="s0">doc = _documentOrRaise(etree)</span>
+            <span class="s0">root_node = _rootNodeOrRaise(etree)</span>
+            <span class="s0">self._c_schema_doc = _copyDocRoot(doc._c_doc, root_node._c_node)</span>
+            <span class="s0">parser_ctxt = schematron.xmlSchematronNewDocParserCtxt(self._c_schema_doc)</span>
+        <span class="s0">elif file is not None:</span>
+            <span class="s0">filename = _getFilenameForFile(file)</span>
+            <span class="s0">if filename is None:</span>
+                <span class="s0"># XXX assume a string object</span>
+                <span class="s0">filename = file</span>
+            <span class="s0">filename = _encodeFilename(filename)</span>
+            <span class="s0">with self._error_log:</span>
+                <span class="s0">orig_loader = _register_document_loader()</span>
+                <span class="s0">parser_ctxt = schematron.xmlSchematronNewParserCtxt(_cstr(filename))</span>
+                <span class="s0">_reset_document_loader(orig_loader)</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise SchematronParseError, &quot;No tree or file given&quot;</span>
+
+        <span class="s0">if parser_ctxt is NULL:</span>
+            <span class="s0">if self._c_schema_doc is not NULL:</span>
+                <span class="s0">tree.xmlFreeDoc(self._c_schema_doc)</span>
+                <span class="s0">self._c_schema_doc = NULL</span>
+            <span class="s0">raise MemoryError()</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">with self._error_log:</span>
+                <span class="s0">orig_loader = _register_document_loader()</span>
+                <span class="s0">self._c_schema = schematron.xmlSchematronParse(parser_ctxt)</span>
+                <span class="s0">_reset_document_loader(orig_loader)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">schematron.xmlSchematronFreeParserCtxt(parser_ctxt)</span>
+
+        <span class="s0">if self._c_schema is NULL:</span>
+            <span class="s0">raise SchematronParseError(</span>
+                <span class="s0">&quot;Document is not a valid Schematron schema&quot;,</span>
+                <span class="s0">self._error_log)</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">schematron.xmlSchematronFree(self._c_schema)</span>
+        <span class="s0">if self._c_schema_doc is not NULL:</span>
+            <span class="s0">tree.xmlFreeDoc(self._c_schema_doc)</span>
+
+    <span class="s0">def __call__(self, etree):</span>
+        <span class="s0">&quot;&quot;&quot;__call__(self, etree)</span>
+
+        <span class="s0">Validate doc using Schematron.</span>
+
+        <span class="s0">Returns true if document is valid, false if not.&quot;&quot;&quot;</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef _Element root_node</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef schematron.xmlSchematronValidCtxt* valid_ctxt</span>
+        <span class="s0">cdef int ret</span>
+
+        <span class="s0">assert self._c_schema is not NULL, &quot;Schematron instance not initialised&quot;</span>
+        <span class="s0">doc = _documentOrRaise(etree)</span>
+        <span class="s0">root_node = _rootNodeOrRaise(etree)</span>
+
+        <span class="s0">valid_ctxt = schematron.xmlSchematronNewValidCtxt(</span>
+            <span class="s0">self._c_schema, schematron.XML_SCHEMATRON_OUT_ERROR)</span>
+        <span class="s0">if valid_ctxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">self._error_log.clear()</span>
+            <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+            <span class="s0">schematron.xmlSchematronSetValidStructuredErrors(</span>
+                <span class="s0">valid_ctxt, &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveError, &lt;void*&gt;self._error_log)</span>
+            <span class="s0">c_doc = _fakeRootDoc(doc._c_doc, root_node._c_node)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">ret = schematron.xmlSchematronValidateDoc(valid_ctxt, c_doc)</span>
+            <span class="s0">_destroyFakeDoc(doc._c_doc, c_doc)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">schematron.xmlSchematronFreeValidCtxt(valid_ctxt)</span>
+
+        <span class="s0">if ret == -1:</span>
+            <span class="s0">raise SchematronValidateError(</span>
+                <span class="s0">&quot;Internal error in Schematron validation&quot;,</span>
+                <span class="s0">self._error_log)</span>
+        <span class="s0">if ret == 0:</span>
+            <span class="s0">return True</span>
+        <span class="s0">else:</span>
+            <span class="s0">return False</span>
+</pre>
+</body>
+</html>

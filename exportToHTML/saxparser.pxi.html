@@ -1,0 +1,892 @@
+<html>
+<head>
+<title>saxparser.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+saxparser.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># SAX-like interfaces</span>
+
+<span class="s0">class XMLSyntaxAssertionError(XMLSyntaxError, AssertionError):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">An XMLSyntaxError that additionally inherits from AssertionError for</span>
+    <span class="s0">ElementTree / backwards compatibility reasons.</span>
+
+    <span class="s0">This class may get replaced by a plain XMLSyntaxError in a future version.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, message):</span>
+        <span class="s0">XMLSyntaxError.__init__(self, message, None, 0, 1)</span>
+
+
+<span class="s0">ctypedef enum _SaxParserEvents:</span>
+    <span class="s0">SAX_EVENT_START    = 1 &lt;&lt; 0</span>
+    <span class="s0">SAX_EVENT_END      = 1 &lt;&lt; 1</span>
+    <span class="s0">SAX_EVENT_DATA     = 1 &lt;&lt; 2</span>
+    <span class="s0">SAX_EVENT_DOCTYPE  = 1 &lt;&lt; 3</span>
+    <span class="s0">SAX_EVENT_PI       = 1 &lt;&lt; 4</span>
+    <span class="s0">SAX_EVENT_COMMENT  = 1 &lt;&lt; 5</span>
+    <span class="s0">SAX_EVENT_START_NS = 1 &lt;&lt; 6</span>
+    <span class="s0">SAX_EVENT_END_NS   = 1 &lt;&lt; 7</span>
+
+<span class="s0">ctypedef enum _ParseEventFilter:</span>
+    <span class="s0">PARSE_EVENT_FILTER_START     = 1 &lt;&lt; 0</span>
+    <span class="s0">PARSE_EVENT_FILTER_END       = 1 &lt;&lt; 1</span>
+    <span class="s0">PARSE_EVENT_FILTER_START_NS  = 1 &lt;&lt; 2</span>
+    <span class="s0">PARSE_EVENT_FILTER_END_NS    = 1 &lt;&lt; 3</span>
+    <span class="s0">PARSE_EVENT_FILTER_COMMENT   = 1 &lt;&lt; 4</span>
+    <span class="s0">PARSE_EVENT_FILTER_PI        = 1 &lt;&lt; 5</span>
+
+
+<span class="s0">cdef int _buildParseEventFilter(events) except -1:</span>
+    <span class="s0">cdef int event_filter = 0</span>
+    <span class="s0">for event in events:</span>
+        <span class="s0">if event == 'start':</span>
+            <span class="s0">event_filter |= PARSE_EVENT_FILTER_START</span>
+        <span class="s0">elif event == 'end':</span>
+            <span class="s0">event_filter |= PARSE_EVENT_FILTER_END</span>
+        <span class="s0">elif event == 'start-ns':</span>
+            <span class="s0">event_filter |= PARSE_EVENT_FILTER_START_NS</span>
+        <span class="s0">elif event == 'end-ns':</span>
+            <span class="s0">event_filter |= PARSE_EVENT_FILTER_END_NS</span>
+        <span class="s0">elif event == 'comment':</span>
+            <span class="s0">event_filter |= PARSE_EVENT_FILTER_COMMENT</span>
+        <span class="s0">elif event == 'pi':</span>
+            <span class="s0">event_filter |= PARSE_EVENT_FILTER_PI</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise ValueError, f&quot;invalid event name '{event}'&quot;</span>
+    <span class="s0">return event_filter</span>
+
+
+<span class="s0">cdef class _SaxParserTarget:</span>
+    <span class="s0">cdef int _sax_event_filter</span>
+
+    <span class="s0">cdef _handleSaxStart(self, tag, attrib, nsmap):</span>
+        <span class="s0">return None</span>
+    <span class="s0">cdef _handleSaxEnd(self, tag):</span>
+        <span class="s0">return None</span>
+    <span class="s0">cdef int _handleSaxData(self, data) except -1:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">cdef int _handleSaxDoctype(self, root_tag, public_id, system_id) except -1:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">cdef _handleSaxPi(self, target, data):</span>
+        <span class="s0">return None</span>
+    <span class="s0">cdef _handleSaxComment(self, comment):</span>
+        <span class="s0">return None</span>
+    <span class="s0">cdef _handleSaxStartNs(self, prefix, uri):</span>
+        <span class="s0">return None</span>
+    <span class="s0">cdef _handleSaxEndNs(self, prefix):</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">#@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">@cython.no_gc_clear  # Required because parent class uses it - Cython bug.</span>
+<span class="s0">cdef class _SaxParserContext(_ParserContext):</span>
+    <span class="s0">&quot;&quot;&quot;This class maps SAX2 events to parser target events.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _SaxParserTarget _target</span>
+    <span class="s0">cdef _BaseParser _parser</span>
+    <span class="s0">cdef xmlparser.startElementNsSAX2Func _origSaxStart</span>
+    <span class="s0">cdef xmlparser.endElementNsSAX2Func   _origSaxEnd</span>
+    <span class="s0">cdef xmlparser.startElementSAXFunc    _origSaxStartNoNs</span>
+    <span class="s0">cdef xmlparser.endElementSAXFunc      _origSaxEndNoNs</span>
+    <span class="s0">cdef xmlparser.charactersSAXFunc      _origSaxData</span>
+    <span class="s0">cdef xmlparser.cdataBlockSAXFunc      _origSaxCData</span>
+    <span class="s0">cdef xmlparser.internalSubsetSAXFunc  _origSaxDoctype</span>
+    <span class="s0">cdef xmlparser.commentSAXFunc         _origSaxComment</span>
+    <span class="s0">cdef xmlparser.processingInstructionSAXFunc _origSaxPI</span>
+    <span class="s0">cdef xmlparser.startDocumentSAXFunc   _origSaxStartDocument</span>
+
+    <span class="s0"># for event collecting</span>
+    <span class="s0">cdef int _event_filter</span>
+    <span class="s0">cdef list _ns_stack</span>
+    <span class="s0">cdef list _node_stack</span>
+    <span class="s0">cdef _ParseEventsIterator events_iterator</span>
+
+    <span class="s0"># for iterparse</span>
+    <span class="s0">cdef _Element  _root</span>
+    <span class="s0">cdef _MultiTagMatcher _matcher</span>
+
+    <span class="s0">def __cinit__(self, _BaseParser parser):</span>
+        <span class="s0">self._ns_stack = []</span>
+        <span class="s0">self._node_stack = []</span>
+        <span class="s0">self._parser = parser</span>
+        <span class="s0">self.events_iterator = _ParseEventsIterator()</span>
+
+    <span class="s0">cdef void _setSaxParserTarget(self, _SaxParserTarget target) noexcept:</span>
+        <span class="s0">self._target = target</span>
+
+    <span class="s0">cdef void _initParserContext(self, xmlparser.xmlParserCtxt* c_ctxt) noexcept:</span>
+        <span class="s0">_ParserContext._initParserContext(self, c_ctxt)</span>
+        <span class="s0">if self._target is not None:</span>
+            <span class="s0">self._connectTarget(c_ctxt)</span>
+        <span class="s0">elif self._event_filter:</span>
+            <span class="s0">self._connectEvents(c_ctxt)</span>
+
+    <span class="s0">cdef void _connectTarget(self, xmlparser.xmlParserCtxt* c_ctxt) noexcept:</span>
+        <span class="s0">&quot;&quot;&quot;Wrap original SAX2 callbacks to call into parser target.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">sax = c_ctxt.sax</span>
+        <span class="s0">self._origSaxStart = sax.startElementNs = NULL</span>
+        <span class="s0">self._origSaxStartNoNs = sax.startElement = NULL</span>
+        <span class="s0">if self._target._sax_event_filter &amp; (SAX_EVENT_START |</span>
+                                             <span class="s0">SAX_EVENT_START_NS |</span>
+                                             <span class="s0">SAX_EVENT_END_NS):</span>
+            <span class="s0"># intercept =&gt; overwrite orig callback</span>
+            <span class="s0"># FIXME: also intercept on when collecting END events</span>
+            <span class="s0">if sax.initialized == xmlparser.XML_SAX2_MAGIC:</span>
+                <span class="s0">sax.startElementNs = _handleSaxTargetStart</span>
+            <span class="s0">if self._target._sax_event_filter &amp; SAX_EVENT_START:</span>
+                <span class="s0">sax.startElement = _handleSaxTargetStartNoNs</span>
+
+        <span class="s0">self._origSaxEnd = sax.endElementNs = NULL</span>
+        <span class="s0">self._origSaxEndNoNs = sax.endElement = NULL</span>
+        <span class="s0">if self._target._sax_event_filter &amp; (SAX_EVENT_END |</span>
+                                             <span class="s0">SAX_EVENT_END_NS):</span>
+            <span class="s0">if sax.initialized == xmlparser.XML_SAX2_MAGIC:</span>
+                <span class="s0">sax.endElementNs = _handleSaxEnd</span>
+            <span class="s0">if self._target._sax_event_filter &amp; SAX_EVENT_END:</span>
+                <span class="s0">sax.endElement = _handleSaxEndNoNs</span>
+
+        <span class="s0">self._origSaxData = sax.characters = sax.cdataBlock = NULL</span>
+        <span class="s0">if self._target._sax_event_filter &amp; SAX_EVENT_DATA:</span>
+            <span class="s0">sax.characters = sax.cdataBlock = _handleSaxData</span>
+
+        <span class="s0"># doctype propagation is always required for entity replacement</span>
+        <span class="s0">self._origSaxDoctype = sax.internalSubset</span>
+        <span class="s0">if self._target._sax_event_filter &amp; SAX_EVENT_DOCTYPE:</span>
+            <span class="s0">sax.internalSubset = _handleSaxTargetDoctype</span>
+
+        <span class="s0">self._origSaxPI = sax.processingInstruction = NULL</span>
+        <span class="s0">if self._target._sax_event_filter &amp; SAX_EVENT_PI:</span>
+            <span class="s0">sax.processingInstruction = _handleSaxTargetPI</span>
+
+        <span class="s0">self._origSaxComment = sax.comment = NULL</span>
+        <span class="s0">if self._target._sax_event_filter &amp; SAX_EVENT_COMMENT:</span>
+            <span class="s0">sax.comment = _handleSaxTargetComment</span>
+
+        <span class="s0"># enforce entity replacement</span>
+        <span class="s0">sax.reference = NULL</span>
+        <span class="s0">c_ctxt.replaceEntities = 1</span>
+
+    <span class="s0">cdef void _connectEvents(self, xmlparser.xmlParserCtxt* c_ctxt) noexcept:</span>
+        <span class="s0">&quot;&quot;&quot;Wrap original SAX2 callbacks to collect parse events without parser target.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">sax = c_ctxt.sax</span>
+        <span class="s0">self._origSaxStartDocument = sax.startDocument</span>
+        <span class="s0">sax.startDocument = _handleSaxStartDocument</span>
+
+        <span class="s0"># only override &quot;start&quot; event handler if needed</span>
+        <span class="s0">self._origSaxStart = sax.startElementNs</span>
+        <span class="s0">if self._event_filter == 0 or c_ctxt.html or \</span>
+               <span class="s0">self._event_filter &amp; (PARSE_EVENT_FILTER_START |</span>
+                                     <span class="s0">PARSE_EVENT_FILTER_END |</span>
+                                     <span class="s0">PARSE_EVENT_FILTER_START_NS |</span>
+                                     <span class="s0">PARSE_EVENT_FILTER_END_NS):</span>
+            <span class="s0">sax.startElementNs = &lt;xmlparser.startElementNsSAX2Func&gt;_handleSaxStart</span>
+
+        <span class="s0">self._origSaxStartNoNs = sax.startElement</span>
+        <span class="s0">if self._event_filter == 0 or c_ctxt.html or \</span>
+               <span class="s0">self._event_filter &amp; (PARSE_EVENT_FILTER_START |</span>
+                                     <span class="s0">PARSE_EVENT_FILTER_END):</span>
+            <span class="s0">sax.startElement = &lt;xmlparser.startElementSAXFunc&gt;_handleSaxStartNoNs</span>
+
+        <span class="s0"># only override &quot;end&quot; event handler if needed</span>
+        <span class="s0">self._origSaxEnd = sax.endElementNs</span>
+        <span class="s0">if self._event_filter == 0 or \</span>
+               <span class="s0">self._event_filter &amp; (PARSE_EVENT_FILTER_END |</span>
+                                     <span class="s0">PARSE_EVENT_FILTER_END_NS):</span>
+            <span class="s0">sax.endElementNs = &lt;xmlparser.endElementNsSAX2Func&gt;_handleSaxEnd</span>
+
+        <span class="s0">self._origSaxEndNoNs = sax.endElement</span>
+        <span class="s0">if self._event_filter == 0 or \</span>
+               <span class="s0">self._event_filter &amp; PARSE_EVENT_FILTER_END:</span>
+            <span class="s0">sax.endElement = &lt;xmlparser.endElementSAXFunc&gt;_handleSaxEndNoNs</span>
+
+        <span class="s0">self._origSaxComment = sax.comment</span>
+        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_COMMENT:</span>
+            <span class="s0">sax.comment = &lt;xmlparser.commentSAXFunc&gt;_handleSaxComment</span>
+
+        <span class="s0">self._origSaxPI = sax.processingInstruction</span>
+        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_PI:</span>
+            <span class="s0">sax.processingInstruction = &lt;xmlparser.processingInstructionSAXFunc&gt;_handleSaxPIEvent</span>
+
+    <span class="s0">cdef _setEventFilter(self, events, tag):</span>
+        <span class="s0">self._event_filter = _buildParseEventFilter(events)</span>
+        <span class="s0">if not self._event_filter or tag is None or tag == '*':</span>
+            <span class="s0">self._matcher = None</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._matcher = _MultiTagMatcher.__new__(_MultiTagMatcher, tag)</span>
+
+    <span class="s0">cdef int startDocument(self, xmlDoc* c_doc) except -1:</span>
+        <span class="s0">try:</span>
+            <span class="s0">self._doc = _documentFactory(c_doc, self._parser)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">self._parser = None  # clear circular reference ASAP</span>
+        <span class="s0">if self._matcher is not None:</span>
+            <span class="s0">self._matcher.cacheTags(self._doc, True) # force entry in libxml2 dict</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef int pushEvent(self, event, xmlNode* c_node) except -1:</span>
+        <span class="s0">cdef _Element root</span>
+        <span class="s0">if self._root is None:</span>
+            <span class="s0">root = self._doc.getroot()</span>
+            <span class="s0">if root is not None and root._c_node.type == tree.XML_ELEMENT_NODE:</span>
+                <span class="s0">self._root = root</span>
+        <span class="s0">node = _elementFactory(self._doc, c_node)</span>
+        <span class="s0">self.events_iterator._events.append( (event, node) )</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef int flushEvents(self) except -1:</span>
+        <span class="s0">events = self.events_iterator._events</span>
+        <span class="s0">while self._node_stack:</span>
+            <span class="s0">events.append( ('end', self._node_stack.pop()) )</span>
+            <span class="s0">_pushSaxNsEndEvents(self)</span>
+        <span class="s0">while self._ns_stack:</span>
+            <span class="s0">_pushSaxNsEndEvents(self)</span>
+
+    <span class="s0">cdef void _handleSaxException(self, xmlparser.xmlParserCtxt* c_ctxt) noexcept:</span>
+        <span class="s0">if c_ctxt.errNo == xmlerror.XML_ERR_OK:</span>
+            <span class="s0">c_ctxt.errNo = xmlerror.XML_ERR_INTERNAL_ERROR</span>
+        <span class="s0"># stop parsing immediately</span>
+        <span class="s0">c_ctxt.wellFormed = 0</span>
+        <span class="s0">c_ctxt.disableSAX = 1</span>
+        <span class="s0">c_ctxt.instate = xmlparser.XML_PARSER_EOF</span>
+        <span class="s0">self._store_raised()</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ParseEventsIterator:</span>
+    <span class="s0">&quot;&quot;&quot;A reusable parse events iterator&quot;&quot;&quot;</span>
+    <span class="s0">cdef list _events</span>
+    <span class="s0">cdef int _event_index</span>
+
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._events = []</span>
+        <span class="s0">self._event_index = 0</span>
+
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">return self</span>
+
+    <span class="s0">def __next__(self):</span>
+        <span class="s0">cdef int event_index = self._event_index</span>
+        <span class="s0">events = self._events</span>
+        <span class="s0">if event_index &gt;= 2**10 or event_index * 2 &gt;= len(events):</span>
+            <span class="s0">if event_index:</span>
+                <span class="s0"># clean up from time to time</span>
+                <span class="s0">del events[:event_index]</span>
+                <span class="s0">self._event_index = event_index = 0</span>
+            <span class="s0">if event_index &gt;= len(events):</span>
+                <span class="s0">raise StopIteration</span>
+        <span class="s0">item = events[event_index]</span>
+        <span class="s0">self._event_index = event_index + 1</span>
+        <span class="s0">return item</span>
+
+
+<span class="s0">cdef list _build_prefix_uri_list(_SaxParserContext context, int c_nb_namespaces,</span>
+                                 <span class="s0">const_xmlChar** c_namespaces):</span>
+    <span class="s0">&quot;Build [(prefix, uri)] list of declared namespaces.&quot;</span>
+    <span class="s0">cdef int i</span>
+    <span class="s0">namespaces = []</span>
+    <span class="s0">for i in xrange(c_nb_namespaces):</span>
+        <span class="s0">namespaces.append((funicodeOrEmpty(c_namespaces[0]), funicode(c_namespaces[1])))</span>
+        <span class="s0">c_namespaces += 2</span>
+    <span class="s0">return namespaces</span>
+
+
+<span class="s0">cdef void _handleSaxStart(</span>
+        <span class="s0">void* ctxt, const_xmlChar* c_localname, const_xmlChar* c_prefix,</span>
+        <span class="s0">const_xmlChar* c_namespace, int c_nb_namespaces,</span>
+        <span class="s0">const_xmlChar** c_namespaces,</span>
+        <span class="s0">int c_nb_attributes, int c_nb_defaulted,</span>
+        <span class="s0">const_xmlChar** c_attributes) noexcept with gil:</span>
+    <span class="s0">cdef int i</span>
+    <span class="s0">cdef size_t c_len</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">cdef int event_filter = context._event_filter</span>
+    <span class="s0">try:</span>
+        <span class="s0">if (c_nb_namespaces and</span>
+                <span class="s0">event_filter &amp; (PARSE_EVENT_FILTER_START_NS |</span>
+                                <span class="s0">PARSE_EVENT_FILTER_END_NS)):</span>
+            <span class="s0">declared_namespaces = _build_prefix_uri_list(</span>
+                <span class="s0">context, c_nb_namespaces, c_namespaces)</span>
+            <span class="s0">if event_filter &amp; PARSE_EVENT_FILTER_START_NS:</span>
+                <span class="s0">for prefix_uri_tuple in declared_namespaces:</span>
+                    <span class="s0">context.events_iterator._events.append((&quot;start-ns&quot;, prefix_uri_tuple))</span>
+        <span class="s0">else:</span>
+            <span class="s0">declared_namespaces = None</span>
+
+        <span class="s0">context._origSaxStart(c_ctxt, c_localname, c_prefix, c_namespace,</span>
+                              <span class="s0">c_nb_namespaces, c_namespaces, c_nb_attributes,</span>
+                              <span class="s0">c_nb_defaulted, c_attributes)</span>
+        <span class="s0">if c_ctxt.html:</span>
+            <span class="s0">_fixHtmlDictNodeNames(c_ctxt.dict, c_ctxt.node)</span>
+            <span class="s0"># The HTML parser in libxml2 reports the missing opening tags when it finds</span>
+            <span class="s0"># misplaced ones, but with tag names from C string constants that ignore the</span>
+            <span class="s0"># parser dict.  Thus, we need to intern the name ourselves.</span>
+            <span class="s0">c_localname = tree.xmlDictLookup(c_ctxt.dict, c_localname, -1)</span>
+            <span class="s0">if c_localname is NULL:</span>
+                <span class="s0">raise MemoryError()</span>
+
+        <span class="s0">if event_filter &amp; PARSE_EVENT_FILTER_END_NS:</span>
+            <span class="s0">context._ns_stack.append(declared_namespaces)</span>
+        <span class="s0">if event_filter &amp; (PARSE_EVENT_FILTER_END |</span>
+                           <span class="s0">PARSE_EVENT_FILTER_START):</span>
+            <span class="s0">_pushSaxStartEvent(context, c_ctxt, c_namespace, c_localname, None)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxTargetStart(</span>
+        <span class="s0">void* ctxt, const_xmlChar* c_localname, const_xmlChar* c_prefix,</span>
+        <span class="s0">const_xmlChar* c_namespace, int c_nb_namespaces,</span>
+        <span class="s0">const_xmlChar** c_namespaces,</span>
+        <span class="s0">int c_nb_attributes, int c_nb_defaulted,</span>
+        <span class="s0">const_xmlChar** c_attributes) noexcept with gil:</span>
+    <span class="s0">cdef int i</span>
+    <span class="s0">cdef size_t c_len</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+
+    <span class="s0">cdef int event_filter = context._event_filter</span>
+    <span class="s0">cdef int sax_event_filter = context._target._sax_event_filter</span>
+    <span class="s0">try:</span>
+        <span class="s0">if c_nb_namespaces:</span>
+            <span class="s0">declared_namespaces = _build_prefix_uri_list(</span>
+                <span class="s0">context, c_nb_namespaces, c_namespaces)</span>
+
+            <span class="s0">if event_filter &amp; PARSE_EVENT_FILTER_START_NS:</span>
+                <span class="s0">for prefix_uri_tuple in declared_namespaces:</span>
+                    <span class="s0">context.events_iterator._events.append((&quot;start-ns&quot;, prefix_uri_tuple))</span>
+
+            <span class="s0">if sax_event_filter &amp; SAX_EVENT_START_NS:</span>
+                <span class="s0">for prefix, uri in declared_namespaces:</span>
+                    <span class="s0">context._target._handleSaxStartNs(prefix, uri)</span>
+        <span class="s0">else:</span>
+            <span class="s0">declared_namespaces = None</span>
+
+        <span class="s0">if sax_event_filter &amp; SAX_EVENT_START:</span>
+            <span class="s0">if c_nb_defaulted &gt; 0:</span>
+                <span class="s0"># only add default attributes if we asked for them</span>
+                <span class="s0">if c_ctxt.loadsubset &amp; xmlparser.XML_COMPLETE_ATTRS == 0:</span>
+                    <span class="s0">c_nb_attributes -= c_nb_defaulted</span>
+            <span class="s0">if c_nb_attributes == 0:</span>
+                <span class="s0">attrib = IMMUTABLE_EMPTY_MAPPING</span>
+            <span class="s0">else:</span>
+                <span class="s0">attrib = {}</span>
+                <span class="s0">for i in xrange(c_nb_attributes):</span>
+                    <span class="s0">name = _namespacedNameFromNsName(</span>
+                        <span class="s0">c_attributes[2], c_attributes[0])</span>
+                    <span class="s0">if c_attributes[3] is NULL:</span>
+                        <span class="s0">value = ''</span>
+                    <span class="s0">else:</span>
+                        <span class="s0">c_len = c_attributes[4] - c_attributes[3]</span>
+                        <span class="s0">value = c_attributes[3][:c_len].decode('utf8')</span>
+                    <span class="s0">attrib[name] = value</span>
+                    <span class="s0">c_attributes += 5</span>
+
+            <span class="s0">nsmap = dict(declared_namespaces) if c_nb_namespaces else IMMUTABLE_EMPTY_MAPPING</span>
+
+            <span class="s0">element = _callTargetSaxStart(</span>
+                <span class="s0">context, c_ctxt,</span>
+                <span class="s0">_namespacedNameFromNsName(c_namespace, c_localname),</span>
+                <span class="s0">attrib, nsmap)</span>
+        <span class="s0">else:</span>
+            <span class="s0">element = None</span>
+
+        <span class="s0">if (event_filter &amp; PARSE_EVENT_FILTER_END_NS or</span>
+                <span class="s0">sax_event_filter &amp; SAX_EVENT_END_NS):</span>
+            <span class="s0">context._ns_stack.append(declared_namespaces)</span>
+        <span class="s0">if event_filter &amp; (PARSE_EVENT_FILTER_END |</span>
+                           <span class="s0">PARSE_EVENT_FILTER_START):</span>
+            <span class="s0">_pushSaxStartEvent(context, c_ctxt, c_namespace,</span>
+                               <span class="s0">c_localname, element)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxStartNoNs(void* ctxt, const_xmlChar* c_name,</span>
+                              <span class="s0">const_xmlChar** c_attributes) noexcept with gil:</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">context._origSaxStartNoNs(c_ctxt, c_name, c_attributes)</span>
+        <span class="s0">if c_ctxt.html:</span>
+            <span class="s0">_fixHtmlDictNodeNames(c_ctxt.dict, c_ctxt.node)</span>
+            <span class="s0"># The HTML parser in libxml2 reports the missing opening tags when it finds</span>
+            <span class="s0"># misplaced ones, but with tag names from C string constants that ignore the</span>
+            <span class="s0"># parser dict.  Thus, we need to intern the name ourselves.</span>
+            <span class="s0">c_name = tree.xmlDictLookup(c_ctxt.dict, c_name, -1)</span>
+            <span class="s0">if c_name is NULL:</span>
+                <span class="s0">raise MemoryError()</span>
+        <span class="s0">if context._event_filter &amp; (PARSE_EVENT_FILTER_END |</span>
+                                    <span class="s0">PARSE_EVENT_FILTER_START):</span>
+            <span class="s0">_pushSaxStartEvent(context, c_ctxt, NULL, c_name, None)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxTargetStartNoNs(void* ctxt, const_xmlChar* c_name,</span>
+                                    <span class="s0">const_xmlChar** c_attributes) noexcept with gil:</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">if c_attributes is NULL:</span>
+            <span class="s0">attrib = IMMUTABLE_EMPTY_MAPPING</span>
+        <span class="s0">else:</span>
+            <span class="s0">attrib = {}</span>
+            <span class="s0">while c_attributes[0] is not NULL:</span>
+                <span class="s0">name = funicode(c_attributes[0])</span>
+                <span class="s0">attrib[name] = funicodeOrEmpty(c_attributes[1])</span>
+                <span class="s0">c_attributes += 2</span>
+        <span class="s0">element = _callTargetSaxStart(</span>
+            <span class="s0">context, c_ctxt, funicode(c_name),</span>
+            <span class="s0">attrib, IMMUTABLE_EMPTY_MAPPING)</span>
+        <span class="s0">if context._event_filter &amp; (PARSE_EVENT_FILTER_END |</span>
+                                    <span class="s0">PARSE_EVENT_FILTER_START):</span>
+            <span class="s0">_pushSaxStartEvent(context, c_ctxt, NULL, c_name, element)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef _callTargetSaxStart(_SaxParserContext context,</span>
+                         <span class="s0">xmlparser.xmlParserCtxt* c_ctxt,</span>
+                         <span class="s0">tag, attrib, nsmap):</span>
+    <span class="s0">element = context._target._handleSaxStart(tag, attrib, nsmap)</span>
+    <span class="s0">if element is not None and c_ctxt.input is not NULL:</span>
+        <span class="s0">if isinstance(element, _Element):</span>
+            <span class="s0">(&lt;_Element&gt;element)._c_node.line = (</span>
+                <span class="s0">&lt;unsigned short&gt;c_ctxt.input.line</span>
+                <span class="s0">if c_ctxt.input.line &lt; 65535 else 65535)</span>
+    <span class="s0">return element</span>
+
+
+<span class="s0">cdef int _pushSaxStartEvent(_SaxParserContext context,</span>
+                            <span class="s0">xmlparser.xmlParserCtxt* c_ctxt,</span>
+                            <span class="s0">const_xmlChar* c_href,</span>
+                            <span class="s0">const_xmlChar* c_name, node) except -1:</span>
+    <span class="s0">if (context._matcher is None or</span>
+            <span class="s0">context._matcher.matchesNsTag(c_href, c_name)):</span>
+        <span class="s0">if node is None and context._target is None:</span>
+            <span class="s0">assert context._doc is not None</span>
+            <span class="s0">node = _elementFactory(context._doc, c_ctxt.node)</span>
+        <span class="s0">if context._event_filter &amp; PARSE_EVENT_FILTER_START:</span>
+            <span class="s0">context.events_iterator._events.append(('start', node))</span>
+        <span class="s0">if (context._target is None and</span>
+                <span class="s0">context._event_filter &amp; PARSE_EVENT_FILTER_END):</span>
+            <span class="s0">context._node_stack.append(node)</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef void _handleSaxEnd(void* ctxt, const_xmlChar* c_localname,</span>
+                        <span class="s0">const_xmlChar* c_prefix,</span>
+                        <span class="s0">const_xmlChar* c_namespace) noexcept with gil:</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">if context._target is not None:</span>
+            <span class="s0">if context._target._sax_event_filter &amp; SAX_EVENT_END:</span>
+                <span class="s0">node = context._target._handleSaxEnd(</span>
+                    <span class="s0">_namespacedNameFromNsName(c_namespace, c_localname))</span>
+            <span class="s0">else:</span>
+                <span class="s0">node = None</span>
+        <span class="s0">else:</span>
+            <span class="s0">context._origSaxEnd(c_ctxt, c_localname, c_prefix, c_namespace)</span>
+            <span class="s0">node = None</span>
+        <span class="s0">_pushSaxEndEvent(context, c_namespace, c_localname, node)</span>
+        <span class="s0">_pushSaxNsEndEvents(context)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxEndNoNs(void* ctxt, const_xmlChar* c_name) noexcept with gil:</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">if context._target is not None:</span>
+            <span class="s0">node = context._target._handleSaxEnd(funicode(c_name))</span>
+        <span class="s0">else:</span>
+            <span class="s0">context._origSaxEndNoNs(c_ctxt, c_name)</span>
+            <span class="s0">node = None</span>
+        <span class="s0">_pushSaxEndEvent(context, NULL, c_name, node)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef int _pushSaxNsEndEvents(_SaxParserContext context) except -1:</span>
+    <span class="s0">cdef bint build_events = context._event_filter &amp; PARSE_EVENT_FILTER_END_NS</span>
+    <span class="s0">cdef bint call_target = (</span>
+        <span class="s0">context._target is not None</span>
+        <span class="s0">and context._target._sax_event_filter &amp; SAX_EVENT_END_NS)</span>
+    <span class="s0">if not build_events and not call_target:</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef list declared_namespaces = context._ns_stack.pop()</span>
+    <span class="s0">if declared_namespaces is None:</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef tuple prefix_uri</span>
+    <span class="s0">for prefix_uri in reversed(declared_namespaces):</span>
+        <span class="s0">if call_target:</span>
+            <span class="s0">context._target._handleSaxEndNs(prefix_uri[0])</span>
+        <span class="s0">if build_events:</span>
+            <span class="s0">context.events_iterator._events.append(('end-ns', None))</span>
+
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef int _pushSaxEndEvent(_SaxParserContext context,</span>
+                          <span class="s0">const_xmlChar* c_href,</span>
+                          <span class="s0">const_xmlChar* c_name, node) except -1:</span>
+    <span class="s0">if context._event_filter &amp; PARSE_EVENT_FILTER_END:</span>
+        <span class="s0">if (context._matcher is None or</span>
+                <span class="s0">context._matcher.matchesNsTag(c_href, c_name)):</span>
+            <span class="s0">if context._target is None:</span>
+                <span class="s0">node = context._node_stack.pop()</span>
+            <span class="s0">context.events_iterator._events.append(('end', node))</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef void _handleSaxData(void* ctxt, const_xmlChar* c_data, int data_len) noexcept with gil:</span>
+    <span class="s0"># can only be called if parsing with a target</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">context._target._handleSaxData(</span>
+            <span class="s0">c_data[:data_len].decode('utf8'))</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxTargetDoctype(void* ctxt, const_xmlChar* c_name,</span>
+                                  <span class="s0">const_xmlChar* c_public,</span>
+                                  <span class="s0">const_xmlChar* c_system) noexcept with gil:</span>
+    <span class="s0"># can only be called if parsing with a target</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">context._target._handleSaxDoctype(</span>
+            <span class="s0">funicodeOrNone(c_name),</span>
+            <span class="s0">funicodeOrNone(c_public),</span>
+            <span class="s0">funicodeOrNone(c_system))</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxStartDocument(void* ctxt) noexcept with gil:</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">context._origSaxStartDocument(ctxt)</span>
+    <span class="s0">c_doc = c_ctxt.myDoc</span>
+    <span class="s0">try:</span>
+        <span class="s0">context.startDocument(c_doc)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxTargetPI(void* ctxt, const_xmlChar* c_target,</span>
+                             <span class="s0">const_xmlChar* c_data) noexcept with gil:</span>
+    <span class="s0"># can only be called if parsing with a target</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">pi = context._target._handleSaxPi(</span>
+            <span class="s0">funicodeOrNone(c_target),</span>
+            <span class="s0">funicodeOrEmpty(c_data))</span>
+        <span class="s0">if context._event_filter &amp; PARSE_EVENT_FILTER_PI:</span>
+            <span class="s0">context.events_iterator._events.append(('pi', pi))</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxPIEvent(void* ctxt, const_xmlChar* target,</span>
+                            <span class="s0">const_xmlChar* data) noexcept with gil:</span>
+    <span class="s0"># can only be called when collecting pi events</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">context._origSaxPI(ctxt, target, data)</span>
+    <span class="s0">c_node = _findLastEventNode(c_ctxt)</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">return</span>
+    <span class="s0">try:</span>
+        <span class="s0">context.pushEvent('pi', c_node)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxTargetComment(void* ctxt, const_xmlChar* c_data) noexcept with gil:</span>
+    <span class="s0"># can only be called if parsing with a target</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">try:</span>
+        <span class="s0">comment = context._target._handleSaxComment(funicodeOrEmpty(c_data))</span>
+        <span class="s0">if context._event_filter &amp; PARSE_EVENT_FILTER_COMMENT:</span>
+            <span class="s0">context.events_iterator._events.append(('comment', comment))</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _handleSaxComment(void* ctxt, const_xmlChar* text) noexcept with gil:</span>
+    <span class="s0"># can only be called when collecting comment events</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">if c_ctxt._private is NULL or c_ctxt.disableSAX:</span>
+        <span class="s0">return</span>
+    <span class="s0">context = &lt;_SaxParserContext&gt;c_ctxt._private</span>
+    <span class="s0">context._origSaxComment(ctxt, text)</span>
+    <span class="s0">c_node = _findLastEventNode(c_ctxt)</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">return</span>
+    <span class="s0">try:</span>
+        <span class="s0">context.pushEvent('comment', c_node)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._handleSaxException(c_ctxt)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any further exceptions</span>
+
+
+<span class="s0">cdef inline xmlNode* _findLastEventNode(xmlparser.xmlParserCtxt* c_ctxt):</span>
+    <span class="s0"># this mimics what libxml2 creates for comments/PIs</span>
+    <span class="s0">if c_ctxt.inSubset == 1:</span>
+        <span class="s0">return c_ctxt.myDoc.intSubset.last</span>
+    <span class="s0">elif c_ctxt.inSubset == 2:</span>
+        <span class="s0">return c_ctxt.myDoc.extSubset.last</span>
+    <span class="s0">elif c_ctxt.node is NULL:</span>
+        <span class="s0">return c_ctxt.myDoc.last</span>
+    <span class="s0">elif c_ctxt.node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">return c_ctxt.node.last</span>
+    <span class="s0">else:</span>
+        <span class="s0">return c_ctxt.node.next</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## ET compatible XML tree builder</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef class TreeBuilder(_SaxParserTarget):</span>
+    <span class="s0">&quot;&quot;&quot;TreeBuilder(self, element_factory=None, parser=None,</span>
+                    <span class="s0">comment_factory=None, pi_factory=None,</span>
+                    <span class="s0">insert_comments=True, insert_pis=True)</span>
+
+    <span class="s0">Parser target that builds a tree from parse event callbacks.</span>
+
+    <span class="s0">The factory arguments can be used to influence the creation of</span>
+    <span class="s0">elements, comments and processing instructions.</span>
+
+    <span class="s0">By default, comments and processing instructions are inserted into</span>
+    <span class="s0">the tree, but they can be ignored by passing the respective flags.</span>
+
+    <span class="s0">The final tree is returned by the ``close()`` method.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _BaseParser _parser</span>
+    <span class="s0">cdef object _factory</span>
+    <span class="s0">cdef object _comment_factory</span>
+    <span class="s0">cdef object _pi_factory</span>
+    <span class="s0">cdef list _data</span>
+    <span class="s0">cdef list _element_stack</span>
+    <span class="s0">cdef object _element_stack_pop</span>
+    <span class="s0">cdef _Element _last # may be None</span>
+    <span class="s0">cdef bint _in_tail</span>
+    <span class="s0">cdef bint _insert_comments</span>
+    <span class="s0">cdef bint _insert_pis</span>
+
+    <span class="s0">def __init__(self, *, element_factory=None, parser=None,</span>
+                 <span class="s0">comment_factory=None, pi_factory=None,</span>
+                 <span class="s0">bint insert_comments=True, bint insert_pis=True):</span>
+        <span class="s0">self._sax_event_filter = \</span>
+            <span class="s0">SAX_EVENT_START | SAX_EVENT_END | SAX_EVENT_DATA | \</span>
+            <span class="s0">SAX_EVENT_PI | SAX_EVENT_COMMENT</span>
+        <span class="s0">self._data = [] # data collector</span>
+        <span class="s0">self._element_stack = [] # element stack</span>
+        <span class="s0">self._element_stack_pop = self._element_stack.pop</span>
+        <span class="s0">self._last = None # last element</span>
+        <span class="s0">self._in_tail = 0 # true if we're after an end tag</span>
+        <span class="s0">self._factory = element_factory</span>
+        <span class="s0">self._comment_factory = comment_factory if comment_factory is not None else Comment</span>
+        <span class="s0">self._pi_factory = pi_factory if pi_factory is not None else ProcessingInstruction</span>
+        <span class="s0">self._insert_comments = insert_comments</span>
+        <span class="s0">self._insert_pis = insert_pis</span>
+        <span class="s0">self._parser = parser</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef int _flush(self) except -1:</span>
+        <span class="s0">if self._data:</span>
+            <span class="s0">if self._last is not None:</span>
+                <span class="s0">text = &quot;&quot;.join(self._data)</span>
+                <span class="s0">if self._in_tail:</span>
+                    <span class="s0">assert self._last.tail is None, &quot;internal error (tail)&quot;</span>
+                    <span class="s0">self._last.tail = text</span>
+                <span class="s0">else:</span>
+                    <span class="s0">assert self._last.text is None, &quot;internal error (text)&quot;</span>
+                    <span class="s0">self._last.text = text</span>
+            <span class="s0">del self._data[:]</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0"># internal SAX event handlers</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _handleSaxStart(self, tag, attrib, nsmap):</span>
+        <span class="s0">self._flush()</span>
+        <span class="s0">if self._factory is not None:</span>
+            <span class="s0">self._last = self._factory(tag, attrib)</span>
+            <span class="s0">if self._element_stack:</span>
+                <span class="s0">_appendChild(self._element_stack[-1], self._last)</span>
+        <span class="s0">elif self._element_stack:</span>
+            <span class="s0">self._last = _makeSubElement(</span>
+                <span class="s0">self._element_stack[-1], tag, None, None, attrib, nsmap, None)</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._last = _makeElement(</span>
+                <span class="s0">tag, NULL, None, self._parser, None, None, attrib, nsmap, None)</span>
+        <span class="s0">self._element_stack.append(self._last)</span>
+        <span class="s0">self._in_tail = 0</span>
+        <span class="s0">return self._last</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _handleSaxEnd(self, tag):</span>
+        <span class="s0">self._flush()</span>
+        <span class="s0">self._last = self._element_stack_pop()</span>
+        <span class="s0">self._in_tail = 1</span>
+        <span class="s0">return self._last</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef int _handleSaxData(self, data) except -1:</span>
+        <span class="s0">self._data.append(data)</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _handleSaxPi(self, target, data):</span>
+        <span class="s0">elem = self._pi_factory(target, data)</span>
+        <span class="s0">if self._insert_pis:</span>
+            <span class="s0">self._flush()</span>
+            <span class="s0">self._last = elem</span>
+            <span class="s0">if self._element_stack:</span>
+                <span class="s0">_appendChild(self._element_stack[-1], self._last)</span>
+            <span class="s0">self._in_tail = 1</span>
+        <span class="s0">return self._last</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _handleSaxComment(self, comment):</span>
+        <span class="s0">elem = self._comment_factory(comment)</span>
+        <span class="s0">if self._insert_comments:</span>
+            <span class="s0">self._flush()</span>
+            <span class="s0">self._last = elem</span>
+            <span class="s0">if self._element_stack:</span>
+                <span class="s0">_appendChild(self._element_stack[-1], self._last)</span>
+            <span class="s0">self._in_tail = 1</span>
+        <span class="s0">return elem</span>
+
+    <span class="s0"># Python level event handlers</span>
+
+    <span class="s0">def close(self):</span>
+        <span class="s0">&quot;&quot;&quot;close(self)</span>
+
+        <span class="s0">Flushes the builder buffers, and returns the toplevel document</span>
+        <span class="s0">element.  Raises XMLSyntaxError on inconsistencies.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if self._element_stack:</span>
+            <span class="s0">raise XMLSyntaxAssertionError(&quot;missing end tags&quot;)</span>
+        <span class="s0"># TODO: this does not necessarily seem like an error case.  Why not just return None?</span>
+        <span class="s0">if self._last is None:</span>
+            <span class="s0">raise XMLSyntaxAssertionError(&quot;missing toplevel element&quot;)</span>
+        <span class="s0">return self._last</span>
+
+    <span class="s0">def data(self, data):</span>
+        <span class="s0">&quot;&quot;&quot;data(self, data)</span>
+
+        <span class="s0">Adds text to the current element.  The value should be either an</span>
+        <span class="s0">8-bit string containing ASCII text, or a Unicode string.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._handleSaxData(data)</span>
+
+    <span class="s0">def start(self, tag, attrs, nsmap=None):</span>
+        <span class="s0">&quot;&quot;&quot;start(self, tag, attrs, nsmap=None)</span>
+
+        <span class="s0">Opens a new element.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if nsmap is None:</span>
+            <span class="s0">nsmap = IMMUTABLE_EMPTY_MAPPING</span>
+        <span class="s0">return self._handleSaxStart(tag, attrs, nsmap)</span>
+
+    <span class="s0">def end(self, tag):</span>
+        <span class="s0">&quot;&quot;&quot;end(self, tag)</span>
+
+        <span class="s0">Closes the current element.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">element = self._handleSaxEnd(tag)</span>
+        <span class="s0">assert self._last.tag == tag,\</span>
+            <span class="s0">f&quot;end tag mismatch (expected {self._last.tag}, got {tag})&quot;</span>
+        <span class="s0">return element</span>
+
+    <span class="s0">def pi(self, target, data=None):</span>
+        <span class="s0">&quot;&quot;&quot;pi(self, target, data=None)</span>
+
+        <span class="s0">Creates a processing instruction using the factory, appends it</span>
+        <span class="s0">(unless disabled) and returns it.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._handleSaxPi(target, data)</span>
+
+    <span class="s0">def comment(self, comment):</span>
+        <span class="s0">&quot;&quot;&quot;comment(self, comment)</span>
+
+        <span class="s0">Creates a comment using the factory, appends it (unless disabled)</span>
+        <span class="s0">and returns it.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._handleSaxComment(comment)</span>
+</pre>
+</body>
+</html>

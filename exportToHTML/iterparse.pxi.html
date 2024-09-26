@@ -1,0 +1,455 @@
+<html>
+<head>
+<title>iterparse.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+iterparse.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># iterparse -- event-driven parsing</span>
+
+<span class="s0">DEF __ITERPARSE_CHUNK_SIZE = 32768</span>
+
+<span class="s0">cdef class iterparse:</span>
+    <span class="s0">&quot;&quot;&quot;iterparse(self, source, events=(&quot;end&quot;,), tag=None, \</span>
+                  <span class="s0">attribute_defaults=False, dtd_validation=False, \</span>
+                  <span class="s0">load_dtd=False, no_network=True, remove_blank_text=False, \</span>
+                  <span class="s0">remove_comments=False, remove_pis=False, encoding=None, \</span>
+                  <span class="s0">html=False, recover=None, huge_tree=False, schema=None)</span>
+
+    <span class="s0">Incremental parser.</span>
+
+    <span class="s0">Parses XML into a tree and generates tuples (event, element) in a</span>
+    <span class="s0">SAX-like fashion. ``event`` is any of 'start', 'end', 'start-ns',</span>
+    <span class="s0">'end-ns'.</span>
+
+    <span class="s0">For 'start' and 'end', ``element`` is the Element that the parser just</span>
+    <span class="s0">found opening or closing.  For 'start-ns', it is a tuple (prefix, URI) of</span>
+    <span class="s0">a new namespace declaration.  For 'end-ns', it is simply None.  Note that</span>
+    <span class="s0">all start and end events are guaranteed to be properly nested.</span>
+
+    <span class="s0">The keyword argument ``events`` specifies a sequence of event type names</span>
+    <span class="s0">that should be generated.  By default, only 'end' events will be</span>
+    <span class="s0">generated.</span>
+
+    <span class="s0">The additional ``tag`` argument restricts the 'start' and 'end' events to</span>
+    <span class="s0">those elements that match the given tag.  The ``tag`` argument can also be</span>
+    <span class="s0">a sequence of tags to allow matching more than one tag.  By default,</span>
+    <span class="s0">events are generated for all elements.  Note that the 'start-ns' and</span>
+    <span class="s0">'end-ns' events are not impacted by this restriction.</span>
+
+    <span class="s0">The other keyword arguments in the constructor are mainly based on the</span>
+    <span class="s0">libxml2 parser configuration.  A DTD will also be loaded if validation or</span>
+    <span class="s0">attribute default values are requested.</span>
+
+    <span class="s0">Available boolean keyword arguments:</span>
+     <span class="s0">- attribute_defaults: read default attributes from DTD</span>
+     <span class="s0">- dtd_validation: validate (if DTD is available)</span>
+     <span class="s0">- load_dtd: use DTD for parsing</span>
+     <span class="s0">- no_network: prevent network access for related files</span>
+     <span class="s0">- remove_blank_text: discard blank text nodes</span>
+     <span class="s0">- remove_comments: discard comments</span>
+     <span class="s0">- remove_pis: discard processing instructions</span>
+     <span class="s0">- strip_cdata: replace CDATA sections by normal text content (default: True)</span>
+     <span class="s0">- compact: safe memory for short text content (default: True)</span>
+     <span class="s0">- resolve_entities: replace entities by their text value (default: True)</span>
+     <span class="s0">- huge_tree: disable security restrictions and support very deep trees</span>
+                  <span class="s0">and very long text content (only affects libxml2 2.7+)</span>
+     <span class="s0">- html: parse input as HTML (default: XML)</span>
+     <span class="s0">- recover: try hard to parse through broken input (default: True for HTML,</span>
+                <span class="s0">False otherwise)</span>
+
+    <span class="s0">Other keyword arguments:</span>
+     <span class="s0">- encoding: override the document encoding</span>
+     <span class="s0">- schema: an XMLSchema to validate against</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _FeedParser _parser</span>
+    <span class="s0">cdef object _tag</span>
+    <span class="s0">cdef object _events</span>
+    <span class="s0">cdef readonly object root</span>
+    <span class="s0">cdef object _source</span>
+    <span class="s0">cdef object _filename</span>
+    <span class="s0">cdef object _error</span>
+    <span class="s0">cdef bint _close_source_after_read</span>
+
+    <span class="s0">def __init__(self, source, events=(&quot;end&quot;,), *, tag=None,</span>
+                 <span class="s0">attribute_defaults=False, dtd_validation=False,</span>
+                 <span class="s0">load_dtd=False, no_network=True, remove_blank_text=False,</span>
+                 <span class="s0">compact=True, resolve_entities=True, remove_comments=False,</span>
+                 <span class="s0">remove_pis=False, strip_cdata=True, encoding=None,</span>
+                 <span class="s0">html=False, recover=None, huge_tree=False, collect_ids=True,</span>
+                 <span class="s0">XMLSchema schema=None):</span>
+        <span class="s0">if not hasattr(source, 'read'):</span>
+            <span class="s0">source = _getFSPathOrObject(source)</span>
+            <span class="s0">self._filename = source</span>
+            <span class="s0">self._source = open(source, 'rb')</span>
+            <span class="s0">self._close_source_after_read = True</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._filename = _getFilenameForFile(source)</span>
+            <span class="s0">self._source = source</span>
+            <span class="s0">self._close_source_after_read = False</span>
+
+        <span class="s0">if recover is None:</span>
+            <span class="s0">recover = html</span>
+
+        <span class="s0">if html:</span>
+            <span class="s0"># make sure we're not looking for namespaces</span>
+            <span class="s0">events = [event for event in events</span>
+                      <span class="s0">if event not in ('start-ns', 'end-ns')]</span>
+            <span class="s0">parser = HTMLPullParser(</span>
+                <span class="s0">events,</span>
+                <span class="s0">tag=tag,</span>
+                <span class="s0">recover=recover,</span>
+                <span class="s0">base_url=self._filename,</span>
+                <span class="s0">encoding=encoding,</span>
+                <span class="s0">remove_blank_text=remove_blank_text,</span>
+                <span class="s0">remove_comments=remove_comments,</span>
+                <span class="s0">remove_pis=remove_pis,</span>
+                <span class="s0">strip_cdata=strip_cdata,</span>
+                <span class="s0">no_network=no_network,</span>
+                <span class="s0">target=None,  # TODO</span>
+                <span class="s0">schema=schema,</span>
+                <span class="s0">compact=compact)</span>
+        <span class="s0">else:</span>
+            <span class="s0">parser = XMLPullParser(</span>
+                <span class="s0">events,</span>
+                <span class="s0">tag=tag,</span>
+                <span class="s0">recover=recover,</span>
+                <span class="s0">base_url=self._filename,</span>
+                <span class="s0">encoding=encoding,</span>
+                <span class="s0">attribute_defaults=attribute_defaults,</span>
+                <span class="s0">dtd_validation=dtd_validation,</span>
+                <span class="s0">load_dtd=load_dtd,</span>
+                <span class="s0">no_network=no_network,</span>
+                <span class="s0">schema=schema,</span>
+                <span class="s0">huge_tree=huge_tree,</span>
+                <span class="s0">remove_blank_text=remove_blank_text,</span>
+                <span class="s0">resolve_entities=resolve_entities,</span>
+                <span class="s0">remove_comments=remove_comments,</span>
+                <span class="s0">remove_pis=remove_pis,</span>
+                <span class="s0">strip_cdata=strip_cdata,</span>
+                <span class="s0">collect_ids=True,</span>
+                <span class="s0">target=None,  # TODO</span>
+                <span class="s0">compact=compact)</span>
+
+        <span class="s0">self._events = parser.read_events()</span>
+        <span class="s0">self._parser = parser</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def error_log(self):</span>
+        <span class="s0">&quot;&quot;&quot;The error log of the last (or current) parser run.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._parser.feed_error_log</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def resolvers(self):</span>
+        <span class="s0">&quot;&quot;&quot;The custom resolver registry of the last (or current) parser run.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._parser.resolvers</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def version(self):</span>
+        <span class="s0">&quot;&quot;&quot;The version of the underlying XML parser.&quot;&quot;&quot;</span>
+        <span class="s0">return self._parser.version</span>
+
+    <span class="s0">def set_element_class_lookup(self, ElementClassLookup lookup = None):</span>
+        <span class="s0">&quot;&quot;&quot;set_element_class_lookup(self, lookup = None)</span>
+
+        <span class="s0">Set a lookup scheme for element classes generated from this parser.</span>
+
+        <span class="s0">Reset it by passing None or nothing.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._parser.set_element_class_lookup(lookup)</span>
+
+    <span class="s0">def makeelement(self, _tag, attrib=None, nsmap=None, **_extra):</span>
+        <span class="s0">&quot;&quot;&quot;makeelement(self, _tag, attrib=None, nsmap=None, **_extra)</span>
+
+        <span class="s0">Creates a new element associated with this parser.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._parser.makeelement(</span>
+            <span class="s0">_tag, attrib=None, nsmap=None, **_extra)</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _close_source(self):</span>
+        <span class="s0">if self._source is None:</span>
+            <span class="s0">return</span>
+        <span class="s0">if not self._close_source_after_read:</span>
+            <span class="s0">self._source = None</span>
+            <span class="s0">return</span>
+        <span class="s0">try:</span>
+            <span class="s0">close = self._source.close</span>
+        <span class="s0">except AttributeError:</span>
+            <span class="s0">close = None</span>
+        <span class="s0">finally:</span>
+            <span class="s0">self._source = None</span>
+        <span class="s0">if close is not None:</span>
+            <span class="s0">close()</span>
+
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">return self</span>
+
+    <span class="s0">def __next__(self):</span>
+        <span class="s0">try:</span>
+            <span class="s0">return next(self._events)</span>
+        <span class="s0">except StopIteration:</span>
+            <span class="s0">pass</span>
+        <span class="s0">context = &lt;_SaxParserContext&gt;self._parser._getPushParserContext()</span>
+        <span class="s0">if self._source is not None:</span>
+            <span class="s0">done = False</span>
+            <span class="s0">while not done:</span>
+                <span class="s0">try:</span>
+                    <span class="s0">done = self._read_more_events(context)</span>
+                    <span class="s0">return next(self._events)</span>
+                <span class="s0">except StopIteration:</span>
+                    <span class="s0">pass  # no events yet</span>
+                <span class="s0">except Exception as e:</span>
+                    <span class="s0">self._error = e</span>
+                    <span class="s0">self._close_source()</span>
+                    <span class="s0">try:</span>
+                        <span class="s0">return next(self._events)</span>
+                    <span class="s0">except StopIteration:</span>
+                        <span class="s0">break</span>
+        <span class="s0"># nothing left to read or return</span>
+        <span class="s0">if self._error is not None:</span>
+            <span class="s0">error = self._error</span>
+            <span class="s0">self._error = None</span>
+            <span class="s0">raise error</span>
+        <span class="s0">if (context._validator is not None</span>
+                <span class="s0">and not context._validator.isvalid()):</span>
+            <span class="s0">_raiseParseError(context._c_ctxt, self._filename,</span>
+                             <span class="s0">context._error_log)</span>
+        <span class="s0"># no errors =&gt; all done</span>
+        <span class="s0">raise StopIteration</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef bint _read_more_events(self, _SaxParserContext context) except -123:</span>
+        <span class="s0">data = self._source.read(__ITERPARSE_CHUNK_SIZE)</span>
+        <span class="s0">if not isinstance(data, bytes):</span>
+            <span class="s0">self._close_source()</span>
+            <span class="s0">raise TypeError(&quot;reading file objects must return bytes objects&quot;)</span>
+        <span class="s0">if not data:</span>
+            <span class="s0">try:</span>
+                <span class="s0">self.root = self._parser.close()</span>
+            <span class="s0">finally:</span>
+                <span class="s0">self._close_source()</span>
+            <span class="s0">return True</span>
+        <span class="s0">self._parser.feed(data)</span>
+        <span class="s0">return False</span>
+
+
+<span class="s0">cdef enum _IterwalkSkipStates:</span>
+    <span class="s0">IWSKIP_NEXT_IS_START</span>
+    <span class="s0">IWSKIP_SKIP_NEXT</span>
+    <span class="s0">IWSKIP_CAN_SKIP</span>
+    <span class="s0">IWSKIP_CANNOT_SKIP</span>
+
+
+<span class="s0">cdef class iterwalk:</span>
+    <span class="s0">&quot;&quot;&quot;iterwalk(self, element_or_tree, events=(&quot;end&quot;,), tag=None)</span>
+
+    <span class="s0">A tree walker that generates events from an existing tree as if it</span>
+    <span class="s0">was parsing XML data with ``iterparse()``.</span>
+
+    <span class="s0">Just as for ``iterparse()``, the ``tag`` argument can be a single tag or a</span>
+    <span class="s0">sequence of tags.</span>
+
+    <span class="s0">After receiving a 'start' or 'start-ns' event, the children and</span>
+    <span class="s0">descendants of the current element can be excluded from iteration</span>
+    <span class="s0">by calling the ``skip_subtree()`` method.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _MultiTagMatcher _matcher</span>
+    <span class="s0">cdef list   _node_stack</span>
+    <span class="s0">cdef list   _events</span>
+    <span class="s0">cdef object _pop_event</span>
+    <span class="s0">cdef object _include_siblings</span>
+    <span class="s0">cdef int    _index</span>
+    <span class="s0">cdef int    _event_filter</span>
+    <span class="s0">cdef _IterwalkSkipStates _skip_state</span>
+
+    <span class="s0">def __init__(self, element_or_tree, events=(&quot;end&quot;,), tag=None):</span>
+        <span class="s0">cdef _Element root</span>
+        <span class="s0">cdef int ns_count</span>
+        <span class="s0">root = _rootNodeOrRaise(element_or_tree)</span>
+        <span class="s0">self._event_filter = _buildParseEventFilter(events)</span>
+        <span class="s0">if tag is None or tag == '*':</span>
+            <span class="s0">self._matcher = None</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._matcher = _MultiTagMatcher.__new__(_MultiTagMatcher, tag)</span>
+        <span class="s0">self._node_stack  = []</span>
+        <span class="s0">self._events = []</span>
+        <span class="s0">self._pop_event = self._events.pop</span>
+        <span class="s0">self._skip_state = IWSKIP_CANNOT_SKIP  # ignore all skip requests by default</span>
+
+        <span class="s0">if self._event_filter:</span>
+            <span class="s0">self._index = 0</span>
+            <span class="s0">if self._matcher is not None and self._event_filter &amp; PARSE_EVENT_FILTER_START:</span>
+                <span class="s0">self._matcher.cacheTags(root._doc)</span>
+
+            <span class="s0"># When processing an ElementTree, add events for the preceding comments/PIs.</span>
+            <span class="s0">if self._event_filter &amp; (PARSE_EVENT_FILTER_COMMENT | PARSE_EVENT_FILTER_PI):</span>
+                <span class="s0">if isinstance(element_or_tree, _ElementTree):</span>
+                    <span class="s0">self._include_siblings = root</span>
+                    <span class="s0">for elem in list(root.itersiblings(preceding=True))[::-1]:</span>
+                        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_COMMENT and elem.tag is Comment:</span>
+                            <span class="s0">self._events.append(('comment', elem))</span>
+                        <span class="s0">elif self._event_filter &amp; PARSE_EVENT_FILTER_PI and elem.tag is PI:</span>
+                            <span class="s0">self._events.append(('pi', elem))</span>
+
+            <span class="s0">ns_count = self._start_node(root)</span>
+            <span class="s0">self._node_stack.append( (root, ns_count) )</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._index = -1</span>
+
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">return self</span>
+
+    <span class="s0">def __next__(self):</span>
+        <span class="s0">cdef xmlNode* c_child</span>
+        <span class="s0">cdef _Element node</span>
+        <span class="s0">cdef _Element next_node</span>
+        <span class="s0">cdef int ns_count = 0</span>
+        <span class="s0">if self._events:</span>
+            <span class="s0">return self._next_event()</span>
+        <span class="s0">if self._matcher is not None and self._index &gt;= 0:</span>
+            <span class="s0">node = self._node_stack[self._index][0]</span>
+            <span class="s0">self._matcher.cacheTags(node._doc)</span>
+
+        <span class="s0"># find next node</span>
+        <span class="s0">while self._index &gt;= 0:</span>
+            <span class="s0">node = self._node_stack[self._index][0]</span>
+
+            <span class="s0">if self._skip_state == IWSKIP_SKIP_NEXT:</span>
+                <span class="s0">c_child = NULL</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_child = self._process_non_elements(</span>
+                    <span class="s0">node._doc, _findChildForwards(node._c_node, 0))</span>
+            <span class="s0">self._skip_state = IWSKIP_CANNOT_SKIP</span>
+
+            <span class="s0">while c_child is NULL:</span>
+                <span class="s0"># back off through parents</span>
+                <span class="s0">self._index -= 1</span>
+                <span class="s0">node = self._end_node()</span>
+                <span class="s0">if self._index &lt; 0:</span>
+                    <span class="s0">break</span>
+                <span class="s0">c_child = self._process_non_elements(</span>
+                    <span class="s0">node._doc, _nextElement(node._c_node))</span>
+
+            <span class="s0">if c_child is not NULL:</span>
+                <span class="s0">next_node = _elementFactory(node._doc, c_child)</span>
+                <span class="s0">if self._event_filter &amp; (PARSE_EVENT_FILTER_START |</span>
+                                         <span class="s0">PARSE_EVENT_FILTER_START_NS):</span>
+                    <span class="s0">ns_count = self._start_node(next_node)</span>
+                <span class="s0">elif self._event_filter &amp; PARSE_EVENT_FILTER_END_NS:</span>
+                    <span class="s0">ns_count = _countNsDefs(next_node._c_node)</span>
+                <span class="s0">self._node_stack.append( (next_node, ns_count) )</span>
+                <span class="s0">self._index += 1</span>
+            <span class="s0">if self._events:</span>
+                <span class="s0">return self._next_event()</span>
+
+        <span class="s0">if self._include_siblings is not None:</span>
+            <span class="s0">node, self._include_siblings = self._include_siblings, None</span>
+            <span class="s0">self._process_non_elements(node._doc, _nextElement(node._c_node))</span>
+            <span class="s0">if self._events:</span>
+                <span class="s0">return self._next_event()</span>
+
+        <span class="s0">raise StopIteration</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef xmlNode* _process_non_elements(self, _Document doc, xmlNode* c_node):</span>
+        <span class="s0">while c_node is not NULL and c_node.type != tree.XML_ELEMENT_NODE:</span>
+            <span class="s0">if c_node.type == tree.XML_COMMENT_NODE:</span>
+                <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_COMMENT:</span>
+                    <span class="s0">self._events.append(</span>
+                        <span class="s0">(&quot;comment&quot;, _elementFactory(doc, c_node)))</span>
+                <span class="s0">c_node = _nextElement(c_node)</span>
+            <span class="s0">elif c_node.type == tree.XML_PI_NODE:</span>
+                <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_PI:</span>
+                    <span class="s0">self._events.append(</span>
+                        <span class="s0">(&quot;pi&quot;, _elementFactory(doc, c_node)))</span>
+                <span class="s0">c_node = _nextElement(c_node)</span>
+            <span class="s0">else:</span>
+                <span class="s0">break</span>
+        <span class="s0">return c_node</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _next_event(self):</span>
+        <span class="s0">if self._skip_state == IWSKIP_NEXT_IS_START:</span>
+            <span class="s0">if self._events[0][0] in ('start', 'start-ns'):</span>
+                <span class="s0">self._skip_state = IWSKIP_CAN_SKIP</span>
+        <span class="s0">return self._pop_event(0)</span>
+
+    <span class="s0">def skip_subtree(self):</span>
+        <span class="s0">&quot;&quot;&quot;Prevent descending into the current subtree.</span>
+        <span class="s0">Instead, the next returned event will be the 'end' event of the current element</span>
+        <span class="s0">(if included), ignoring any children or descendants.</span>
+
+        <span class="s0">This has no effect right after an 'end' or 'end-ns' event.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if self._skip_state == IWSKIP_CAN_SKIP:</span>
+            <span class="s0">self._skip_state = IWSKIP_SKIP_NEXT</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef int _start_node(self, _Element node) except -1:</span>
+        <span class="s0">cdef int ns_count</span>
+        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_START_NS:</span>
+            <span class="s0">ns_count = _appendStartNsEvents(node._c_node, self._events)</span>
+            <span class="s0">if self._events:</span>
+                <span class="s0">self._skip_state = IWSKIP_NEXT_IS_START</span>
+        <span class="s0">elif self._event_filter &amp; PARSE_EVENT_FILTER_END_NS:</span>
+            <span class="s0">ns_count = _countNsDefs(node._c_node)</span>
+        <span class="s0">else:</span>
+            <span class="s0">ns_count = 0</span>
+        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_START:</span>
+            <span class="s0">if self._matcher is None or self._matcher.matches(node._c_node):</span>
+                <span class="s0">self._events.append( (&quot;start&quot;, node) )</span>
+                <span class="s0">self._skip_state = IWSKIP_NEXT_IS_START</span>
+        <span class="s0">return ns_count</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _Element _end_node(self):</span>
+        <span class="s0">cdef _Element node</span>
+        <span class="s0">cdef int i, ns_count</span>
+        <span class="s0">node, ns_count = self._node_stack.pop()</span>
+        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_END:</span>
+            <span class="s0">if self._matcher is None or self._matcher.matches(node._c_node):</span>
+                <span class="s0">self._events.append( (&quot;end&quot;, node) )</span>
+        <span class="s0">if self._event_filter &amp; PARSE_EVENT_FILTER_END_NS and ns_count:</span>
+            <span class="s0">event = (&quot;end-ns&quot;, None)</span>
+            <span class="s0">for i in range(ns_count):</span>
+                <span class="s0">self._events.append(event)</span>
+        <span class="s0">return node</span>
+
+
+<span class="s0">cdef int _countNsDefs(xmlNode* c_node) noexcept:</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">cdef int count</span>
+    <span class="s0">count = 0</span>
+    <span class="s0">c_ns = c_node.nsDef</span>
+    <span class="s0">while c_ns is not NULL:</span>
+        <span class="s0">count += (c_ns.href is not NULL)</span>
+        <span class="s0">c_ns = c_ns.next</span>
+    <span class="s0">return count</span>
+
+
+<span class="s0">cdef int _appendStartNsEvents(xmlNode* c_node, list event_list) except -1:</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">cdef int count</span>
+    <span class="s0">count = 0</span>
+    <span class="s0">c_ns = c_node.nsDef</span>
+    <span class="s0">while c_ns is not NULL:</span>
+        <span class="s0">if c_ns.href:</span>
+            <span class="s0">ns_tuple = (funicodeOrEmpty(c_ns.prefix),</span>
+                        <span class="s0">funicode(c_ns.href))</span>
+            <span class="s0">event_list.append( (&quot;start-ns&quot;, ns_tuple) )</span>
+            <span class="s0">count += 1</span>
+        <span class="s0">c_ns = c_ns.next</span>
+    <span class="s0">return count</span>
+</pre>
+</body>
+</html>

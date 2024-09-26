@@ -1,0 +1,840 @@
+<html>
+<head>
+<title>serialization_lib.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #7a7e85;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+serialization_lib.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Object config serialization and deserialization logic.&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">importlib</span>
+<span class="s2">import </span><span class="s1">inspect</span>
+<span class="s2">import </span><span class="s1">types</span>
+<span class="s2">import </span><span class="s1">warnings</span>
+
+<span class="s2">import </span><span class="s1">numpy </span><span class="s2">as </span><span class="s1">np</span>
+
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">api_export</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">backend</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">api_export </span><span class="s2">import </span><span class="s1">keras_export</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">.</span><span class="s1">common </span><span class="s2">import </span><span class="s1">global_state</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">saving </span><span class="s2">import </span><span class="s1">object_registration</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils </span><span class="s2">import </span><span class="s1">python_utils</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils</span><span class="s3">.</span><span class="s1">module_utils </span><span class="s2">import </span><span class="s1">tensorflow </span><span class="s2">as </span><span class="s1">tf</span>
+
+<span class="s1">PLAIN_TYPES </span><span class="s3">= (</span><span class="s1">str</span><span class="s3">, </span><span class="s1">int</span><span class="s3">, </span><span class="s1">float</span><span class="s3">, </span><span class="s1">bool</span><span class="s3">)</span>
+
+<span class="s4"># List of Keras modules with built-in string representations for Keras defaults</span>
+<span class="s1">BUILTIN_MODULES </span><span class="s3">= (</span>
+    <span class="s5">&quot;activations&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;constraints&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;initializers&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;losses&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;metrics&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;optimizers&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;regularizers&quot;</span><span class="s3">,</span>
+<span class="s3">)</span>
+
+
+<span class="s2">class </span><span class="s1">SerializableDict</span><span class="s3">:</span>
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, **</span><span class="s1">config</span><span class="s3">):</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">config </span><span class="s3">= </span><span class="s1">config</span>
+
+    <span class="s2">def </span><span class="s1">serialize</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">config</span><span class="s3">)</span>
+
+
+<span class="s2">class </span><span class="s1">SafeModeScope</span><span class="s3">:</span>
+    <span class="s0">&quot;&quot;&quot;Scope to propagate safe mode flag to nested deserialization calls.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">safe_mode</span><span class="s3">=</span><span class="s2">True</span><span class="s3">):</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">safe_mode </span><span class="s3">= </span><span class="s1">safe_mode</span>
+
+    <span class="s2">def </span><span class="s1">__enter__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">original_value </span><span class="s3">= </span><span class="s1">in_safe_mode</span><span class="s3">()</span>
+        <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span><span class="s5">&quot;safe_mode_saving&quot;</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">safe_mode</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">__exit__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span>
+            <span class="s5">&quot;safe_mode_saving&quot;</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">original_value</span>
+        <span class="s3">)</span>
+
+
+<span class="s3">@</span><span class="s1">keras_export</span><span class="s3">(</span><span class="s5">&quot;keras.config.enable_unsafe_deserialization&quot;</span><span class="s3">)</span>
+<span class="s2">def </span><span class="s1">enable_unsafe_deserialization</span><span class="s3">():</span>
+    <span class="s0">&quot;&quot;&quot;Disables safe mode globally, allowing deserialization of lambdas.&quot;&quot;&quot;</span>
+    <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span><span class="s5">&quot;safe_mode_saving&quot;</span><span class="s3">, </span><span class="s2">False</span><span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">in_safe_mode</span><span class="s3">():</span>
+    <span class="s2">return </span><span class="s1">global_state</span><span class="s3">.</span><span class="s1">get_global_attribute</span><span class="s3">(</span><span class="s5">&quot;safe_mode_saving&quot;</span><span class="s3">)</span>
+
+
+<span class="s2">class </span><span class="s1">ObjectSharingScope</span><span class="s3">:</span>
+    <span class="s0">&quot;&quot;&quot;Scope to enable detection and reuse of previously seen objects.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__enter__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span><span class="s5">&quot;shared_objects/id_to_obj_map&quot;</span><span class="s3">, {})</span>
+        <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span><span class="s5">&quot;shared_objects/id_to_config_map&quot;</span><span class="s3">, {})</span>
+
+    <span class="s2">def </span><span class="s1">__exit__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span><span class="s5">&quot;shared_objects/id_to_obj_map&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+        <span class="s1">global_state</span><span class="s3">.</span><span class="s1">set_global_attribute</span><span class="s3">(</span>
+            <span class="s5">&quot;shared_objects/id_to_config_map&quot;</span><span class="s3">, </span><span class="s2">None</span>
+        <span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">get_shared_object</span><span class="s3">(</span><span class="s1">obj_id</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Retrieve an object previously seen during deserialization.&quot;&quot;&quot;</span>
+    <span class="s1">id_to_obj_map </span><span class="s3">= </span><span class="s1">global_state</span><span class="s3">.</span><span class="s1">get_global_attribute</span><span class="s3">(</span>
+        <span class="s5">&quot;shared_objects/id_to_obj_map&quot;</span>
+    <span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">id_to_obj_map </span><span class="s2">is not None</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">id_to_obj_map</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">obj_id</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">record_object_after_serialization</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">config</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Call after serializing an object, to keep track of its config.&quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;module&quot;</span><span class="s3">] == </span><span class="s5">&quot;__main__&quot;</span><span class="s3">:</span>
+        <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;module&quot;</span><span class="s3">] = </span><span class="s2">None  </span><span class="s4"># Ensures module is None when no module found</span>
+    <span class="s1">id_to_config_map </span><span class="s3">= </span><span class="s1">global_state</span><span class="s3">.</span><span class="s1">get_global_attribute</span><span class="s3">(</span>
+        <span class="s5">&quot;shared_objects/id_to_config_map&quot;</span>
+    <span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">id_to_config_map </span><span class="s2">is None</span><span class="s3">:</span>
+        <span class="s2">return  </span><span class="s4"># Not in a sharing scope</span>
+    <span class="s1">obj_id </span><span class="s3">= </span><span class="s1">int</span><span class="s3">(</span><span class="s1">id</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">))</span>
+    <span class="s2">if </span><span class="s1">obj_id </span><span class="s2">not in </span><span class="s1">id_to_config_map</span><span class="s3">:</span>
+        <span class="s1">id_to_config_map</span><span class="s3">[</span><span class="s1">obj_id</span><span class="s3">] = </span><span class="s1">config</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;shared_object_id&quot;</span><span class="s3">] = </span><span class="s1">obj_id</span>
+        <span class="s1">prev_config </span><span class="s3">= </span><span class="s1">id_to_config_map</span><span class="s3">[</span><span class="s1">obj_id</span><span class="s3">]</span>
+        <span class="s1">prev_config</span><span class="s3">[</span><span class="s5">&quot;shared_object_id&quot;</span><span class="s3">] = </span><span class="s1">obj_id</span>
+
+
+<span class="s2">def </span><span class="s1">record_object_after_deserialization</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">obj_id</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Call after deserializing an object, to keep track of it in the future.&quot;&quot;&quot;</span>
+    <span class="s1">id_to_obj_map </span><span class="s3">= </span><span class="s1">global_state</span><span class="s3">.</span><span class="s1">get_global_attribute</span><span class="s3">(</span>
+        <span class="s5">&quot;shared_objects/id_to_obj_map&quot;</span>
+    <span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">id_to_obj_map </span><span class="s2">is None</span><span class="s3">:</span>
+        <span class="s2">return  </span><span class="s4"># Not in a sharing scope</span>
+    <span class="s1">id_to_obj_map</span><span class="s3">[</span><span class="s1">obj_id</span><span class="s3">] = </span><span class="s1">obj</span>
+
+
+<span class="s3">@</span><span class="s1">keras_export</span><span class="s3">(</span>
+    <span class="s3">[</span>
+        <span class="s5">&quot;keras.saving.serialize_keras_object&quot;</span><span class="s3">,</span>
+        <span class="s5">&quot;keras.utils.serialize_keras_object&quot;</span><span class="s3">,</span>
+    <span class="s3">]</span>
+<span class="s3">)</span>
+<span class="s2">def </span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Retrieve the config dict by serializing the Keras object. 
+ 
+    `serialize_keras_object()` serializes a Keras object to a python dictionary 
+    that represents the object, and is a reciprocal function of 
+    `deserialize_keras_object()`. See `deserialize_keras_object()` for more 
+    information about the config format. 
+ 
+    Args: 
+        obj: the Keras object to serialize. 
+ 
+    Returns: 
+        A python dict that represents the object. The python dict can be 
+        deserialized via `deserialize_keras_object()`. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">obj </span><span class="s2">is None</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">PLAIN_TYPES</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, (</span><span class="s1">list</span><span class="s3">, </span><span class="s1">tuple</span><span class="s3">)):</span>
+        <span class="s1">config_arr </span><span class="s3">= [</span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">x</span><span class="s3">) </span><span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">obj</span><span class="s3">]</span>
+        <span class="s2">return </span><span class="s1">tuple</span><span class="s3">(</span><span class="s1">config_arr</span><span class="s3">) </span><span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">tuple</span><span class="s3">) </span><span class="s2">else </span><span class="s1">config_arr</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">serialize_dict</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">)</span>
+
+    <span class="s4"># Special cases:</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">bytes</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__bytes__&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: {</span><span class="s5">&quot;value&quot;</span><span class="s3">: </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">decode</span><span class="s3">(</span><span class="s5">&quot;utf-8&quot;</span><span class="s3">)},</span>
+        <span class="s3">}</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">slice</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__slice__&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: {</span>
+                <span class="s5">&quot;start&quot;</span><span class="s3">: </span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">.</span><span class="s1">start</span><span class="s3">),</span>
+                <span class="s5">&quot;stop&quot;</span><span class="s3">: </span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">.</span><span class="s1">stop</span><span class="s3">),</span>
+                <span class="s5">&quot;step&quot;</span><span class="s3">: </span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">.</span><span class="s1">step</span><span class="s3">),</span>
+            <span class="s3">},</span>
+        <span class="s3">}</span>
+    <span class="s4"># Ellipsis is an instance, and ellipsis class is not in global scope.</span>
+    <span class="s4"># checking equality also fails elsewhere in the library, so we have</span>
+    <span class="s4"># to dynamically get the type.</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">type</span><span class="s3">(</span><span class="s1">Ellipsis</span><span class="s3">)):</span>
+        <span class="s2">return </span><span class="s3">{</span><span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__ellipsis__&quot;</span><span class="s3">, </span><span class="s5">&quot;config&quot;</span><span class="s3">: {}}</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">KerasTensor</span><span class="s3">):</span>
+        <span class="s1">history </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s5">&quot;_keras_history&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">history</span><span class="s3">:</span>
+            <span class="s1">history </span><span class="s3">= </span><span class="s1">list</span><span class="s3">(</span><span class="s1">history</span><span class="s3">)</span>
+            <span class="s1">history</span><span class="s3">[</span><span class="s6">0</span><span class="s3">] = </span><span class="s1">history</span><span class="s3">[</span><span class="s6">0</span><span class="s3">].</span><span class="s1">name</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__keras_tensor__&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: {</span>
+                <span class="s5">&quot;shape&quot;</span><span class="s3">: </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">,</span>
+                <span class="s5">&quot;dtype&quot;</span><span class="s3">: </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">,</span>
+                <span class="s5">&quot;keras_history&quot;</span><span class="s3">: </span><span class="s1">history</span><span class="s3">,</span>
+            <span class="s3">},</span>
+        <span class="s3">}</span>
+    <span class="s2">if </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">available </span><span class="s2">and </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">TensorShape</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">as_list</span><span class="s3">() </span><span class="s2">if </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">_dims </span><span class="s2">is not None else None</span>
+    <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">is_tensor</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__tensor__&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: {</span>
+                <span class="s5">&quot;value&quot;</span><span class="s3">: </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">convert_to_numpy</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">).</span><span class="s1">tolist</span><span class="s3">(),</span>
+                <span class="s5">&quot;dtype&quot;</span><span class="s3">: </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">standardize_dtype</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">),</span>
+            <span class="s3">},</span>
+        <span class="s3">}</span>
+    <span class="s2">if </span><span class="s1">type</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">).</span><span class="s1">__module__ </span><span class="s3">== </span><span class="s1">np</span><span class="s3">.</span><span class="s1">__name__</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">np</span><span class="s3">.</span><span class="s1">ndarray</span><span class="s3">) </span><span class="s2">and </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">ndim </span><span class="s3">&gt; </span><span class="s6">0</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s3">{</span>
+                <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__numpy__&quot;</span><span class="s3">,</span>
+                <span class="s5">&quot;config&quot;</span><span class="s3">: {</span>
+                    <span class="s5">&quot;value&quot;</span><span class="s3">: </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">tolist</span><span class="s3">(),</span>
+                    <span class="s5">&quot;dtype&quot;</span><span class="s3">: </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">standardize_dtype</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">),</span>
+                <span class="s3">},</span>
+            <span class="s3">}</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s4"># Treat numpy floats / etc as plain types.</span>
+            <span class="s2">return </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">item</span><span class="s3">()</span>
+    <span class="s2">if </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">available </span><span class="s2">and </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">DType</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">name</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">types</span><span class="s3">.</span><span class="s1">FunctionType</span><span class="s3">) </span><span class="s2">and </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__name__ </span><span class="s3">== </span><span class="s5">&quot;&lt;lambda&gt;&quot;</span><span class="s3">:</span>
+        <span class="s1">warnings</span><span class="s3">.</span><span class="s1">warn</span><span class="s3">(</span>
+            <span class="s5">&quot;The object being serialized includes a `lambda`. This is unsafe. &quot;</span>
+            <span class="s5">&quot;In order to reload the object, you will have to pass &quot;</span>
+            <span class="s5">&quot;`safe_mode=False` to the loading function. &quot;</span>
+            <span class="s5">&quot;Please avoid using `lambda` in the &quot;</span>
+            <span class="s5">&quot;future, and use named Python functions instead. &quot;</span>
+            <span class="s5">f&quot;This is the `lambda` being serialized: </span><span class="s2">{</span><span class="s1">inspect</span><span class="s3">.</span><span class="s1">getsource</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">)</span><span class="s2">}</span><span class="s5">&quot;</span><span class="s3">,</span>
+            <span class="s1">stacklevel</span><span class="s3">=</span><span class="s6">2</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__lambda__&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: {</span>
+                <span class="s5">&quot;value&quot;</span><span class="s3">: </span><span class="s1">python_utils</span><span class="s3">.</span><span class="s1">func_dump</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">),</span>
+            <span class="s3">},</span>
+        <span class="s3">}</span>
+    <span class="s2">if </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">available </span><span class="s2">and </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">TypeSpec</span><span class="s3">):</span>
+        <span class="s1">ts_config </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">_serialize</span><span class="s3">()</span>
+        <span class="s4"># TensorShape and tf.DType conversion</span>
+        <span class="s1">ts_config </span><span class="s3">= </span><span class="s1">list</span><span class="s3">(</span>
+            <span class="s1">map</span><span class="s3">(</span>
+                <span class="s2">lambda </span><span class="s1">x</span><span class="s3">: (</span>
+                    <span class="s1">x</span><span class="s3">.</span><span class="s1">as_list</span><span class="s3">()</span>
+                    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">x</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">TensorShape</span><span class="s3">)</span>
+                    <span class="s2">else </span><span class="s3">(</span><span class="s1">x</span><span class="s3">.</span><span class="s1">name </span><span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">x</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">DType</span><span class="s3">) </span><span class="s2">else </span><span class="s1">x</span><span class="s3">)</span>
+                <span class="s3">),</span>
+                <span class="s1">ts_config</span><span class="s3">,</span>
+            <span class="s3">)</span>
+        <span class="s3">)</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;__typespec__&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;spec_name&quot;</span><span class="s3">: </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__class__</span><span class="s3">.</span><span class="s1">__name__</span><span class="s3">,</span>
+            <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__class__</span><span class="s3">.</span><span class="s1">__module__</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">ts_config</span><span class="s3">,</span>
+            <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s3">}</span>
+
+    <span class="s1">inner_config </span><span class="s3">= </span><span class="s1">_get_class_or_fn_config</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">)</span>
+    <span class="s1">config_with_public_class </span><span class="s3">= </span><span class="s1">serialize_with_public_class</span><span class="s3">(</span>
+        <span class="s1">obj</span><span class="s3">.</span><span class="s1">__class__</span><span class="s3">, </span><span class="s1">inner_config</span>
+    <span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s1">config_with_public_class </span><span class="s2">is not None</span><span class="s3">:</span>
+        <span class="s1">get_build_and_compile_config</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">config_with_public_class</span><span class="s3">)</span>
+        <span class="s1">record_object_after_serialization</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">config_with_public_class</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">config_with_public_class</span>
+
+    <span class="s4"># Any custom object or otherwise non-exported object</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">types</span><span class="s3">.</span><span class="s1">FunctionType</span><span class="s3">):</span>
+        <span class="s1">module </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__module__</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s1">module </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__class__</span><span class="s3">.</span><span class="s1">__module__</span>
+    <span class="s1">class_name </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__class__</span><span class="s3">.</span><span class="s1">__name__</span>
+
+    <span class="s2">if </span><span class="s1">module </span><span class="s3">== </span><span class="s5">&quot;builtins&quot;</span><span class="s3">:</span>
+        <span class="s1">registered_name </span><span class="s3">= </span><span class="s2">None</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">types</span><span class="s3">.</span><span class="s1">FunctionType</span><span class="s3">):</span>
+            <span class="s1">registered_name </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_name</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">)</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">registered_name </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_name</span><span class="s3">(</span>
+                <span class="s1">obj</span><span class="s3">.</span><span class="s1">__class__</span>
+            <span class="s3">)</span>
+
+    <span class="s1">config </span><span class="s3">= {</span>
+        <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s1">module</span><span class="s3">,</span>
+        <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s1">class_name</span><span class="s3">,</span>
+        <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">inner_config</span><span class="s3">,</span>
+        <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s1">registered_name</span><span class="s3">,</span>
+    <span class="s3">}</span>
+    <span class="s1">get_build_and_compile_config</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">config</span><span class="s3">)</span>
+    <span class="s1">record_object_after_serialization</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">config</span><span class="s3">)</span>
+    <span class="s2">return </span><span class="s1">config</span>
+
+
+<span class="s2">def </span><span class="s1">get_build_and_compile_config</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">config</span><span class="s3">):</span>
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s5">&quot;get_build_config&quot;</span><span class="s3">):</span>
+        <span class="s1">build_config </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">get_build_config</span><span class="s3">()</span>
+        <span class="s2">if </span><span class="s1">build_config </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;build_config&quot;</span><span class="s3">] = </span><span class="s1">serialize_dict</span><span class="s3">(</span><span class="s1">build_config</span><span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s5">&quot;get_compile_config&quot;</span><span class="s3">):</span>
+        <span class="s1">compile_config </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">get_compile_config</span><span class="s3">()</span>
+        <span class="s2">if </span><span class="s1">compile_config </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;compile_config&quot;</span><span class="s3">] = </span><span class="s1">serialize_dict</span><span class="s3">(</span><span class="s1">compile_config</span><span class="s3">)</span>
+    <span class="s2">return</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_with_public_class</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">inner_config</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Serializes classes from public Keras API or object registration. 
+ 
+    Called to check and retrieve the config of any class that has a public 
+    Keras API or has been registered as serializable via 
+    `keras.saving.register_keras_serializable()`. 
+    &quot;&quot;&quot;</span>
+    <span class="s4"># This gets the `keras.*` exported name, such as</span>
+    <span class="s4"># &quot;keras.optimizers.Adam&quot;.</span>
+    <span class="s1">keras_api_name </span><span class="s3">= </span><span class="s1">api_export</span><span class="s3">.</span><span class="s1">get_name_from_symbol</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">)</span>
+
+    <span class="s4"># Case of custom or unknown class object</span>
+    <span class="s2">if </span><span class="s1">keras_api_name </span><span class="s2">is None</span><span class="s3">:</span>
+        <span class="s1">registered_name </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_name</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">registered_name </span><span class="s2">is None</span><span class="s3">:</span>
+            <span class="s2">return None</span>
+
+        <span class="s4"># Return custom object config with corresponding registration name</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">__module__</span><span class="s3">,</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">__name__</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">inner_config</span><span class="s3">,</span>
+            <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s1">registered_name</span><span class="s3">,</span>
+        <span class="s3">}</span>
+
+    <span class="s4"># Split the canonical Keras API name into a Keras module and class name.</span>
+    <span class="s1">parts </span><span class="s3">= </span><span class="s1">keras_api_name</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s5">&quot;.&quot;</span><span class="s3">)</span>
+    <span class="s2">return </span><span class="s3">{</span>
+        <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s5">&quot;.&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">parts</span><span class="s3">[:-</span><span class="s6">1</span><span class="s3">]),</span>
+        <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s1">parts</span><span class="s3">[-</span><span class="s6">1</span><span class="s3">],</span>
+        <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">inner_config</span><span class="s3">,</span>
+        <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s2">None</span><span class="s3">,</span>
+    <span class="s3">}</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_with_public_fn</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">, </span><span class="s1">config</span><span class="s3">, </span><span class="s1">fn_module_name</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Serializes functions from public Keras API or object registration. 
+ 
+    Called to check and retrieve the config of any function that has a public 
+    Keras API or has been registered as serializable via 
+    `keras.saving.register_keras_serializable()`. If function's module name 
+    is already known, returns corresponding config. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">if </span><span class="s1">fn_module_name</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s1">fn_module_name</span><span class="s3">,</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;function&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">config</span><span class="s3">,</span>
+            <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s1">config</span><span class="s3">,</span>
+        <span class="s3">}</span>
+    <span class="s1">keras_api_name </span><span class="s3">= </span><span class="s1">api_export</span><span class="s3">.</span><span class="s1">get_name_from_symbol</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">keras_api_name</span><span class="s3">:</span>
+        <span class="s1">parts </span><span class="s3">= </span><span class="s1">keras_api_name</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s5">&quot;.&quot;</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s5">&quot;.&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">parts</span><span class="s3">[:-</span><span class="s6">1</span><span class="s3">]),</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;function&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">config</span><span class="s3">,</span>
+            <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s1">config</span><span class="s3">,</span>
+        <span class="s3">}</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s1">registered_name </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_name</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">)</span>
+        <span class="s2">if not </span><span class="s1">registered_name </span><span class="s2">and not </span><span class="s1">fn</span><span class="s3">.</span><span class="s1">__module__ </span><span class="s3">== </span><span class="s5">&quot;builtins&quot;</span><span class="s3">:</span>
+            <span class="s2">return None</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s5">&quot;module&quot;</span><span class="s3">: </span><span class="s1">fn</span><span class="s3">.</span><span class="s1">__module__</span><span class="s3">,</span>
+            <span class="s5">&quot;class_name&quot;</span><span class="s3">: </span><span class="s5">&quot;function&quot;</span><span class="s3">,</span>
+            <span class="s5">&quot;config&quot;</span><span class="s3">: </span><span class="s1">config</span><span class="s3">,</span>
+            <span class="s5">&quot;registered_name&quot;</span><span class="s3">: </span><span class="s1">registered_name</span><span class="s3">,</span>
+        <span class="s3">}</span>
+
+
+<span class="s2">def </span><span class="s1">_get_class_or_fn_config</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Return the object's config depending on its type.&quot;&quot;&quot;</span>
+    <span class="s4"># Functions / lambdas:</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s1">types</span><span class="s3">.</span><span class="s1">FunctionType</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">__name__</span>
+    <span class="s4"># All classes:</span>
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s5">&quot;get_config&quot;</span><span class="s3">):</span>
+        <span class="s1">config </span><span class="s3">= </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">get_config</span><span class="s3">()</span>
+        <span class="s2">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">config</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+                <span class="s5">f&quot;The `get_config()` method of </span><span class="s2">{</span><span class="s1">obj</span><span class="s2">} </span><span class="s5">should return &quot;</span>
+                <span class="s5">f&quot;a dict. It returned: </span><span class="s2">{</span><span class="s1">config</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">serialize_dict</span><span class="s3">(</span><span class="s1">config</span><span class="s3">)</span>
+    <span class="s2">elif </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">, </span><span class="s5">&quot;__name__&quot;</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_name</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">)</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+            <span class="s5">f&quot;Cannot serialize object </span><span class="s2">{</span><span class="s1">obj</span><span class="s2">} </span><span class="s5">of type </span><span class="s2">{</span><span class="s1">type</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">)</span><span class="s2">}</span><span class="s5">. &quot;</span>
+            <span class="s5">&quot;To be serializable, &quot;</span>
+            <span class="s5">&quot;a class must implement the `get_config()` method.&quot;</span>
+        <span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_dict</span><span class="s3">(</span><span class="s1">obj</span><span class="s3">):</span>
+    <span class="s2">return </span><span class="s3">{</span><span class="s1">key</span><span class="s3">: </span><span class="s1">serialize_keras_object</span><span class="s3">(</span><span class="s1">value</span><span class="s3">) </span><span class="s2">for </span><span class="s1">key</span><span class="s3">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">items</span><span class="s3">()}</span>
+
+
+<span class="s3">@</span><span class="s1">keras_export</span><span class="s3">(</span>
+    <span class="s3">[</span>
+        <span class="s5">&quot;keras.saving.deserialize_keras_object&quot;</span><span class="s3">,</span>
+        <span class="s5">&quot;keras.utils.deserialize_keras_object&quot;</span><span class="s3">,</span>
+    <span class="s3">]</span>
+<span class="s3">)</span>
+<span class="s2">def </span><span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+    <span class="s1">config</span><span class="s3">, </span><span class="s1">custom_objects</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">safe_mode</span><span class="s3">=</span><span class="s2">True</span><span class="s3">, **</span><span class="s1">kwargs</span>
+<span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Retrieve the object by deserializing the config dict. 
+ 
+    The config dict is a Python dictionary that consists of a set of key-value 
+    pairs, and represents a Keras object, such as an `Optimizer`, `Layer`, 
+    `Metrics`, etc. The saving and loading library uses the following keys to 
+    record information of a Keras object: 
+ 
+    - `class_name`: String. This is the name of the class, 
+      as exactly defined in the source 
+      code, such as &quot;LossesContainer&quot;. 
+    - `config`: Dict. Library-defined or user-defined key-value pairs that store 
+      the configuration of the object, as obtained by `object.get_config()`. 
+    - `module`: String. The path of the python module. Built-in Keras classes 
+      expect to have prefix `keras`. 
+    - `registered_name`: String. The key the class is registered under via 
+      `keras.saving.register_keras_serializable(package, name)` API. The 
+      key has the format of '{package}&gt;{name}', where `package` and `name` are 
+      the arguments passed to `register_keras_serializable()`. If `name` is not 
+      provided, it uses the class name. If `registered_name` successfully 
+      resolves to a class (that was registered), the `class_name` and `config` 
+      values in the dict will not be used. `registered_name` is only used for 
+      non-built-in classes. 
+ 
+    For example, the following dictionary represents the built-in Adam optimizer 
+    with the relevant config: 
+ 
+    ```python 
+    dict_structure = { 
+        &quot;class_name&quot;: &quot;Adam&quot;, 
+        &quot;config&quot;: { 
+            &quot;amsgrad&quot;: false, 
+            &quot;beta_1&quot;: 0.8999999761581421, 
+            &quot;beta_2&quot;: 0.9990000128746033, 
+            &quot;decay&quot;: 0.0, 
+            &quot;epsilon&quot;: 1e-07, 
+            &quot;learning_rate&quot;: 0.0010000000474974513, 
+            &quot;name&quot;: &quot;Adam&quot; 
+        }, 
+        &quot;module&quot;: &quot;keras.optimizers&quot;, 
+        &quot;registered_name&quot;: None 
+    } 
+    # Returns an `Adam` instance identical to the original one. 
+    deserialize_keras_object(dict_structure) 
+    ``` 
+ 
+    If the class does not have an exported Keras namespace, the library tracks 
+    it by its `module` and `class_name`. For example: 
+ 
+    ```python 
+    dict_structure = { 
+      &quot;class_name&quot;: &quot;MetricsList&quot;, 
+      &quot;config&quot;: { 
+          ... 
+      }, 
+      &quot;module&quot;: &quot;keras.trainers.compile_utils&quot;, 
+      &quot;registered_name&quot;: &quot;MetricsList&quot; 
+    } 
+ 
+    # Returns a `MetricsList` instance identical to the original one. 
+    deserialize_keras_object(dict_structure) 
+    ``` 
+ 
+    And the following dictionary represents a user-customized `MeanSquaredError` 
+    loss: 
+ 
+    ```python 
+    @keras.saving.register_keras_serializable(package='my_package') 
+    class ModifiedMeanSquaredError(keras.losses.MeanSquaredError): 
+      ... 
+ 
+    dict_structure = { 
+        &quot;class_name&quot;: &quot;ModifiedMeanSquaredError&quot;, 
+        &quot;config&quot;: { 
+            &quot;fn&quot;: &quot;mean_squared_error&quot;, 
+            &quot;name&quot;: &quot;mean_squared_error&quot;, 
+            &quot;reduction&quot;: &quot;auto&quot; 
+        }, 
+        &quot;registered_name&quot;: &quot;my_package&gt;ModifiedMeanSquaredError&quot; 
+    } 
+    # Returns the `ModifiedMeanSquaredError` object 
+    deserialize_keras_object(dict_structure) 
+    ``` 
+ 
+    Args: 
+        config: Python dict describing the object. 
+        custom_objects: Python dict containing a mapping between custom 
+            object names the corresponding classes or functions. 
+        safe_mode: Boolean, whether to disallow unsafe `lambda` deserialization. 
+            When `safe_mode=False`, loading an object has the potential to 
+            trigger arbitrary code execution. This argument is only 
+            applicable to the Keras v3 model format. Defaults to `True`. 
+ 
+    Returns: 
+        The object described by the `config` dictionary. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">safe_scope_arg </span><span class="s3">= </span><span class="s1">in_safe_mode</span><span class="s3">()  </span><span class="s4"># Enforces SafeModeScope</span>
+    <span class="s1">safe_mode </span><span class="s3">= </span><span class="s1">safe_scope_arg </span><span class="s2">if </span><span class="s1">safe_scope_arg </span><span class="s2">is not None else </span><span class="s1">safe_mode</span>
+
+    <span class="s1">module_objects </span><span class="s3">= </span><span class="s1">kwargs</span><span class="s3">.</span><span class="s1">pop</span><span class="s3">(</span><span class="s5">&quot;module_objects&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+    <span class="s1">custom_objects </span><span class="s3">= </span><span class="s1">custom_objects </span><span class="s2">or </span><span class="s3">{}</span>
+    <span class="s1">tlco </span><span class="s3">= </span><span class="s1">global_state</span><span class="s3">.</span><span class="s1">get_global_attribute</span><span class="s3">(</span><span class="s5">&quot;custom_objects_scope_dict&quot;</span><span class="s3">, {})</span>
+    <span class="s1">gco </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">GLOBAL_CUSTOM_OBJECTS</span>
+    <span class="s1">custom_objects </span><span class="s3">= {**</span><span class="s1">custom_objects</span><span class="s3">, **</span><span class="s1">tlco</span><span class="s3">, **</span><span class="s1">gco</span><span class="s3">}</span>
+
+    <span class="s2">if </span><span class="s1">config </span><span class="s2">is None</span><span class="s3">:</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">if </span><span class="s3">(</span>
+        <span class="s1">isinstance</span><span class="s3">(</span><span class="s1">config</span><span class="s3">, </span><span class="s1">str</span><span class="s3">)</span>
+        <span class="s2">and </span><span class="s1">custom_objects</span>
+        <span class="s2">and </span><span class="s1">custom_objects</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">config</span><span class="s3">) </span><span class="s2">is not None</span>
+    <span class="s3">):</span>
+        <span class="s4"># This is to deserialize plain functions which are serialized as</span>
+        <span class="s4"># string names by legacy saving formats.</span>
+        <span class="s2">return </span><span class="s1">custom_objects</span><span class="s3">[</span><span class="s1">config</span><span class="s3">]</span>
+
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">config</span><span class="s3">, (</span><span class="s1">list</span><span class="s3">, </span><span class="s1">tuple</span><span class="s3">)):</span>
+        <span class="s2">return </span><span class="s3">[</span>
+            <span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                <span class="s1">x</span><span class="s3">, </span><span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">, </span><span class="s1">safe_mode</span><span class="s3">=</span><span class="s1">safe_mode</span>
+            <span class="s3">)</span>
+            <span class="s2">for </span><span class="s1">x </span><span class="s2">in </span><span class="s1">config</span>
+        <span class="s3">]</span>
+
+    <span class="s2">if </span><span class="s1">module_objects </span><span class="s2">is not None</span><span class="s3">:</span>
+        <span class="s1">inner_config</span><span class="s3">, </span><span class="s1">fn_module_name</span><span class="s3">, </span><span class="s1">has_custom_object </span><span class="s3">= </span><span class="s2">None</span><span class="s3">, </span><span class="s2">None</span><span class="s3">, </span><span class="s2">False</span>
+
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">config</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+            <span class="s2">if </span><span class="s5">&quot;config&quot; </span><span class="s2">in </span><span class="s1">config</span><span class="s3">:</span>
+                <span class="s1">inner_config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;config&quot;</span><span class="s3">]</span>
+            <span class="s2">if </span><span class="s5">&quot;class_name&quot; </span><span class="s2">not in </span><span class="s1">config</span><span class="s3">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                    <span class="s5">f&quot;Unknown `config` as a `dict`, config=</span><span class="s2">{</span><span class="s1">config</span><span class="s2">}</span><span class="s5">&quot;</span>
+                <span class="s3">)</span>
+
+            <span class="s4"># Check case where config is function or class and in custom objects</span>
+            <span class="s2">if </span><span class="s1">custom_objects </span><span class="s2">and </span><span class="s3">(</span>
+                <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] </span><span class="s2">in </span><span class="s1">custom_objects</span>
+                <span class="s2">or </span><span class="s1">config</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s5">&quot;registered_name&quot;</span><span class="s3">) </span><span class="s2">in </span><span class="s1">custom_objects</span>
+                <span class="s2">or </span><span class="s3">(</span>
+                    <span class="s1">isinstance</span><span class="s3">(</span><span class="s1">inner_config</span><span class="s3">, </span><span class="s1">str</span><span class="s3">)</span>
+                    <span class="s2">and </span><span class="s1">inner_config </span><span class="s2">in </span><span class="s1">custom_objects</span>
+                <span class="s3">)</span>
+            <span class="s3">):</span>
+                <span class="s1">has_custom_object </span><span class="s3">= </span><span class="s2">True</span>
+
+            <span class="s4"># Case where config is function but not in custom objects</span>
+            <span class="s2">elif </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] == </span><span class="s5">&quot;function&quot;</span><span class="s3">:</span>
+                <span class="s1">fn_module_name </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;module&quot;</span><span class="s3">]</span>
+                <span class="s2">if </span><span class="s1">fn_module_name </span><span class="s3">== </span><span class="s5">&quot;builtins&quot;</span><span class="s3">:</span>
+                    <span class="s1">config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;config&quot;</span><span class="s3">]</span>
+                <span class="s2">else</span><span class="s3">:</span>
+                    <span class="s1">config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;registered_name&quot;</span><span class="s3">]</span>
+
+            <span class="s4"># Case where config is class but not in custom objects</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s2">if </span><span class="s1">config</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s5">&quot;module&quot;</span><span class="s3">, </span><span class="s5">&quot;_&quot;</span><span class="s3">) </span><span class="s2">is None</span><span class="s3">:</span>
+                    <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+                        <span class="s5">&quot;Cannot deserialize object of type &quot;</span>
+                        <span class="s5">f&quot;`</span><span class="s2">{</span><span class="s1">config</span><span class="s3">[</span><span class="s5">'class_name'</span><span class="s3">]</span><span class="s2">}</span><span class="s5">`. If &quot;</span>
+                        <span class="s5">f&quot;`</span><span class="s2">{</span><span class="s1">config</span><span class="s3">[</span><span class="s5">'class_name'</span><span class="s3">]</span><span class="s2">}</span><span class="s5">` is a custom class, please &quot;</span>
+                        <span class="s5">&quot;register it using the &quot;</span>
+                        <span class="s5">&quot;`@keras.saving.register_keras_serializable()` &quot;</span>
+                        <span class="s5">&quot;decorator.&quot;</span>
+                    <span class="s3">)</span>
+                <span class="s1">config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">]</span>
+
+        <span class="s2">if not </span><span class="s1">has_custom_object</span><span class="s3">:</span>
+            <span class="s4"># Return if not found in either module objects or custom objects</span>
+            <span class="s2">if </span><span class="s1">config </span><span class="s2">not in </span><span class="s1">module_objects</span><span class="s3">:</span>
+                <span class="s4"># Object has already been deserialized</span>
+                <span class="s2">return </span><span class="s1">config</span>
+            <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">module_objects</span><span class="s3">[</span><span class="s1">config</span><span class="s3">], </span><span class="s1">types</span><span class="s3">.</span><span class="s1">FunctionType</span><span class="s3">):</span>
+                <span class="s2">return </span><span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                    <span class="s1">serialize_with_public_fn</span><span class="s3">(</span>
+                        <span class="s1">module_objects</span><span class="s3">[</span><span class="s1">config</span><span class="s3">], </span><span class="s1">config</span><span class="s3">, </span><span class="s1">fn_module_name</span>
+                    <span class="s3">),</span>
+                    <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+                <span class="s3">)</span>
+            <span class="s2">return </span><span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                <span class="s1">serialize_with_public_class</span><span class="s3">(</span>
+                    <span class="s1">module_objects</span><span class="s3">[</span><span class="s1">config</span><span class="s3">], </span><span class="s1">inner_config</span><span class="s3">=</span><span class="s1">inner_config</span>
+                <span class="s3">),</span>
+                <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+            <span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">config</span><span class="s3">, </span><span class="s1">PLAIN_TYPES</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">config</span>
+    <span class="s2">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">config</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+        <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span><span class="s5">f&quot;Could not parse config: </span><span class="s2">{</span><span class="s1">config</span><span class="s2">}</span><span class="s5">&quot;</span><span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s5">&quot;class_name&quot; </span><span class="s2">not in </span><span class="s1">config </span><span class="s2">or </span><span class="s5">&quot;config&quot; </span><span class="s2">not in </span><span class="s1">config</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s3">{</span>
+            <span class="s1">key</span><span class="s3">: </span><span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                <span class="s1">value</span><span class="s3">, </span><span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">, </span><span class="s1">safe_mode</span><span class="s3">=</span><span class="s1">safe_mode</span>
+            <span class="s3">)</span>
+            <span class="s2">for </span><span class="s1">key</span><span class="s3">, </span><span class="s1">value </span><span class="s2">in </span><span class="s1">config</span><span class="s3">.</span><span class="s1">items</span><span class="s3">()</span>
+        <span class="s3">}</span>
+
+    <span class="s1">class_name </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">]</span>
+    <span class="s1">inner_config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;config&quot;</span><span class="s3">] </span><span class="s2">or </span><span class="s3">{}</span>
+    <span class="s1">custom_objects </span><span class="s3">= </span><span class="s1">custom_objects </span><span class="s2">or </span><span class="s3">{}</span>
+
+    <span class="s4"># Special cases:</span>
+    <span class="s2">if </span><span class="s1">class_name </span><span class="s3">== </span><span class="s5">&quot;__keras_tensor__&quot;</span><span class="s3">:</span>
+        <span class="s1">obj </span><span class="s3">= </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">KerasTensor</span><span class="s3">(</span>
+            <span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;shape&quot;</span><span class="s3">], </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;dtype&quot;</span><span class="s3">]</span>
+        <span class="s3">)</span>
+        <span class="s1">obj</span><span class="s3">.</span><span class="s1">_pre_serialization_keras_history </span><span class="s3">= </span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;keras_history&quot;</span><span class="s3">]</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">if </span><span class="s1">class_name </span><span class="s3">== </span><span class="s5">&quot;__tensor__&quot;</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">convert_to_tensor</span><span class="s3">(</span>
+            <span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;value&quot;</span><span class="s3">], </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;dtype&quot;</span><span class="s3">]</span>
+        <span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">class_name </span><span class="s3">== </span><span class="s5">&quot;__numpy__&quot;</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">np</span><span class="s3">.</span><span class="s1">array</span><span class="s3">(</span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;value&quot;</span><span class="s3">], </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;dtype&quot;</span><span class="s3">])</span>
+    <span class="s2">if </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] == </span><span class="s5">&quot;__bytes__&quot;</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;value&quot;</span><span class="s3">].</span><span class="s1">encode</span><span class="s3">(</span><span class="s5">&quot;utf-8&quot;</span><span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] == </span><span class="s5">&quot;__ellipsis__&quot;</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">Ellipsis</span>
+    <span class="s2">if </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] == </span><span class="s5">&quot;__slice__&quot;</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">slice</span><span class="s3">(</span>
+            <span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                <span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;start&quot;</span><span class="s3">],</span>
+                <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+                <span class="s1">safe_mode</span><span class="s3">=</span><span class="s1">safe_mode</span><span class="s3">,</span>
+            <span class="s3">),</span>
+            <span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                <span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;stop&quot;</span><span class="s3">],</span>
+                <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+                <span class="s1">safe_mode</span><span class="s3">=</span><span class="s1">safe_mode</span><span class="s3">,</span>
+            <span class="s3">),</span>
+            <span class="s1">deserialize_keras_object</span><span class="s3">(</span>
+                <span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;step&quot;</span><span class="s3">],</span>
+                <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+                <span class="s1">safe_mode</span><span class="s3">=</span><span class="s1">safe_mode</span><span class="s3">,</span>
+            <span class="s3">),</span>
+        <span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] == </span><span class="s5">&quot;__lambda__&quot;</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">safe_mode</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;Requested the deserialization of a `lambda` object. &quot;</span>
+                <span class="s5">&quot;This carries a potential risk of arbitrary code execution &quot;</span>
+                <span class="s5">&quot;and thus it is disallowed by default. If you trust the &quot;</span>
+                <span class="s5">&quot;source of the saved model, you can pass `safe_mode=False` to &quot;</span>
+                <span class="s5">&quot;the loading function in order to allow `lambda` loading, &quot;</span>
+                <span class="s5">&quot;or call `keras.config.enable_unsafe_deserialization()`.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">python_utils</span><span class="s3">.</span><span class="s1">func_load</span><span class="s3">(</span><span class="s1">inner_config</span><span class="s3">[</span><span class="s5">&quot;value&quot;</span><span class="s3">])</span>
+    <span class="s2">if </span><span class="s1">tf </span><span class="s2">is not None and </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;class_name&quot;</span><span class="s3">] == </span><span class="s5">&quot;__typespec__&quot;</span><span class="s3">:</span>
+        <span class="s1">obj </span><span class="s3">= </span><span class="s1">_retrieve_class_or_fn</span><span class="s3">(</span>
+            <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;spec_name&quot;</span><span class="s3">],</span>
+            <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;registered_name&quot;</span><span class="s3">],</span>
+            <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;module&quot;</span><span class="s3">],</span>
+            <span class="s1">obj_type</span><span class="s3">=</span><span class="s5">&quot;class&quot;</span><span class="s3">,</span>
+            <span class="s1">full_config</span><span class="s3">=</span><span class="s1">config</span><span class="s3">,</span>
+            <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s4"># Conversion to TensorShape and DType</span>
+        <span class="s1">inner_config </span><span class="s3">= </span><span class="s1">map</span><span class="s3">(</span>
+            <span class="s2">lambda </span><span class="s1">x</span><span class="s3">: (</span>
+                <span class="s1">tf</span><span class="s3">.</span><span class="s1">TensorShape</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+                <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">x</span><span class="s3">, </span><span class="s1">list</span><span class="s3">)</span>
+                <span class="s2">else </span><span class="s3">(</span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">tf</span><span class="s3">, </span><span class="s1">x</span><span class="s3">) </span><span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">tf</span><span class="s3">.</span><span class="s1">dtypes</span><span class="s3">, </span><span class="s1">str</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)) </span><span class="s2">else </span><span class="s1">x</span><span class="s3">)</span>
+            <span class="s3">),</span>
+            <span class="s1">inner_config</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">obj</span><span class="s3">.</span><span class="s1">_deserialize</span><span class="s3">(</span><span class="s1">tuple</span><span class="s3">(</span><span class="s1">inner_config</span><span class="s3">))</span>
+
+    <span class="s4"># Below: classes and functions.</span>
+    <span class="s1">module </span><span class="s3">= </span><span class="s1">config</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s5">&quot;module&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+    <span class="s1">registered_name </span><span class="s3">= </span><span class="s1">config</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s5">&quot;registered_name&quot;</span><span class="s3">, </span><span class="s1">class_name</span><span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s1">class_name </span><span class="s3">== </span><span class="s5">&quot;function&quot;</span><span class="s3">:</span>
+        <span class="s1">fn_name </span><span class="s3">= </span><span class="s1">inner_config</span>
+        <span class="s2">return </span><span class="s1">_retrieve_class_or_fn</span><span class="s3">(</span>
+            <span class="s1">fn_name</span><span class="s3">,</span>
+            <span class="s1">registered_name</span><span class="s3">,</span>
+            <span class="s1">module</span><span class="s3">,</span>
+            <span class="s1">obj_type</span><span class="s3">=</span><span class="s5">&quot;function&quot;</span><span class="s3">,</span>
+            <span class="s1">full_config</span><span class="s3">=</span><span class="s1">config</span><span class="s3">,</span>
+            <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+    <span class="s4"># Below, handling of all classes.</span>
+    <span class="s4"># First, is it a shared object?</span>
+    <span class="s2">if </span><span class="s5">&quot;shared_object_id&quot; </span><span class="s2">in </span><span class="s1">config</span><span class="s3">:</span>
+        <span class="s1">obj </span><span class="s3">= </span><span class="s1">get_shared_object</span><span class="s3">(</span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;shared_object_id&quot;</span><span class="s3">])</span>
+        <span class="s2">if </span><span class="s1">obj </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s1">cls </span><span class="s3">= </span><span class="s1">_retrieve_class_or_fn</span><span class="s3">(</span>
+        <span class="s1">class_name</span><span class="s3">,</span>
+        <span class="s1">registered_name</span><span class="s3">,</span>
+        <span class="s1">module</span><span class="s3">,</span>
+        <span class="s1">obj_type</span><span class="s3">=</span><span class="s5">&quot;class&quot;</span><span class="s3">,</span>
+        <span class="s1">full_config</span><span class="s3">=</span><span class="s1">config</span><span class="s3">,</span>
+        <span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span><span class="s3">,</span>
+    <span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">types</span><span class="s3">.</span><span class="s1">FunctionType</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">cls</span>
+    <span class="s2">if not </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s5">&quot;from_config&quot;</span><span class="s3">):</span>
+        <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+            <span class="s5">f&quot;Unable to reconstruct an instance of '</span><span class="s2">{</span><span class="s1">class_name</span><span class="s2">}</span><span class="s5">' because &quot;</span>
+            <span class="s5">f&quot;the class is missing a `from_config()` method. &quot;</span>
+            <span class="s5">f&quot;Full object config: </span><span class="s2">{</span><span class="s1">config</span><span class="s2">}</span><span class="s5">&quot;</span>
+        <span class="s3">)</span>
+
+    <span class="s4"># Instantiate the class from its config inside a custom object scope</span>
+    <span class="s4"># so that we can catch any custom objects that the config refers to.</span>
+    <span class="s1">custom_obj_scope </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">CustomObjectScope</span><span class="s3">(</span><span class="s1">custom_objects</span><span class="s3">)</span>
+    <span class="s1">safe_mode_scope </span><span class="s3">= </span><span class="s1">SafeModeScope</span><span class="s3">(</span><span class="s1">safe_mode</span><span class="s3">)</span>
+    <span class="s2">with </span><span class="s1">custom_obj_scope</span><span class="s3">, </span><span class="s1">safe_mode_scope</span><span class="s3">:</span>
+        <span class="s2">try</span><span class="s3">:</span>
+            <span class="s1">instance </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">from_config</span><span class="s3">(</span><span class="s1">inner_config</span><span class="s3">)</span>
+        <span class="s2">except </span><span class="s1">TypeError </span><span class="s2">as </span><span class="s1">e</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+                <span class="s5">f&quot;</span><span class="s2">{</span><span class="s1">cls</span><span class="s2">} </span><span class="s5">could not be deserialized properly. Please&quot;</span>
+                <span class="s5">&quot; ensure that components that are Python object&quot;</span>
+                <span class="s5">&quot; instances (layers, models, etc.) returned by&quot;</span>
+                <span class="s5">&quot; `get_config()` are explicitly deserialized in the&quot;</span>
+                <span class="s5">&quot; model's `from_config()` method.&quot;</span>
+                <span class="s5">f&quot;</span><span class="s2">\n\n</span><span class="s5">config=</span><span class="s2">{</span><span class="s1">config</span><span class="s2">}</span><span class="s5">.</span><span class="s2">\n\n</span><span class="s5">Exception encountered: </span><span class="s2">{</span><span class="s1">e</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+        <span class="s1">build_config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s5">&quot;build_config&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">build_config </span><span class="s2">and not </span><span class="s1">instance</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+            <span class="s1">instance</span><span class="s3">.</span><span class="s1">build_from_config</span><span class="s3">(</span><span class="s1">build_config</span><span class="s3">)</span>
+            <span class="s1">instance</span><span class="s3">.</span><span class="s1">built </span><span class="s3">= </span><span class="s2">True</span>
+        <span class="s1">compile_config </span><span class="s3">= </span><span class="s1">config</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s5">&quot;compile_config&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">compile_config</span><span class="s3">:</span>
+            <span class="s1">instance</span><span class="s3">.</span><span class="s1">compile_from_config</span><span class="s3">(</span><span class="s1">compile_config</span><span class="s3">)</span>
+            <span class="s1">instance</span><span class="s3">.</span><span class="s1">compiled </span><span class="s3">= </span><span class="s2">True</span>
+
+    <span class="s2">if </span><span class="s5">&quot;shared_object_id&quot; </span><span class="s2">in </span><span class="s1">config</span><span class="s3">:</span>
+        <span class="s1">record_object_after_deserialization</span><span class="s3">(</span>
+            <span class="s1">instance</span><span class="s3">, </span><span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;shared_object_id&quot;</span><span class="s3">]</span>
+        <span class="s3">)</span>
+    <span class="s2">return </span><span class="s1">instance</span>
+
+
+<span class="s2">def </span><span class="s1">_retrieve_class_or_fn</span><span class="s3">(</span>
+    <span class="s1">name</span><span class="s3">, </span><span class="s1">registered_name</span><span class="s3">, </span><span class="s1">module</span><span class="s3">, </span><span class="s1">obj_type</span><span class="s3">, </span><span class="s1">full_config</span><span class="s3">, </span><span class="s1">custom_objects</span><span class="s3">=</span><span class="s2">None</span>
+<span class="s3">):</span>
+    <span class="s4"># If there is a custom object registered via</span>
+    <span class="s4"># `register_keras_serializable()`, that takes precedence.</span>
+    <span class="s2">if </span><span class="s1">obj_type </span><span class="s3">== </span><span class="s5">&quot;function&quot;</span><span class="s3">:</span>
+        <span class="s1">custom_obj </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_object</span><span class="s3">(</span>
+            <span class="s1">name</span><span class="s3">, </span><span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span>
+        <span class="s3">)</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s1">custom_obj </span><span class="s3">= </span><span class="s1">object_registration</span><span class="s3">.</span><span class="s1">get_registered_object</span><span class="s3">(</span>
+            <span class="s1">registered_name</span><span class="s3">, </span><span class="s1">custom_objects</span><span class="s3">=</span><span class="s1">custom_objects</span>
+        <span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">custom_obj </span><span class="s2">is not None</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">custom_obj</span>
+
+    <span class="s2">if </span><span class="s1">module</span><span class="s3">:</span>
+        <span class="s4"># If it's a Keras built-in object,</span>
+        <span class="s4"># we cannot always use direct import, because the exported</span>
+        <span class="s4"># module name might not match the package structure</span>
+        <span class="s4"># (e.g. experimental symbols).</span>
+        <span class="s2">if </span><span class="s1">module </span><span class="s3">== </span><span class="s5">&quot;keras&quot; </span><span class="s2">or </span><span class="s1">module</span><span class="s3">.</span><span class="s1">startswith</span><span class="s3">(</span><span class="s5">&quot;keras.&quot;</span><span class="s3">):</span>
+            <span class="s1">api_name </span><span class="s3">= </span><span class="s1">module </span><span class="s3">+ </span><span class="s5">&quot;.&quot; </span><span class="s3">+ </span><span class="s1">name</span>
+
+            <span class="s1">obj </span><span class="s3">= </span><span class="s1">api_export</span><span class="s3">.</span><span class="s1">get_symbol_from_name</span><span class="s3">(</span><span class="s1">api_name</span><span class="s3">)</span>
+            <span class="s2">if </span><span class="s1">obj </span><span class="s2">is not None</span><span class="s3">:</span>
+                <span class="s2">return </span><span class="s1">obj</span>
+
+        <span class="s4"># Configs of Keras built-in functions do not contain identifying</span>
+        <span class="s4"># information other than their name (e.g. 'acc' or 'tanh'). This special</span>
+        <span class="s4"># case searches the Keras modules that contain built-ins to retrieve</span>
+        <span class="s4"># the corresponding function from the identifying string.</span>
+        <span class="s2">if </span><span class="s1">obj_type </span><span class="s3">== </span><span class="s5">&quot;function&quot; </span><span class="s2">and </span><span class="s1">module </span><span class="s3">== </span><span class="s5">&quot;builtins&quot;</span><span class="s3">:</span>
+            <span class="s2">for </span><span class="s1">mod </span><span class="s2">in </span><span class="s1">BUILTIN_MODULES</span><span class="s3">:</span>
+                <span class="s1">obj </span><span class="s3">= </span><span class="s1">api_export</span><span class="s3">.</span><span class="s1">get_symbol_from_name</span><span class="s3">(</span>
+                    <span class="s5">&quot;keras.&quot; </span><span class="s3">+ </span><span class="s1">mod </span><span class="s3">+ </span><span class="s5">&quot;.&quot; </span><span class="s3">+ </span><span class="s1">name</span>
+                <span class="s3">)</span>
+                <span class="s2">if </span><span class="s1">obj </span><span class="s2">is not None</span><span class="s3">:</span>
+                    <span class="s2">return </span><span class="s1">obj</span>
+
+            <span class="s4"># Retrieval of registered custom function in a package</span>
+            <span class="s1">filtered_dict </span><span class="s3">= {</span>
+                <span class="s1">k</span><span class="s3">: </span><span class="s1">v</span>
+                <span class="s2">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">custom_objects</span><span class="s3">.</span><span class="s1">items</span><span class="s3">()</span>
+                <span class="s2">if </span><span class="s1">k</span><span class="s3">.</span><span class="s1">endswith</span><span class="s3">(</span><span class="s1">full_config</span><span class="s3">[</span><span class="s5">&quot;config&quot;</span><span class="s3">])</span>
+            <span class="s3">}</span>
+            <span class="s2">if </span><span class="s1">filtered_dict</span><span class="s3">:</span>
+                <span class="s2">return </span><span class="s1">next</span><span class="s3">(</span><span class="s1">iter</span><span class="s3">(</span><span class="s1">filtered_dict</span><span class="s3">.</span><span class="s1">values</span><span class="s3">()))</span>
+
+        <span class="s4"># Otherwise, attempt to retrieve the class object given the `module`</span>
+        <span class="s4"># and `class_name`. Import the module, find the class.</span>
+        <span class="s2">try</span><span class="s3">:</span>
+            <span class="s1">mod </span><span class="s3">= </span><span class="s1">importlib</span><span class="s3">.</span><span class="s1">import_module</span><span class="s3">(</span><span class="s1">module</span><span class="s3">)</span>
+        <span class="s2">except </span><span class="s1">ModuleNotFoundError</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+                <span class="s5">f&quot;Could not deserialize </span><span class="s2">{</span><span class="s1">obj_type</span><span class="s2">} </span><span class="s5">'</span><span class="s2">{</span><span class="s1">name</span><span class="s2">}</span><span class="s5">' because &quot;</span>
+                <span class="s5">f&quot;its parent module </span><span class="s2">{</span><span class="s1">module</span><span class="s2">} </span><span class="s5">cannot be imported. &quot;</span>
+                <span class="s5">f&quot;Full object config: </span><span class="s2">{</span><span class="s1">full_config</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+        <span class="s1">obj </span><span class="s3">= </span><span class="s1">vars</span><span class="s3">(</span><span class="s1">mod</span><span class="s3">).</span><span class="s1">get</span><span class="s3">(</span><span class="s1">name</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+
+        <span class="s4"># Special case for keras.metrics.metrics</span>
+        <span class="s2">if </span><span class="s1">obj </span><span class="s2">is None and </span><span class="s1">registered_name </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s1">obj </span><span class="s3">= </span><span class="s1">vars</span><span class="s3">(</span><span class="s1">mod</span><span class="s3">).</span><span class="s1">get</span><span class="s3">(</span><span class="s1">registered_name</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">obj </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">obj</span>
+
+    <span class="s2">raise </span><span class="s1">TypeError</span><span class="s3">(</span>
+        <span class="s5">f&quot;Could not locate </span><span class="s2">{</span><span class="s1">obj_type</span><span class="s2">} </span><span class="s5">'</span><span class="s2">{</span><span class="s1">name</span><span class="s2">}</span><span class="s5">'. &quot;</span>
+        <span class="s5">&quot;Make sure custom classes are decorated with &quot;</span>
+        <span class="s5">&quot;`@keras.saving.register_keras_serializable()`. &quot;</span>
+        <span class="s5">f&quot;Full object config: </span><span class="s2">{</span><span class="s1">full_config</span><span class="s2">}</span><span class="s5">&quot;</span>
+    <span class="s3">)</span>
+</pre>
+</body>
+</html>

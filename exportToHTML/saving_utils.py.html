@@ -1,0 +1,283 @@
+<html>
+<head>
+<title>saving_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #7a7e85;}
+.s4 { color: #6aab73;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+saving_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+<span class="s0">import </span><span class="s1">threading</span>
+
+<span class="s0">from </span><span class="s1">absl </span><span class="s0">import </span><span class="s1">logging</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">layers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">losses</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">metrics </span><span class="s0">as </span><span class="s1">metrics_module</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">models</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">optimizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">object_registration</span>
+
+<span class="s1">MODULE_OBJECTS </span><span class="s2">= </span><span class="s1">threading</span><span class="s2">.</span><span class="s1">local</span><span class="s2">()</span>
+
+<span class="s3"># Legacy lambda arguments not found in Keras 3</span>
+<span class="s1">LAMBDA_DEP_ARGS </span><span class="s2">= (</span>
+    <span class="s4">&quot;module&quot;</span><span class="s2">,</span>
+    <span class="s4">&quot;function_type&quot;</span><span class="s2">,</span>
+    <span class="s4">&quot;output_shape_type&quot;</span><span class="s2">,</span>
+    <span class="s4">&quot;output_shape_module&quot;</span><span class="s2">,</span>
+<span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">model_from_config</span><span class="s2">(</span><span class="s1">config</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Instantiates a Keras model from its config. 
+ 
+    Args: 
+        config: Configuration dictionary. 
+        custom_objects: Optional dictionary mapping names 
+            (strings) to custom classes or functions to be 
+            considered during deserialization. 
+ 
+    Returns: 
+        A Keras model instance (uncompiled). 
+ 
+    Raises: 
+        TypeError: if `config` is not a dictionary. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+            <span class="s4">&quot;`model_from_config` expects a dictionary, not a list. &quot;</span>
+            <span class="s4">f&quot;Received: config=</span><span class="s0">{</span><span class="s1">config</span><span class="s0">}</span><span class="s4">. Did you meant to use &quot;</span>
+            <span class="s4">&quot;`Sequential.from_config(config)`?&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">global </span><span class="s1">MODULE_OBJECTS</span>
+
+    <span class="s0">if not </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">MODULE_OBJECTS</span><span class="s2">, </span><span class="s4">&quot;ALL_OBJECTS&quot;</span><span class="s2">):</span>
+        <span class="s1">MODULE_OBJECTS</span><span class="s2">.</span><span class="s1">ALL_OBJECTS </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">__dict__</span>
+        <span class="s1">MODULE_OBJECTS</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span><span class="s2">[</span><span class="s4">&quot;InputLayer&quot;</span><span class="s2">] = </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">InputLayer</span>
+        <span class="s1">MODULE_OBJECTS</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span><span class="s2">[</span><span class="s4">&quot;Functional&quot;</span><span class="s2">] = </span><span class="s1">models</span><span class="s2">.</span><span class="s1">Functional</span>
+        <span class="s1">MODULE_OBJECTS</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span><span class="s2">[</span><span class="s4">&quot;Model&quot;</span><span class="s2">] = </span><span class="s1">models</span><span class="s2">.</span><span class="s1">Model</span>
+        <span class="s1">MODULE_OBJECTS</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span><span class="s2">[</span><span class="s4">&quot;Sequential&quot;</span><span class="s2">] = </span><span class="s1">models</span><span class="s2">.</span><span class="s1">Sequential</span>
+
+    <span class="s1">batch_input_shape </span><span class="s2">= </span><span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">].</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">&quot;batch_input_shape&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">batch_input_shape </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;class_name&quot;</span><span class="s2">] == </span><span class="s4">&quot;InputLayer&quot;</span><span class="s2">:</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;batch_shape&quot;</span><span class="s2">] = </span><span class="s1">batch_input_shape</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;input_shape&quot;</span><span class="s2">] = </span><span class="s1">batch_input_shape</span>
+
+    <span class="s1">axis </span><span class="s2">= </span><span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">].</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">&quot;axis&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">axis </span><span class="s0">is not None and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">, </span><span class="s1">list</span><span class="s2">) </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">) == </span><span class="s6">1</span><span class="s2">:</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;axis&quot;</span><span class="s2">] = </span><span class="s1">int</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">[</span><span class="s6">0</span><span class="s2">])</span>
+
+    <span class="s3"># Handle backwards compatibility for Keras lambdas</span>
+    <span class="s0">if </span><span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;class_name&quot;</span><span class="s2">] == </span><span class="s4">&quot;Lambda&quot;</span><span class="s2">:</span>
+        <span class="s0">for </span><span class="s1">dep_arg </span><span class="s0">in </span><span class="s1">LAMBDA_DEP_ARGS</span><span class="s2">:</span>
+            <span class="s1">_ </span><span class="s2">= </span><span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">].</span><span class="s1">pop</span><span class="s2">(</span><span class="s1">dep_arg</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s1">function_config </span><span class="s2">= </span><span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;function&quot;</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">function_config</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+            <span class="s1">function_dict </span><span class="s2">= {</span><span class="s4">&quot;class_name&quot;</span><span class="s2">: </span><span class="s4">&quot;__lambda__&quot;</span><span class="s2">, </span><span class="s4">&quot;config&quot;</span><span class="s2">: {}}</span>
+            <span class="s1">function_dict</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;code&quot;</span><span class="s2">] = </span><span class="s1">function_config</span><span class="s2">[</span><span class="s6">0</span><span class="s2">]</span>
+            <span class="s1">function_dict</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;defaults&quot;</span><span class="s2">] = </span><span class="s1">function_config</span><span class="s2">[</span><span class="s6">1</span><span class="s2">]</span>
+            <span class="s1">function_dict</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;closure&quot;</span><span class="s2">] = </span><span class="s1">function_config</span><span class="s2">[</span><span class="s6">2</span><span class="s2">]</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;function&quot;</span><span class="s2">] = </span><span class="s1">function_dict</span>
+
+    <span class="s3"># TODO(nkovela): Swap find and replace args during Keras 3.0 release</span>
+    <span class="s3"># Replace keras refs with keras</span>
+    <span class="s1">config </span><span class="s2">= </span><span class="s1">_find_replace_nested_dict</span><span class="s2">(</span><span class="s1">config</span><span class="s2">, </span><span class="s4">&quot;keras.&quot;</span><span class="s2">, </span><span class="s4">&quot;keras.&quot;</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">serialization</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+        <span class="s1">config</span><span class="s2">,</span>
+        <span class="s1">module_objects</span><span class="s2">=</span><span class="s1">MODULE_OBJECTS</span><span class="s2">.</span><span class="s1">ALL_OBJECTS</span><span class="s2">,</span>
+        <span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span><span class="s2">,</span>
+        <span class="s1">printable_module_name</span><span class="s2">=</span><span class="s4">&quot;layer&quot;</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">model_metadata</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">include_optimizer</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">require_config</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Returns a dictionary containing the model metadata.&quot;&quot;&quot;</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">__version__ </span><span class="s0">as </span><span class="s1">keras_version</span>
+
+    <span class="s1">model_config </span><span class="s2">= {</span><span class="s4">&quot;class_name&quot;</span><span class="s2">: </span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">}</span>
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s1">model_config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">] = </span><span class="s1">model</span><span class="s2">.</span><span class="s1">get_config</span><span class="s2">()</span>
+    <span class="s0">except </span><span class="s1">NotImplementedError </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">require_config</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">e</span>
+
+    <span class="s1">metadata </span><span class="s2">= </span><span class="s1">dict</span><span class="s2">(</span>
+        <span class="s1">keras_version</span><span class="s2">=</span><span class="s1">str</span><span class="s2">(</span><span class="s1">keras_version</span><span class="s2">),</span>
+        <span class="s1">backend</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">(),</span>
+        <span class="s1">model_config</span><span class="s2">=</span><span class="s1">model_config</span><span class="s2">,</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s4">&quot;optimizer&quot;</span><span class="s2">, </span><span class="s0">False</span><span class="s2">) </span><span class="s0">and </span><span class="s1">include_optimizer</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">model</span><span class="s2">.</span><span class="s1">compiled</span><span class="s2">:</span>
+            <span class="s1">training_config </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_compile_config</span><span class="s2">.</span><span class="s1">config</span>
+            <span class="s1">training_config</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">&quot;optimizer&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)  </span><span class="s3"># Handled separately.</span>
+            <span class="s1">metadata</span><span class="s2">[</span><span class="s4">&quot;training_config&quot;</span><span class="s2">] = </span><span class="s1">_serialize_nested_config</span><span class="s2">(</span>
+                <span class="s1">training_config</span>
+            <span class="s2">)</span>
+            <span class="s1">optimizer_config </span><span class="s2">= {</span>
+                <span class="s4">&quot;class_name&quot;</span><span class="s2">: </span><span class="s1">object_registration</span><span class="s2">.</span><span class="s1">get_registered_name</span><span class="s2">(</span>
+                    <span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">__class__</span>
+                <span class="s2">),</span>
+                <span class="s4">&quot;config&quot;</span><span class="s2">: </span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">get_config</span><span class="s2">(),</span>
+            <span class="s2">}</span>
+            <span class="s1">metadata</span><span class="s2">[</span><span class="s4">&quot;training_config&quot;</span><span class="s2">][</span><span class="s4">&quot;optimizer_config&quot;</span><span class="s2">] = </span><span class="s1">optimizer_config</span>
+    <span class="s0">return </span><span class="s1">metadata</span>
+
+
+<span class="s0">def </span><span class="s1">compile_args_from_training_config</span><span class="s2">(</span><span class="s1">training_config</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Return model.compile arguments from training config.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">custom_objects </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">custom_objects </span><span class="s2">= {}</span>
+
+    <span class="s0">with </span><span class="s1">object_registration</span><span class="s2">.</span><span class="s1">CustomObjectScope</span><span class="s2">(</span><span class="s1">custom_objects</span><span class="s2">):</span>
+        <span class="s1">optimizer_config </span><span class="s2">= </span><span class="s1">training_config</span><span class="s2">[</span><span class="s4">&quot;optimizer_config&quot;</span><span class="s2">]</span>
+        <span class="s1">optimizer </span><span class="s2">= </span><span class="s1">optimizers</span><span class="s2">.</span><span class="s1">deserialize</span><span class="s2">(</span><span class="s1">optimizer_config</span><span class="s2">)</span>
+        <span class="s3"># Ensure backwards compatibility for optimizers in legacy H5 files</span>
+        <span class="s1">optimizer </span><span class="s2">= </span><span class="s1">_resolve_compile_arguments_compat</span><span class="s2">(</span>
+            <span class="s1">optimizer</span><span class="s2">, </span><span class="s1">optimizer_config</span><span class="s2">, </span><span class="s1">optimizers</span>
+        <span class="s2">)</span>
+
+        <span class="s3"># Recover losses.</span>
+        <span class="s1">loss </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">loss_config </span><span class="s2">= </span><span class="s1">training_config</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s4">&quot;loss&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">loss_config </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">loss </span><span class="s2">= </span><span class="s1">_deserialize_nested_config</span><span class="s2">(</span><span class="s1">losses</span><span class="s2">.</span><span class="s1">deserialize</span><span class="s2">, </span><span class="s1">loss_config</span><span class="s2">)</span>
+            <span class="s3"># Ensure backwards compatibility for losses in legacy H5 files</span>
+            <span class="s1">loss </span><span class="s2">= </span><span class="s1">_resolve_compile_arguments_compat</span><span class="s2">(</span><span class="s1">loss</span><span class="s2">, </span><span class="s1">loss_config</span><span class="s2">, </span><span class="s1">losses</span><span class="s2">)</span>
+
+        <span class="s3"># Recover metrics.</span>
+        <span class="s1">metrics </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">metrics_config </span><span class="s2">= </span><span class="s1">training_config</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s4">&quot;metrics&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">metrics_config </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">metrics </span><span class="s2">= </span><span class="s1">_deserialize_nested_config</span><span class="s2">(</span>
+                <span class="s1">_deserialize_metric</span><span class="s2">, </span><span class="s1">metrics_config</span>
+            <span class="s2">)</span>
+            <span class="s3"># Ensure backwards compatibility for metrics in legacy H5 files</span>
+            <span class="s1">metrics </span><span class="s2">= </span><span class="s1">_resolve_compile_arguments_compat</span><span class="s2">(</span>
+                <span class="s1">metrics</span><span class="s2">, </span><span class="s1">metrics_config</span><span class="s2">, </span><span class="s1">metrics_module</span>
+            <span class="s2">)</span>
+
+        <span class="s3"># Recover weighted metrics.</span>
+        <span class="s1">weighted_metrics </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">weighted_metrics_config </span><span class="s2">= </span><span class="s1">training_config</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s4">&quot;weighted_metrics&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">weighted_metrics_config </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">weighted_metrics </span><span class="s2">= </span><span class="s1">_deserialize_nested_config</span><span class="s2">(</span>
+                <span class="s1">_deserialize_metric</span><span class="s2">, </span><span class="s1">weighted_metrics_config</span>
+            <span class="s2">)</span>
+
+        <span class="s1">loss_weights </span><span class="s2">= </span><span class="s1">training_config</span><span class="s2">[</span><span class="s4">&quot;loss_weights&quot;</span><span class="s2">]</span>
+
+    <span class="s0">return </span><span class="s1">dict</span><span class="s2">(</span>
+        <span class="s1">optimizer</span><span class="s2">=</span><span class="s1">optimizer</span><span class="s2">,</span>
+        <span class="s1">loss</span><span class="s2">=</span><span class="s1">loss</span><span class="s2">,</span>
+        <span class="s1">metrics</span><span class="s2">=</span><span class="s1">metrics</span><span class="s2">,</span>
+        <span class="s1">weighted_metrics</span><span class="s2">=</span><span class="s1">weighted_metrics</span><span class="s2">,</span>
+        <span class="s1">loss_weights</span><span class="s2">=</span><span class="s1">loss_weights</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_serialize_nested_config</span><span class="s2">(</span><span class="s1">config</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Serialized a nested structure of Keras objects.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">_serialize_fn</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">callable</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">serialization</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">obj</span>
+
+    <span class="s0">return </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">_serialize_fn</span><span class="s2">, </span><span class="s1">config</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_deserialize_nested_config</span><span class="s2">(</span><span class="s1">deserialize_fn</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Deserializes arbitrary Keras `config` using `deserialize_fn`.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">_is_single_object</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">) </span><span class="s0">and </span><span class="s4">&quot;class_name&quot; </span><span class="s0">in </span><span class="s1">obj</span><span class="s2">:</span>
+            <span class="s0">return True  </span><span class="s3"># Serialized Keras object.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s0">return True  </span><span class="s3"># Serialized function or string.</span>
+        <span class="s0">return False</span>
+
+    <span class="s0">if </span><span class="s1">config </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">return None</span>
+    <span class="s0">if </span><span class="s1">_is_single_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">deserialize_fn</span><span class="s2">(</span><span class="s1">config</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s1">k</span><span class="s2">: </span><span class="s1">_deserialize_nested_config</span><span class="s2">(</span><span class="s1">deserialize_fn</span><span class="s2">, </span><span class="s1">v</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()</span>
+        <span class="s2">}</span>
+    <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">, (</span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">)):</span>
+        <span class="s0">return </span><span class="s2">[</span>
+            <span class="s1">_deserialize_nested_config</span><span class="s2">(</span><span class="s1">deserialize_fn</span><span class="s2">, </span><span class="s1">obj</span><span class="s2">) </span><span class="s0">for </span><span class="s1">obj </span><span class="s0">in </span><span class="s1">config</span>
+        <span class="s2">]</span>
+
+    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+        <span class="s4">&quot;Saved configuration not understood. Configuration should be a &quot;</span>
+        <span class="s4">f&quot;dictionary, string, tuple or list. Received: config=</span><span class="s0">{</span><span class="s1">config</span><span class="s0">}</span><span class="s4">.&quot;</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_deserialize_metric</span><span class="s2">(</span><span class="s1">metric_config</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Deserialize metrics, leaving special strings untouched.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">metric_config </span><span class="s0">in </span><span class="s2">[</span><span class="s4">&quot;accuracy&quot;</span><span class="s2">, </span><span class="s4">&quot;acc&quot;</span><span class="s2">, </span><span class="s4">&quot;crossentropy&quot;</span><span class="s2">, </span><span class="s4">&quot;ce&quot;</span><span class="s2">]:</span>
+        <span class="s3"># Do not deserialize accuracy and cross-entropy strings as we have</span>
+        <span class="s3"># special case handling for these in compile, based on model output</span>
+        <span class="s3"># shape.</span>
+        <span class="s0">return </span><span class="s1">metric_config</span>
+    <span class="s0">return </span><span class="s1">metrics_module</span><span class="s2">.</span><span class="s1">deserialize</span><span class="s2">(</span><span class="s1">metric_config</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_find_replace_nested_dict</span><span class="s2">(</span><span class="s1">config</span><span class="s2">, </span><span class="s1">find</span><span class="s2">, </span><span class="s1">replace</span><span class="s2">):</span>
+    <span class="s1">dict_str </span><span class="s2">= </span><span class="s1">json</span><span class="s2">.</span><span class="s1">dumps</span><span class="s2">(</span><span class="s1">config</span><span class="s2">)</span>
+    <span class="s1">dict_str </span><span class="s2">= </span><span class="s1">dict_str</span><span class="s2">.</span><span class="s1">replace</span><span class="s2">(</span><span class="s1">find</span><span class="s2">, </span><span class="s1">replace</span><span class="s2">)</span>
+    <span class="s1">config </span><span class="s2">= </span><span class="s1">json</span><span class="s2">.</span><span class="s1">loads</span><span class="s2">(</span><span class="s1">dict_str</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">config</span>
+
+
+<span class="s0">def </span><span class="s1">_resolve_compile_arguments_compat</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">, </span><span class="s1">obj_config</span><span class="s2">, </span><span class="s1">module</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Resolves backwards compatibility issues with training config arguments. 
+ 
+    This helper function accepts built-in Keras modules such as optimizers, 
+    losses, and metrics to ensure an object being deserialized is compatible 
+    with Keras 3 built-ins. For legacy H5 files saved within Keras 3, 
+    this does nothing. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">obj</span><span class="s2">, </span><span class="s1">str</span><span class="s2">) </span><span class="s0">and </span><span class="s1">obj </span><span class="s0">not in </span><span class="s1">module</span><span class="s2">.</span><span class="s1">ALL_OBJECTS_DICT</span><span class="s2">:</span>
+        <span class="s1">obj </span><span class="s2">= </span><span class="s1">module</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">obj_config</span><span class="s2">[</span><span class="s4">&quot;config&quot;</span><span class="s2">][</span><span class="s4">&quot;name&quot;</span><span class="s2">])</span>
+    <span class="s0">return </span><span class="s1">obj</span>
+
+
+<span class="s0">def </span><span class="s1">try_build_compiled_arguments</span><span class="s2">(</span><span class="s1">model</span><span class="s2">):</span>
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s0">if not </span><span class="s1">model</span><span class="s2">.</span><span class="s1">compiled_loss</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">compiled_loss</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">outputs</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">model</span><span class="s2">.</span><span class="s1">compiled_metrics</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">compiled_metrics</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">model</span><span class="s2">.</span><span class="s1">outputs</span><span class="s2">)</span>
+    <span class="s0">except</span><span class="s2">:</span>
+        <span class="s1">logging</span><span class="s2">.</span><span class="s1">warning</span><span class="s2">(</span>
+            <span class="s4">&quot;Compiled the loaded model, but the compiled metrics have &quot;</span>
+            <span class="s4">&quot;yet to be built. `model.compile_metrics` will be empty &quot;</span>
+            <span class="s4">&quot;until you train or evaluate the model.&quot;</span>
+        <span class="s2">)</span>
+</pre>
+</body>
+</html>

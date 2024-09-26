@@ -1,0 +1,994 @@
+<html>
+<head>
+<title>rnn.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #2aacb8;}
+.s5 { color: #7a7e85;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+rnn.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+
+
+<span class="s0">def </span><span class="s1">rnn</span><span class="s2">(</span>
+    <span class="s1">step_function</span><span class="s2">,</span>
+    <span class="s1">inputs</span><span class="s2">,</span>
+    <span class="s1">initial_states</span><span class="s2">,</span>
+    <span class="s1">go_backwards</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">constants</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">unroll</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">input_length</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">time_major</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">zero_output_for_mask</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">return_all_outputs</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Iterates over the time dimension of a tensor. 
+ 
+    Args: 
+        step_function: RNN step function. 
+            Args; 
+                `input`; Tensor with shape `(samples, ...)` (no time dimension), 
+                    representing input for the batch of samples at a certain 
+                    time step. 
+                `states`; List of tensors. 
+            Returns; 
+                `output`; Tensor with shape `(samples, output_dim)` 
+                    (no time dimension). 
+                `new_states`; List of tensors, same length and shapes 
+                    as 'states'. The first state in the list must be the 
+                    output tensor at the previous timestep. 
+        inputs: Tensor of temporal data of shape `(samples, time, ...)` 
+            (at least 3D), or nested tensors, and each of which has shape 
+            `(samples, time, ...)`. 
+        initial_states: Tensor with shape `(samples, state_size)` 
+            (no time dimension), containing the initial values for the states 
+            used in the step function. In the case that state_size is in a 
+            nested shape, the shape of initial_states will also follow the 
+            nested structure. 
+        go_backwards: Boolean. If `True`, do the iteration over the time 
+            dimension in reverse order and return the reversed sequence. 
+        mask: Binary tensor with shape `(samples, time, 1)`, 
+            with a zero for every element that is masked. 
+        constants: List of constant values passed at each step. 
+        unroll: Whether to unroll the RNN or to use a symbolic `while_loop`. 
+        input_length: An integer or a 1-D Tensor, depending on whether 
+            the time dimension is fixed-length or not. In case of variable 
+            length input, it is used for masking in case there's no mask 
+            specified. 
+        time_major: Boolean. If `True`, the inputs and outputs will be in shape 
+            `(timesteps, batch, ...)`, whereas in the False case, it will be 
+            `(batch, timesteps, ...)`. Using `time_major = True` is a bit more 
+            efficient because it avoids transposes at the beginning and end of 
+            the RNN calculation. However, most TensorFlow data is batch-major, 
+            so by default this function accepts input and emits output in 
+            batch-major form. 
+        zero_output_for_mask: Boolean. If `True`, the output for masked timestep 
+            will be zeros, whereas in the `False` case, output from previous 
+            timestep is returned. 
+        return_all_outputs: Boolean. If `True`, return the recurrent outputs for 
+            all timesteps in the sequence. If `False`, only return the output 
+            for the last timestep (which consumes less memory). 
+ 
+    Returns: 
+        A tuple, `(last_output, outputs, new_states)`. 
+            - `last_output`: the latest output of the rnn, 
+                with shape `(samples, ...)`. 
+            - `outputs`: 
+                - If `return_all_outputs=True`: a tensor with shape 
+                  `(samples, time, ...)` where each entry `outputs[s, t]` is the 
+                  output of the step function at time `t` for sample `s` 
+                - Else, a tensor equal to `last_output` with shape 
+                  `(samples, 1, ...)` 
+            - `new_states`: list of tensors, latest states returned by 
+                the step function, of shape `(samples, ...)`. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">input_length </span><span class="s2">= </span><span class="s1">input_length </span><span class="s0">or </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">swap_batch_timestep</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">):</span>
+        <span class="s5"># Swap the batch and timestep dim for the incoming tensor.</span>
+        <span class="s1">axes </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)))</span>
+        <span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">] = </span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span>
+        <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">time_major</span><span class="s2">:</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">swap_batch_timestep</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">)</span>
+
+    <span class="s1">flattened_inputs </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+    <span class="s1">time_steps </span><span class="s2">= </span><span class="s1">flattened_inputs</span><span class="s2">[</span><span class="s4">0</span><span class="s2">].</span><span class="s1">shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+    <span class="s1">time_steps_t </span><span class="s2">= (</span>
+        <span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">flattened_inputs</span><span class="s2">[</span><span class="s4">0</span><span class="s2">])[</span><span class="s4">0</span><span class="s2">] </span><span class="s0">if </span><span class="s1">time_steps </span><span class="s0">is None else </span><span class="s1">time_steps</span>
+    <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">input_ </span><span class="s0">in </span><span class="s1">flattened_inputs</span><span class="s2">:</span>
+        <span class="s1">input_</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">with_rank_at_least</span><span class="s2">(</span><span class="s4">3</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">dtype </span><span class="s2">!= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">bool</span><span class="s2">:</span>
+            <span class="s1">mask </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">bool</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s4">2</span><span class="s2">:</span>
+            <span class="s1">mask </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=-</span><span class="s4">1</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">time_major</span><span class="s2">:</span>
+            <span class="s1">mask </span><span class="s2">= </span><span class="s1">swap_batch_timestep</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">constants </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">constants </span><span class="s2">= []</span>
+
+    <span class="s5"># tf.where needs its condition tensor to be the same shape as its two</span>
+    <span class="s5"># result tensors, but in our case the condition (mask) tensor is</span>
+    <span class="s5"># (nsamples, 1), and inputs are (nsamples, ndimensions) or even more.</span>
+    <span class="s5"># So we need to broadcast the mask to match the shape of inputs.</span>
+    <span class="s5"># That's what the tile call does, it just repeats the mask along its</span>
+    <span class="s5"># second dimension n times.</span>
+    <span class="s0">def </span><span class="s1">_expand_mask</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">input_t</span><span class="s2">, </span><span class="s1">fixed_dim</span><span class="s2">=</span><span class="s4">1</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">is_nested</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s6">f&quot;mask_t is expected to be tensor, but got </span><span class="s0">{</span><span class="s1">mask_t</span><span class="s0">}</span><span class="s6">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">is_nested</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s6">f&quot;input_t is expected to be tensor, but got </span><span class="s0">{</span><span class="s1">input_t</span><span class="s0">}</span><span class="s6">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">rank_diff </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) - </span><span class="s1">len</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">rank_diff</span><span class="s2">):</span>
+            <span class="s1">mask_t </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, -</span><span class="s4">1</span><span class="s2">)</span>
+        <span class="s1">multiples </span><span class="s2">= [</span><span class="s4">1</span><span class="s2">] * </span><span class="s1">fixed_dim </span><span class="s2">+ </span><span class="s1">input_t</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">as_list</span><span class="s2">()[</span><span class="s1">fixed_dim</span><span class="s2">:]</span>
+        <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">tile</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">multiples</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">unroll</span><span class="s2">:</span>
+        <span class="s0">if not </span><span class="s1">time_steps</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s6">&quot;Unrolling requires a fixed number of timesteps.&quot;</span><span class="s2">)</span>
+        <span class="s1">states </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">initial_states</span><span class="s2">)</span>
+        <span class="s1">successive_states </span><span class="s2">= []</span>
+        <span class="s1">successive_outputs </span><span class="s2">= []</span>
+
+        <span class="s5"># Process the input tensors. The input tensor need to be split on the</span>
+        <span class="s5"># time_step dim, and reverse if go_backwards is True. In the case of</span>
+        <span class="s5"># nested input, the input is flattened and then transformed</span>
+        <span class="s5"># individually.  The result of this will be a tuple of lists, each of</span>
+        <span class="s5"># the item in tuple is list of the tensor with shape (batch, feature)</span>
+        <span class="s0">def </span><span class="s1">_process_single_input_t</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">):</span>
+            <span class="s1">input_t </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">unstack</span><span class="s2">(</span><span class="s1">input_t</span><span class="s2">)  </span><span class="s5"># unstack for time_step dim</span>
+            <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+                <span class="s1">input_t</span><span class="s2">.</span><span class="s1">reverse</span><span class="s2">()</span>
+            <span class="s0">return </span><span class="s1">input_t</span>
+
+        <span class="s0">if </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">is_nested</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">):</span>
+            <span class="s1">processed_input </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+                <span class="s1">_process_single_input_t</span><span class="s2">, </span><span class="s1">inputs</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">processed_input </span><span class="s2">= (</span><span class="s1">_process_single_input_t</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">),)</span>
+
+        <span class="s0">def </span><span class="s1">_get_input_tensor</span><span class="s2">(</span><span class="s1">time</span><span class="s2">):</span>
+            <span class="s1">inp </span><span class="s2">= [</span><span class="s1">t_</span><span class="s2">[</span><span class="s1">time</span><span class="s2">] </span><span class="s0">for </span><span class="s1">t_ </span><span class="s0">in </span><span class="s1">processed_input</span><span class="s2">]</span>
+            <span class="s0">return </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">inp</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">mask_list </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">unstack</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+                <span class="s1">mask_list</span><span class="s2">.</span><span class="s1">reverse</span><span class="s2">()</span>
+
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">time_steps</span><span class="s2">):</span>
+                <span class="s1">inp </span><span class="s2">= </span><span class="s1">_get_input_tensor</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)</span>
+                <span class="s1">mask_t </span><span class="s2">= </span><span class="s1">mask_list</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+                <span class="s1">output</span><span class="s2">, </span><span class="s1">new_states </span><span class="s2">= </span><span class="s1">step_function</span><span class="s2">(</span>
+                    <span class="s1">inp</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">states</span><span class="s2">) + </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">constants</span><span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s1">tiled_mask_t </span><span class="s2">= </span><span class="s1">_expand_mask</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">output</span><span class="s2">)</span>
+
+                <span class="s0">if not </span><span class="s1">successive_outputs</span><span class="s2">:</span>
+                    <span class="s1">prev_output </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">zeros_like</span><span class="s2">(</span><span class="s1">output</span><span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">prev_output </span><span class="s2">= </span><span class="s1">successive_outputs</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+
+                <span class="s1">output </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">tiled_mask_t</span><span class="s2">, </span><span class="s1">output</span><span class="s2">, </span><span class="s1">prev_output</span><span class="s2">)</span>
+
+                <span class="s1">flat_states </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">states</span><span class="s2">)</span>
+                <span class="s1">flat_new_states </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">new_states</span><span class="s2">)</span>
+                <span class="s1">tiled_mask_t </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">_expand_mask</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">s</span><span class="s2">) </span><span class="s0">for </span><span class="s1">s </span><span class="s0">in </span><span class="s1">flat_states</span>
+                <span class="s2">)</span>
+                <span class="s1">flat_final_states </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">m</span><span class="s2">, </span><span class="s1">s</span><span class="s2">, </span><span class="s1">ps</span><span class="s2">)</span>
+                    <span class="s0">for </span><span class="s1">m</span><span class="s2">, </span><span class="s1">s</span><span class="s2">, </span><span class="s1">ps </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span>
+                        <span class="s1">tiled_mask_t</span><span class="s2">, </span><span class="s1">flat_new_states</span><span class="s2">, </span><span class="s1">flat_states</span>
+                    <span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s1">states </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">states</span><span class="s2">, </span><span class="s1">flat_final_states</span><span class="s2">)</span>
+
+                <span class="s0">if </span><span class="s1">return_all_outputs</span><span class="s2">:</span>
+                    <span class="s1">successive_outputs</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">output</span><span class="s2">)</span>
+                    <span class="s1">successive_states</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">states</span><span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">successive_outputs </span><span class="s2">= [</span><span class="s1">output</span><span class="s2">]</span>
+                    <span class="s1">successive_states </span><span class="s2">= [</span><span class="s1">states</span><span class="s2">]</span>
+            <span class="s1">last_output </span><span class="s2">= </span><span class="s1">successive_outputs</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">new_states </span><span class="s2">= </span><span class="s1">successive_states</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">(</span><span class="s1">successive_outputs</span><span class="s2">)</span>
+
+            <span class="s0">if </span><span class="s1">zero_output_for_mask</span><span class="s2">:</span>
+                <span class="s1">last_output </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span>
+                    <span class="s1">_expand_mask</span><span class="s2">(</span><span class="s1">mask_list</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">], </span><span class="s1">last_output</span><span class="s2">),</span>
+                    <span class="s1">last_output</span><span class="s2">,</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">zeros_like</span><span class="s2">(</span><span class="s1">last_output</span><span class="s2">),</span>
+                <span class="s2">)</span>
+                <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span>
+                    <span class="s1">_expand_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">fixed_dim</span><span class="s2">=</span><span class="s4">2</span><span class="s2">),</span>
+                    <span class="s1">outputs</span><span class="s2">,</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">zeros_like</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">),</span>
+                <span class="s2">)</span>
+
+        <span class="s0">else</span><span class="s2">:  </span><span class="s5"># mask is None</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">time_steps</span><span class="s2">):</span>
+                <span class="s1">inp </span><span class="s2">= </span><span class="s1">_get_input_tensor</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)</span>
+                <span class="s1">output</span><span class="s2">, </span><span class="s1">states </span><span class="s2">= </span><span class="s1">step_function</span><span class="s2">(</span>
+                    <span class="s1">inp</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">states</span><span class="s2">) + </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">constants</span><span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">return_all_outputs</span><span class="s2">:</span>
+                    <span class="s1">successive_outputs</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">output</span><span class="s2">)</span>
+                    <span class="s1">successive_states</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">states</span><span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">successive_outputs </span><span class="s2">= [</span><span class="s1">output</span><span class="s2">]</span>
+                    <span class="s1">successive_states </span><span class="s2">= [</span><span class="s1">states</span><span class="s2">]</span>
+            <span class="s1">last_output </span><span class="s2">= </span><span class="s1">successive_outputs</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">new_states </span><span class="s2">= </span><span class="s1">successive_states</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">(</span><span class="s1">successive_outputs</span><span class="s2">)</span>
+
+    <span class="s0">else</span><span class="s2">:  </span><span class="s5"># Unroll == False</span>
+        <span class="s1">states </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">initial_states</span><span class="s2">)</span>
+
+        <span class="s5"># Create input tensor array, if the inputs is nested tensors, then it</span>
+        <span class="s5"># will be flattened first, and tensor array will be created one per</span>
+        <span class="s5"># flattened tensor.</span>
+        <span class="s1">input_ta </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">TensorArray</span><span class="s2">(</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">inp</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+                <span class="s1">size</span><span class="s2">=</span><span class="s1">time_steps_t</span><span class="s2">,</span>
+                <span class="s1">tensor_array_name</span><span class="s2">=</span><span class="s6">f&quot;input_ta_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">inp </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">flattened_inputs</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">input_ta </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+            <span class="s2">(</span>
+                <span class="s1">ta</span><span class="s2">.</span><span class="s1">unstack</span><span class="s2">(</span><span class="s1">input_</span><span class="s2">)</span>
+                <span class="s0">if not </span><span class="s1">go_backwards</span>
+                <span class="s0">else </span><span class="s1">ta</span><span class="s2">.</span><span class="s1">unstack</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse</span><span class="s2">(</span><span class="s1">input_</span><span class="s2">, [</span><span class="s4">0</span><span class="s2">]))</span>
+            <span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">ta</span><span class="s2">, </span><span class="s1">input_ </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">input_ta</span><span class="s2">, </span><span class="s1">flattened_inputs</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+        <span class="s5"># Get the time(0) input and compute the output for that, the output will</span>
+        <span class="s5"># be used to determine the dtype of output tensor array. Don't read from</span>
+        <span class="s5"># input_ta due to TensorArray clear_after_read default to True.</span>
+        <span class="s1">input_time_zero </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">, [</span><span class="s1">inp</span><span class="s2">[</span><span class="s4">0</span><span class="s2">] </span><span class="s0">for </span><span class="s1">inp </span><span class="s0">in </span><span class="s1">flattened_inputs</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s5"># output_time_zero is used to determine the cell output shape and its</span>
+        <span class="s5"># dtype.  the value is discarded.</span>
+        <span class="s1">output_time_zero</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">step_function</span><span class="s2">(</span>
+            <span class="s1">input_time_zero</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">initial_states</span><span class="s2">) + </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">constants</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+        <span class="s1">output_ta_size </span><span class="s2">= </span><span class="s1">time_steps_t </span><span class="s0">if </span><span class="s1">return_all_outputs </span><span class="s0">else </span><span class="s4">1</span>
+        <span class="s1">output_ta </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">TensorArray</span><span class="s2">(</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">out</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+                <span class="s1">size</span><span class="s2">=</span><span class="s1">output_ta_size</span><span class="s2">,</span>
+                <span class="s1">element_shape</span><span class="s2">=</span><span class="s1">out</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">,</span>
+                <span class="s1">tensor_array_name</span><span class="s2">=</span><span class="s6">f&quot;output_ta_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">out </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">output_time_zero</span><span class="s2">))</span>
+        <span class="s2">)</span>
+
+        <span class="s1">time </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">constant</span><span class="s2">(</span><span class="s4">0</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s6">&quot;int32&quot;</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s6">&quot;time&quot;</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">input_length </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">max_iterations </span><span class="s2">= </span><span class="s1">time_steps_t</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">max_iterations </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_max</span><span class="s2">(</span><span class="s1">input_length</span><span class="s2">)</span>
+
+        <span class="s1">while_loop_kwargs </span><span class="s2">= {</span>
+            <span class="s6">&quot;cond&quot;</span><span class="s2">: </span><span class="s0">lambda </span><span class="s1">time</span><span class="s2">, *</span><span class="s1">_</span><span class="s2">: </span><span class="s1">time </span><span class="s2">&lt; </span><span class="s1">time_steps_t</span><span class="s2">,</span>
+            <span class="s6">&quot;maximum_iterations&quot;</span><span class="s2">: </span><span class="s1">max_iterations</span><span class="s2">,</span>
+            <span class="s6">&quot;parallel_iterations&quot;</span><span class="s2">: </span><span class="s4">32</span><span class="s2">,</span>
+            <span class="s6">&quot;swap_memory&quot;</span><span class="s2">: </span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+                <span class="s1">mask </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, [</span><span class="s4">0</span><span class="s2">])</span>
+
+            <span class="s1">mask_ta </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">TensorArray</span><span class="s2">(</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">bool</span><span class="s2">, </span><span class="s1">size</span><span class="s2">=</span><span class="s1">time_steps_t</span><span class="s2">, </span><span class="s1">tensor_array_name</span><span class="s2">=</span><span class="s6">&quot;mask_ta&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">mask_ta </span><span class="s2">= </span><span class="s1">mask_ta</span><span class="s2">.</span><span class="s1">unstack</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">masking_fn</span><span class="s2">(</span><span class="s1">time</span><span class="s2">):</span>
+                <span class="s0">return </span><span class="s1">mask_ta</span><span class="s2">.</span><span class="s1">read</span><span class="s2">(</span><span class="s1">time</span><span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">compute_masked_output</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">flat_out</span><span class="s2">, </span><span class="s1">flat_mask</span><span class="s2">):</span>
+                <span class="s1">tiled_mask_t </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">_expand_mask</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">o</span><span class="s2">, </span><span class="s1">fixed_dim</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">))</span>
+                    <span class="s0">for </span><span class="s1">o </span><span class="s0">in </span><span class="s1">flat_out</span>
+                <span class="s2">)</span>
+                <span class="s0">return </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">m</span><span class="s2">, </span><span class="s1">o</span><span class="s2">, </span><span class="s1">fm</span><span class="s2">)</span>
+                    <span class="s0">for </span><span class="s1">m</span><span class="s2">, </span><span class="s1">o</span><span class="s2">, </span><span class="s1">fm </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">tiled_mask_t</span><span class="s2">, </span><span class="s1">flat_out</span><span class="s2">, </span><span class="s1">flat_mask</span><span class="s2">)</span>
+                <span class="s2">)</span>
+
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">input_length</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Tensor</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+                <span class="s1">max_len </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_max</span><span class="s2">(</span><span class="s1">input_length</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0</span><span class="s2">)</span>
+                <span class="s1">rev_input_length </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">subtract</span><span class="s2">(</span><span class="s1">max_len </span><span class="s2">- </span><span class="s4">1</span><span class="s2">, </span><span class="s1">input_length</span><span class="s2">)</span>
+
+                <span class="s0">def </span><span class="s1">masking_fn</span><span class="s2">(</span><span class="s1">time</span><span class="s2">):</span>
+                    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">less</span><span class="s2">(</span><span class="s1">rev_input_length</span><span class="s2">, </span><span class="s1">time</span><span class="s2">)</span>
+
+            <span class="s0">else</span><span class="s2">:</span>
+
+                <span class="s0">def </span><span class="s1">masking_fn</span><span class="s2">(</span><span class="s1">time</span><span class="s2">):</span>
+                    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">greater</span><span class="s2">(</span><span class="s1">input_length</span><span class="s2">, </span><span class="s1">time</span><span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">compute_masked_output</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">flat_out</span><span class="s2">, </span><span class="s1">flat_mask</span><span class="s2">):</span>
+                <span class="s0">return </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">mask_t</span><span class="s2">, </span><span class="s1">o</span><span class="s2">, </span><span class="s1">zo</span><span class="s2">)</span>
+                    <span class="s0">for </span><span class="s2">(</span><span class="s1">o</span><span class="s2">, </span><span class="s1">zo</span><span class="s2">) </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">flat_out</span><span class="s2">, </span><span class="s1">flat_mask</span><span class="s2">)</span>
+                <span class="s2">)</span>
+
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">masking_fn </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s0">if </span><span class="s1">masking_fn </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s5"># Mask for the T output will be base on the output of T - 1. In the</span>
+            <span class="s5"># case T = 0, a zero filled tensor will be used.</span>
+            <span class="s1">flat_zero_output </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                <span class="s1">tf</span><span class="s2">.</span><span class="s1">zeros_like</span><span class="s2">(</span><span class="s1">o</span><span class="s2">) </span><span class="s0">for </span><span class="s1">o </span><span class="s0">in </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">output_time_zero</span><span class="s2">)</span>
+            <span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">_step</span><span class="s2">(</span><span class="s1">time</span><span class="s2">, </span><span class="s1">output_ta_t</span><span class="s2">, </span><span class="s1">prev_output</span><span class="s2">, *</span><span class="s1">states</span><span class="s2">):</span>
+                <span class="s3">&quot;&quot;&quot;RNN step function. 
+ 
+                Args: 
+                    time: Current timestep value. 
+                    output_ta_t: TensorArray. 
+                    prev_output: tuple of outputs from time - 1. 
+                    *states: List of states. 
+ 
+                Returns: 
+                    Tuple: `(time + 1, output_ta_t, output) + tuple(new_states)` 
+                &quot;&quot;&quot;</span>
+                <span class="s1">current_input </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">ta</span><span class="s2">.</span><span class="s1">read</span><span class="s2">(</span><span class="s1">time</span><span class="s2">) </span><span class="s0">for </span><span class="s1">ta </span><span class="s0">in </span><span class="s1">input_ta</span><span class="s2">)</span>
+                <span class="s5"># maybe set shape.</span>
+                <span class="s1">current_input </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">current_input</span><span class="s2">)</span>
+                <span class="s1">mask_t </span><span class="s2">= </span><span class="s1">masking_fn</span><span class="s2">(</span><span class="s1">time</span><span class="s2">)</span>
+                <span class="s1">output</span><span class="s2">, </span><span class="s1">new_states </span><span class="s2">= </span><span class="s1">step_function</span><span class="s2">(</span>
+                    <span class="s1">current_input</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">states</span><span class="s2">) + </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">constants</span><span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s5"># mask output</span>
+                <span class="s1">flat_output </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">output</span><span class="s2">)</span>
+                <span class="s1">flat_mask_output </span><span class="s2">= (</span>
+                    <span class="s1">flat_zero_output</span>
+                    <span class="s0">if </span><span class="s1">zero_output_for_mask</span>
+                    <span class="s0">else </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">prev_output</span><span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s1">flat_new_output </span><span class="s2">= </span><span class="s1">compute_masked_output</span><span class="s2">(</span>
+                    <span class="s1">mask_t</span><span class="s2">, </span><span class="s1">flat_output</span><span class="s2">, </span><span class="s1">flat_mask_output</span>
+                <span class="s2">)</span>
+
+                <span class="s5"># mask states</span>
+                <span class="s1">flat_state </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">states</span><span class="s2">)</span>
+                <span class="s1">flat_new_state </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">new_states</span><span class="s2">)</span>
+                <span class="s1">flat_final_state </span><span class="s2">= </span><span class="s1">compute_masked_output</span><span class="s2">(</span>
+                    <span class="s1">mask_t</span><span class="s2">, </span><span class="s1">flat_new_state</span><span class="s2">, </span><span class="s1">flat_state</span>
+                <span class="s2">)</span>
+                <span class="s1">new_states </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">new_states</span><span class="s2">, </span><span class="s1">flat_final_state</span><span class="s2">)</span>
+
+                <span class="s1">ta_index_to_write </span><span class="s2">= </span><span class="s1">time </span><span class="s0">if </span><span class="s1">return_all_outputs </span><span class="s0">else </span><span class="s4">0</span>
+                <span class="s1">output_ta_t </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">ta</span><span class="s2">.</span><span class="s1">write</span><span class="s2">(</span><span class="s1">ta_index_to_write</span><span class="s2">, </span><span class="s1">out</span><span class="s2">)</span>
+                    <span class="s0">for </span><span class="s1">ta</span><span class="s2">, </span><span class="s1">out </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">output_ta_t</span><span class="s2">, </span><span class="s1">flat_new_output</span><span class="s2">)</span>
+                <span class="s2">)</span>
+
+                <span class="s0">return </span><span class="s2">(</span><span class="s1">time </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">, </span><span class="s1">output_ta_t</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">flat_new_output</span><span class="s2">)) + </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">new_states</span>
+                <span class="s2">)</span>
+
+            <span class="s1">final_outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">while_loop</span><span class="s2">(</span>
+                <span class="s1">body</span><span class="s2">=</span><span class="s1">_step</span><span class="s2">,</span>
+                <span class="s1">loop_vars</span><span class="s2">=(</span><span class="s1">time</span><span class="s2">, </span><span class="s1">output_ta</span><span class="s2">, </span><span class="s1">flat_zero_output</span><span class="s2">) + </span><span class="s1">states</span><span class="s2">,</span>
+                <span class="s2">**</span><span class="s1">while_loop_kwargs</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s5"># Skip final_outputs[2] which is the output for final timestep.</span>
+            <span class="s1">new_states </span><span class="s2">= </span><span class="s1">final_outputs</span><span class="s2">[</span><span class="s4">3</span><span class="s2">:]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+
+            <span class="s0">def </span><span class="s1">_step</span><span class="s2">(</span><span class="s1">time</span><span class="s2">, </span><span class="s1">output_ta_t</span><span class="s2">, *</span><span class="s1">states</span><span class="s2">):</span>
+                <span class="s3">&quot;&quot;&quot;RNN step function. 
+ 
+                Args: 
+                    time: Current timestep value. 
+                    output_ta_t: TensorArray. 
+                    *states: List of states. 
+ 
+                Returns: 
+                    Tuple: `(time + 1,output_ta_t) + tuple(new_states)` 
+                &quot;&quot;&quot;</span>
+                <span class="s1">current_input </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">ta</span><span class="s2">.</span><span class="s1">read</span><span class="s2">(</span><span class="s1">time</span><span class="s2">) </span><span class="s0">for </span><span class="s1">ta </span><span class="s0">in </span><span class="s1">input_ta</span><span class="s2">)</span>
+                <span class="s1">current_input </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">current_input</span><span class="s2">)</span>
+                <span class="s1">output</span><span class="s2">, </span><span class="s1">new_states </span><span class="s2">= </span><span class="s1">step_function</span><span class="s2">(</span>
+                    <span class="s1">current_input</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">states</span><span class="s2">) + </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">constants</span><span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s1">flat_new_state </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">new_states</span><span class="s2">)</span>
+
+                <span class="s1">flat_output </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">output</span><span class="s2">)</span>
+                <span class="s1">ta_index_to_write </span><span class="s2">= </span><span class="s1">time </span><span class="s0">if </span><span class="s1">return_all_outputs </span><span class="s0">else </span><span class="s4">0</span>
+                <span class="s1">output_ta_t </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                    <span class="s1">ta</span><span class="s2">.</span><span class="s1">write</span><span class="s2">(</span><span class="s1">ta_index_to_write</span><span class="s2">, </span><span class="s1">out</span><span class="s2">)</span>
+                    <span class="s0">for </span><span class="s1">ta</span><span class="s2">, </span><span class="s1">out </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">output_ta_t</span><span class="s2">, </span><span class="s1">flat_output</span><span class="s2">)</span>
+                <span class="s2">)</span>
+
+                <span class="s1">new_states </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span>
+                    <span class="s1">initial_states</span><span class="s2">, </span><span class="s1">flat_new_state</span>
+                <span class="s2">)</span>
+                <span class="s0">return </span><span class="s2">(</span><span class="s1">time </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">, </span><span class="s1">output_ta_t</span><span class="s2">) + </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">new_states</span><span class="s2">)</span>
+
+            <span class="s1">final_outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">while_loop</span><span class="s2">(</span>
+                <span class="s1">body</span><span class="s2">=</span><span class="s1">_step</span><span class="s2">,</span>
+                <span class="s1">loop_vars</span><span class="s2">=(</span><span class="s1">time</span><span class="s2">, </span><span class="s1">output_ta</span><span class="s2">) + </span><span class="s1">states</span><span class="s2">,</span>
+                <span class="s2">**</span><span class="s1">while_loop_kwargs</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">new_states </span><span class="s2">= </span><span class="s1">final_outputs</span><span class="s2">[</span><span class="s4">2</span><span class="s2">:]</span>
+
+        <span class="s1">output_ta </span><span class="s2">= </span><span class="s1">final_outputs</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">o</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">() </span><span class="s0">for </span><span class="s1">o </span><span class="s0">in </span><span class="s1">output_ta</span><span class="s2">)</span>
+        <span class="s1">last_output </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">o</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">] </span><span class="s0">for </span><span class="s1">o </span><span class="s0">in </span><span class="s1">outputs</span><span class="s2">)</span>
+
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">output_time_zero</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">)</span>
+        <span class="s1">last_output </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">output_time_zero</span><span class="s2">, </span><span class="s1">last_output</span><span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">time_major</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">swap_batch_timestep</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">last_output</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">new_states</span>
+
+
+<span class="s0">def </span><span class="s1">gru</span><span class="s2">(</span>
+    <span class="s1">inputs</span><span class="s2">,</span>
+    <span class="s1">initial_state</span><span class="s2">,</span>
+    <span class="s1">mask</span><span class="s2">,</span>
+    <span class="s1">kernel</span><span class="s2">,</span>
+    <span class="s1">recurrent_kernel</span><span class="s2">,</span>
+    <span class="s1">bias</span><span class="s2">,</span>
+    <span class="s1">activation</span><span class="s2">,</span>
+    <span class="s1">recurrent_activation</span><span class="s2">,</span>
+    <span class="s1">return_sequences</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">go_backwards</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">unroll</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">time_major</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">reset_after</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">cudnn_supported </span><span class="s2">= </span><span class="s1">cudnn_ok</span><span class="s2">(</span>
+        <span class="s1">activation</span><span class="s2">,</span>
+        <span class="s1">recurrent_activation</span><span class="s2">,</span>
+        <span class="s1">unroll</span><span class="s2">,</span>
+        <span class="s1">use_bias</span><span class="s2">=</span><span class="s1">bias </span><span class="s0">is not None</span><span class="s2">,</span>
+        <span class="s1">reset_after</span><span class="s2">=</span><span class="s1">reset_after</span><span class="s2">,</span>
+    <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">cudnn_supported</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorflow </span><span class="s0">import </span><span class="s1">Variable</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">kernel</span><span class="s2">, </span><span class="s1">Variable</span><span class="s2">):</span>
+        <span class="s1">kernel </span><span class="s2">= </span><span class="s1">kernel</span><span class="s2">.</span><span class="s1">value</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">recurrent_kernel</span><span class="s2">, </span><span class="s1">Variable</span><span class="s2">):</span>
+        <span class="s1">recurrent_kernel </span><span class="s2">= </span><span class="s1">recurrent_kernel</span><span class="s2">.</span><span class="s1">value</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">bias</span><span class="s2">, </span><span class="s1">Variable</span><span class="s2">):</span>
+        <span class="s1">bias </span><span class="s2">= </span><span class="s1">bias</span><span class="s2">.</span><span class="s1">value</span>
+
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_cudnn_gru</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">,</span>
+            <span class="s1">initial_state</span><span class="s2">,</span>
+            <span class="s1">kernel</span><span class="s2">,</span>
+            <span class="s1">recurrent_kernel</span><span class="s2">,</span>
+            <span class="s1">bias</span><span class="s2">,</span>
+            <span class="s1">mask</span><span class="s2">,</span>
+            <span class="s1">time_major</span><span class="s2">,</span>
+            <span class="s1">go_backwards</span><span class="s2">,</span>
+            <span class="s1">return_sequences</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">except </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">errors</span><span class="s2">.</span><span class="s1">InvalidArgumentError</span><span class="s2">:</span>
+        <span class="s5"># cuDNN op not found.</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+    <span class="s0">except </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">errors</span><span class="s2">.</span><span class="s1">NotFoundError</span><span class="s2">:</span>
+        <span class="s5"># alternative error: device not found for op</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+
+<span class="s0">def </span><span class="s1">_do_gru_arguments_support_cudnn</span><span class="s2">(</span>
+    <span class="s1">activation</span><span class="s2">,</span>
+    <span class="s1">recurrent_activation</span><span class="s2">,</span>
+    <span class="s1">unroll</span><span class="s2">,</span>
+    <span class="s1">use_bias</span><span class="s2">,</span>
+    <span class="s1">reset_after</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">activations</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+
+    <span class="s0">return </span><span class="s2">(</span>
+        <span class="s1">activation </span><span class="s0">in </span><span class="s2">(</span><span class="s1">activations</span><span class="s2">.</span><span class="s1">tanh</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">tanh</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tanh</span><span class="s2">)</span>
+        <span class="s0">and </span><span class="s1">recurrent_activation</span>
+        <span class="s0">in </span><span class="s2">(</span><span class="s1">activations</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">)</span>
+        <span class="s0">and not </span><span class="s1">unroll</span>
+        <span class="s0">and </span><span class="s1">use_bias</span>
+        <span class="s0">and </span><span class="s1">reset_after</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_do_lstm_arguments_support_cudnn</span><span class="s2">(</span>
+    <span class="s1">activation</span><span class="s2">,</span>
+    <span class="s1">recurrent_activation</span><span class="s2">,</span>
+    <span class="s1">unroll</span><span class="s2">,</span>
+    <span class="s1">use_bias</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">activations</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+
+    <span class="s0">return </span><span class="s2">(</span>
+        <span class="s1">activation </span><span class="s0">in </span><span class="s2">(</span><span class="s1">activations</span><span class="s2">.</span><span class="s1">tanh</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">tanh</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tanh</span><span class="s2">)</span>
+        <span class="s0">and </span><span class="s1">recurrent_activation</span>
+        <span class="s0">in </span><span class="s2">(</span><span class="s1">activations</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">)</span>
+        <span class="s0">and not </span><span class="s1">unroll</span>
+        <span class="s0">and </span><span class="s1">use_bias</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_has_fully_masked_sequence</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">):</span>
+    <span class="s5"># Cudnn kernel will error out if the input sequence contains any</span>
+    <span class="s5"># fully masked data. We walk around this issue by rerouting the computation</span>
+    <span class="s5"># to standard kernel, until the issue on cudnn side has been fixed.  For a</span>
+    <span class="s5"># fully masked sequence, it will contain all Falses. To make it easy to</span>
+    <span class="s5"># check, we inverse the boolean, check if any of the sequence has all True.</span>
+    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_any</span><span class="s2">(</span>
+        <span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_all</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">logical_not</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s6">&quot;bool&quot;</span><span class="s2">)), </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_assert_valid_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">):</span>
+    <span class="s1">valid </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">logical_and</span><span class="s2">(</span>
+        <span class="s1">tf</span><span class="s2">.</span><span class="s1">logical_not</span><span class="s2">(</span><span class="s1">_has_fully_masked_sequence</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)),</span>
+        <span class="s1">_is_sequence_right_padded</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">),</span>
+    <span class="s2">)</span>
+    <span class="s1">tf</span><span class="s2">.</span><span class="s1">Assert</span><span class="s2">(</span>
+        <span class="s1">valid</span><span class="s2">,</span>
+        <span class="s2">[</span>
+            <span class="s2">(</span>
+                <span class="s6">&quot;You are passing a RNN mask that does not correspond to &quot;</span>
+                <span class="s6">&quot;right-padded sequences, while using cuDNN, which is not &quot;</span>
+                <span class="s6">&quot;supported. With cuDNN, RNN masks can only be used for &quot;</span>
+                <span class="s6">&quot;right-padding, e.g. `[[True, True, False, False]]` would &quot;</span>
+                <span class="s6">&quot;be a valid mask, but any mask that isn't just contiguous &quot;</span>
+                <span class="s6">&quot;`True`'s on the left and contiguous `False`'s on the right &quot;</span>
+                <span class="s6">&quot;would be invalid. You can pass `use_cudnn=False` to your &quot;</span>
+                <span class="s6">&quot;RNN layer to stop using cuDNN (this may be slower).&quot;</span>
+            <span class="s2">)</span>
+        <span class="s2">],</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_standardize_cudnn_weights</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">, </span><span class="s1">biases</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">, </span><span class="s1">transpose_weights</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Utility function convert variable to cuDNN compatible parameter. 
+ 
+    Note that Keras weights for kernels are different from the cuDNN format. 
+    Eg.: 
+ 
+    ``` 
+      Keras                 cuDNN 
+      [[0, 1, 2],  &lt;---&gt;  [[0, 2, 4], 
+       [3, 4, 5]]          [1, 3, 5]] 
+    ``` 
+ 
+    If the input weights need to be in a unified format, then set 
+    `transpose_weights=True` to convert the weights. 
+ 
+    Args: 
+        weights: list of weights for the kernels and recurrent kernels. 
+        biases: list of biases for individual gate. 
+        shape: the shape for the converted variables that will be feed to cuDNN. 
+        transpose_weights: boolean, whether to transpose the weights. 
+ 
+    Returns: 
+        The converted weights that can be feed to cuDNN ops as param. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">convert</span><span class="s2">(</span><span class="s1">w</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">w</span><span class="s2">) </span><span class="s0">if </span><span class="s1">transpose_weights </span><span class="s0">else </span><span class="s1">w</span>
+
+    <span class="s1">weights </span><span class="s2">= [</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">convert</span><span class="s2">(</span><span class="s1">x</span><span class="s2">), </span><span class="s1">shape</span><span class="s2">) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">weights</span><span class="s2">]</span>
+    <span class="s1">biases </span><span class="s2">= [</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">biases</span><span class="s2">]</span>
+    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">(</span><span class="s1">weights </span><span class="s2">+ </span><span class="s1">biases</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_is_sequence_right_padded</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Check the mask tensor and see if it right padded. 
+ 
+    cuDNN uses the sequence length param to skip the tailing 
+    timestep. If the data is left padded, or not a strict right padding (has 
+    masked value in the middle of the sequence), then cuDNN won't work 
+    properly in those cases. 
+ 
+    Left padded data: [[False, False, True, True, True]]. 
+    Right padded data: [[True, True, True, False, False]]. 
+    Mixture of mask/unmasked data: [[True, False, True, False, False]]. 
+ 
+    Note that for the mixed data example above, the actually data RNN should see 
+    are those 2 Trues (index 0 and 2), the index 1 False should be ignored and 
+    not pollute the internal states. 
+ 
+    Args: 
+        mask: the Boolean tensor with shape [batch, timestep] 
+ 
+    Returns: 
+        boolean scalar tensor, whether the mask is strictly right padded. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">max_seq_length </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)[</span><span class="s4">1</span><span class="s2">]</span>
+    <span class="s1">count_of_true </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_sum</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">int32</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s1">right_padded_mask </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">sequence_mask</span><span class="s2">(</span><span class="s1">count_of_true</span><span class="s2">, </span><span class="s1">maxlen</span><span class="s2">=</span><span class="s1">max_seq_length</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_all</span><span class="s2">(</span>
+        <span class="s1">tf</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span>
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s6">&quot;bool&quot;</span><span class="s2">),</span>
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">right_padded_mask</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s6">&quot;bool&quot;</span><span class="s2">),</span>
+        <span class="s2">)</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_compute_sequence_length_from_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">time_major</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Calculate the sequence length tensor (1-D) based on the masking tensor. 
+ 
+    The masking tensor is a 2D boolean tensor with shape [batch, timestep]. For 
+    any timestep that should be masked, the corresponding field will be False. 
+    Consider the following example: 
+      a = [[True, True, False, False], 
+           [True, True, True, False]] 
+    It is a (2, 4) tensor, and the corresponding sequence length result should 
+    be 1D tensor with value [2, 3]. Note that the masking tensor must be right 
+    padded that could be checked by, e.g., `is_sequence_right_padded()`. 
+ 
+    Args: 
+        mask: Boolean tensor with shape [batch, timestep] or [timestep, batch] 
+            if time_major=True. 
+        time_major: Boolean, which indicates whether the mask is time major or 
+            batch major. 
+ 
+    Returns: 
+        sequence_length: 1D int32 tensor. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">timestep_index </span><span class="s2">= </span><span class="s4">0 </span><span class="s0">if </span><span class="s1">time_major </span><span class="s0">else </span><span class="s4">1</span>
+    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_sum</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">int32</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">timestep_index</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_is_gpu_available</span><span class="s2">():</span>
+    <span class="s0">return </span><span class="s1">bool</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">config</span><span class="s2">.</span><span class="s1">list_logical_devices</span><span class="s2">(</span><span class="s6">&quot;GPU&quot;</span><span class="s2">))</span>
+
+
+<span class="s0">def </span><span class="s1">_cudnn_gru</span><span class="s2">(</span>
+    <span class="s1">inputs</span><span class="s2">,</span>
+    <span class="s1">initial_state</span><span class="s2">,</span>
+    <span class="s1">kernel</span><span class="s2">,</span>
+    <span class="s1">recurrent_kernel</span><span class="s2">,</span>
+    <span class="s1">bias</span><span class="s2">,</span>
+    <span class="s1">mask</span><span class="s2">,</span>
+    <span class="s1">time_major</span><span class="s2">,</span>
+    <span class="s1">go_backwards</span><span class="s2">,</span>
+    <span class="s1">return_sequences</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;GRU with cuDNN implementation which is only available for GPU.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">_assert_valid_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+        <span class="s1">sequence_lengths </span><span class="s2">= </span><span class="s1">_compute_sequence_length_from_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">time_major</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">time_major</span><span class="s2">:</span>
+            <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">max_sequence_length </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">]</span>
+            <span class="s1">max_sequence_length </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">sequence_lengths </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">fill</span><span class="s2">([</span><span class="s1">batch_dim</span><span class="s2">], </span><span class="s1">max_sequence_length</span><span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">time_major </span><span class="s0">and </span><span class="s1">sequence_lengths </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">perm</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">, </span><span class="s4">2</span><span class="s2">))</span>
+        <span class="s1">seq_axis</span><span class="s2">, </span><span class="s1">batch_axis </span><span class="s2">= (</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">seq_axis</span><span class="s2">, </span><span class="s1">batch_axis </span><span class="s2">= (</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">) </span><span class="s0">if </span><span class="s1">time_major </span><span class="s0">else </span><span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">)</span>
+
+    <span class="s5"># For init_h, cuDNN expects one more dim of num_layers before or after batch</span>
+    <span class="s5"># dim for time major or batch major inputs respectively</span>
+    <span class="s1">init_h </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">initial_state</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">)</span>
+
+    <span class="s1">weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">kernel</span><span class="s2">, </span><span class="s4">3</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s1">weights </span><span class="s2">+= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">recurrent_kernel</span><span class="s2">, </span><span class="s4">3</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s5"># Note that the bias was initialized as shape (2, 3 * units), flatten it to</span>
+    <span class="s5"># (6 * units)</span>
+    <span class="s1">bias </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">bias</span><span class="s2">, [-</span><span class="s4">1</span><span class="s2">]), </span><span class="s4">6</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">sysconfig</span><span class="s2">.</span><span class="s1">get_build_info</span><span class="s2">()[</span><span class="s6">&quot;is_cuda_build&quot;</span><span class="s2">]:</span>
+        <span class="s5"># Note that the gate order for cuDNN is different from the canonical</span>
+        <span class="s5"># format.  canonical format is [z, r, h], whereas cuDNN is [r, z, h].</span>
+        <span class="s5"># The swap need to be done for kernel, recurrent_kernel, input_bias,</span>
+        <span class="s5"># recurrent_bias.</span>
+        <span class="s5"># z is update gate weights.</span>
+        <span class="s5"># r is reset gate weights.</span>
+        <span class="s5"># h is output gate weights.</span>
+        <span class="s1">weights</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">weights</span><span class="s2">[</span><span class="s4">1</span><span class="s2">] = </span><span class="s1">weights</span><span class="s2">[</span><span class="s4">1</span><span class="s2">], </span><span class="s1">weights</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s1">weights</span><span class="s2">[</span><span class="s4">3</span><span class="s2">], </span><span class="s1">weights</span><span class="s2">[</span><span class="s4">4</span><span class="s2">] = </span><span class="s1">weights</span><span class="s2">[</span><span class="s4">4</span><span class="s2">], </span><span class="s1">weights</span><span class="s2">[</span><span class="s4">3</span><span class="s2">]</span>
+        <span class="s1">bias</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">bias</span><span class="s2">[</span><span class="s4">1</span><span class="s2">] = </span><span class="s1">bias</span><span class="s2">[</span><span class="s4">1</span><span class="s2">], </span><span class="s1">bias</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s1">bias</span><span class="s2">[</span><span class="s4">3</span><span class="s2">], </span><span class="s1">bias</span><span class="s2">[</span><span class="s4">4</span><span class="s2">] = </span><span class="s1">bias</span><span class="s2">[</span><span class="s4">4</span><span class="s2">], </span><span class="s1">bias</span><span class="s2">[</span><span class="s4">3</span><span class="s2">]</span>
+
+    <span class="s1">params </span><span class="s2">= </span><span class="s1">_standardize_cudnn_weights</span><span class="s2">(</span>
+        <span class="s1">weights</span><span class="s2">=</span><span class="s1">weights</span><span class="s2">,</span>
+        <span class="s1">biases</span><span class="s2">=</span><span class="s1">bias</span><span class="s2">,</span>
+        <span class="s1">shape</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">constant</span><span class="s2">([-</span><span class="s4">1</span><span class="s2">]),</span>
+        <span class="s1">transpose_weights</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+        <span class="s5"># Three reversals are required. E.g.,</span>
+        <span class="s5"># normal input = [1, 2, 3, 0, 0]  # where 0 need to be masked</span>
+        <span class="s5"># reversed_input_to_cudnn = [3, 2, 1, 0, 0]</span>
+        <span class="s5"># output_from_cudnn = [6, 5, 4, 0, 0]</span>
+        <span class="s5"># expected_output = [0, 0, 6, 5 ,4]</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse_sequence</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">,</span>
+            <span class="s1">sequence_lengths</span><span class="s2">,</span>
+            <span class="s1">seq_axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">,</span>
+            <span class="s1">batch_axis</span><span class="s2">=</span><span class="s1">batch_axis</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s1">outputs</span><span class="s2">, </span><span class="s1">h</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">raw_ops</span><span class="s2">.</span><span class="s1">CudnnRNNV3</span><span class="s2">(</span>
+        <span class="s1">input</span><span class="s2">=</span><span class="s1">inputs</span><span class="s2">,</span>
+        <span class="s1">input_h</span><span class="s2">=</span><span class="s1">init_h</span><span class="s2">,</span>
+        <span class="s1">input_c</span><span class="s2">=</span><span class="s4">0</span><span class="s2">,</span>
+        <span class="s1">params</span><span class="s2">=</span><span class="s1">params</span><span class="s2">,</span>
+        <span class="s1">is_training</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">rnn_mode</span><span class="s2">=</span><span class="s6">&quot;gru&quot;</span><span class="s2">,</span>
+        <span class="s1">sequence_lengths</span><span class="s2">=</span><span class="s1">sequence_lengths</span><span class="s2">,</span>
+        <span class="s1">time_major</span><span class="s2">=</span><span class="s1">time_major</span><span class="s2">,</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse_sequence</span><span class="s2">(</span>
+            <span class="s1">outputs</span><span class="s2">,</span>
+            <span class="s1">sequence_lengths</span><span class="s2">,</span>
+            <span class="s1">seq_axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">,</span>
+            <span class="s1">batch_axis</span><span class="s2">=</span><span class="s1">batch_axis</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=[</span><span class="s1">seq_axis</span><span class="s2">])</span>
+
+    <span class="s1">last_output </span><span class="s2">= </span><span class="s1">outputs</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+    <span class="s0">if not </span><span class="s1">time_major </span><span class="s0">and </span><span class="s1">sequence_lengths </span><span class="s0">is None and </span><span class="s1">return_sequences</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">perm</span><span class="s2">=[</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">, </span><span class="s4">2</span><span class="s2">])</span>
+    <span class="s1">state </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">h</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">)</span>
+
+    <span class="s5"># In the case of variable length input, the cudnn kernel will fill zeros for</span>
+    <span class="s5"># the output, whereas the default keras behavior is to bring over the</span>
+    <span class="s5"># previous output for t-1, so that in the return_sequence=False case, user</span>
+    <span class="s5"># can quickly get the final effect output instead just 0s at the last</span>
+    <span class="s5"># timestep.  In order to mimic the default keras behavior, we copy the final</span>
+    <span class="s5"># h state as the last_output, since it is numerically same as the output.</span>
+    <span class="s0">if </span><span class="s1">sequence_lengths </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">last_output </span><span class="s2">= </span><span class="s1">state</span>
+
+    <span class="s5"># Match CPU return format</span>
+    <span class="s0">if not </span><span class="s1">return_sequences</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">last_output</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0 </span><span class="s0">if </span><span class="s1">time_major </span><span class="s0">else </span><span class="s4">1</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s2">(</span>
+        <span class="s1">last_output</span><span class="s2">,</span>
+        <span class="s1">outputs</span><span class="s2">,</span>
+        <span class="s1">state</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">cudnn_ok</span><span class="s2">(</span>
+    <span class="s1">activation</span><span class="s2">,</span>
+    <span class="s1">recurrent_activation</span><span class="s2">,</span>
+    <span class="s1">unroll</span><span class="s2">,</span>
+    <span class="s1">use_bias</span><span class="s2">,</span>
+    <span class="s1">reset_after</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">reset_after </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">args_supported </span><span class="s2">= </span><span class="s1">_do_lstm_arguments_support_cudnn</span><span class="s2">(</span>
+            <span class="s1">activation</span><span class="s2">=</span><span class="s1">activation</span><span class="s2">,</span>
+            <span class="s1">recurrent_activation</span><span class="s2">=</span><span class="s1">recurrent_activation</span><span class="s2">,</span>
+            <span class="s1">unroll</span><span class="s2">=</span><span class="s1">unroll</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s1">use_bias</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">args_supported </span><span class="s2">= </span><span class="s1">_do_gru_arguments_support_cudnn</span><span class="s2">(</span>
+            <span class="s1">activation</span><span class="s2">=</span><span class="s1">activation</span><span class="s2">,</span>
+            <span class="s1">recurrent_activation</span><span class="s2">=</span><span class="s1">recurrent_activation</span><span class="s2">,</span>
+            <span class="s1">unroll</span><span class="s2">=</span><span class="s1">unroll</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s1">use_bias</span><span class="s2">,</span>
+            <span class="s1">reset_after</span><span class="s2">=</span><span class="s1">reset_after</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">args_supported </span><span class="s0">and </span><span class="s1">_is_gpu_available</span><span class="s2">()</span>
+
+
+<span class="s0">def </span><span class="s1">lstm</span><span class="s2">(</span>
+    <span class="s1">inputs</span><span class="s2">,</span>
+    <span class="s1">initial_state_h</span><span class="s2">,</span>
+    <span class="s1">initial_state_c</span><span class="s2">,</span>
+    <span class="s1">mask</span><span class="s2">,</span>
+    <span class="s1">kernel</span><span class="s2">,</span>
+    <span class="s1">recurrent_kernel</span><span class="s2">,</span>
+    <span class="s1">bias</span><span class="s2">,</span>
+    <span class="s1">activation</span><span class="s2">,</span>
+    <span class="s1">recurrent_activation</span><span class="s2">,</span>
+    <span class="s1">return_sequences</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">go_backwards</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">unroll</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">time_major</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">cudnn_supported </span><span class="s2">= </span><span class="s1">cudnn_ok</span><span class="s2">(</span>
+        <span class="s1">activation</span><span class="s2">, </span><span class="s1">recurrent_activation</span><span class="s2">, </span><span class="s1">unroll</span><span class="s2">, </span><span class="s1">use_bias</span><span class="s2">=</span><span class="s1">bias </span><span class="s0">is not None</span>
+    <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">cudnn_supported</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorflow </span><span class="s0">import </span><span class="s1">Variable</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">kernel</span><span class="s2">, </span><span class="s1">Variable</span><span class="s2">):</span>
+        <span class="s1">kernel </span><span class="s2">= </span><span class="s1">kernel</span><span class="s2">.</span><span class="s1">value</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">recurrent_kernel</span><span class="s2">, </span><span class="s1">Variable</span><span class="s2">):</span>
+        <span class="s1">recurrent_kernel </span><span class="s2">= </span><span class="s1">recurrent_kernel</span><span class="s2">.</span><span class="s1">value</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">bias</span><span class="s2">, </span><span class="s1">Variable</span><span class="s2">):</span>
+        <span class="s1">bias </span><span class="s2">= </span><span class="s1">bias</span><span class="s2">.</span><span class="s1">value</span>
+
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_cudnn_lstm</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">,</span>
+            <span class="s1">initial_state_h</span><span class="s2">,</span>
+            <span class="s1">initial_state_c</span><span class="s2">,</span>
+            <span class="s1">kernel</span><span class="s2">,</span>
+            <span class="s1">recurrent_kernel</span><span class="s2">,</span>
+            <span class="s1">bias</span><span class="s2">,</span>
+            <span class="s1">mask</span><span class="s2">,</span>
+            <span class="s1">time_major</span><span class="s2">,</span>
+            <span class="s1">go_backwards</span><span class="s2">,</span>
+            <span class="s1">return_sequences</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">except </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">errors</span><span class="s2">.</span><span class="s1">InvalidArgumentError</span><span class="s2">:</span>
+        <span class="s5"># cuDNN op not found.</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+    <span class="s0">except </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">errors</span><span class="s2">.</span><span class="s1">NotFoundError</span><span class="s2">:</span>
+        <span class="s5"># alternative error: device not found for op</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+
+<span class="s0">def </span><span class="s1">_cudnn_lstm</span><span class="s2">(</span>
+    <span class="s1">inputs</span><span class="s2">,</span>
+    <span class="s1">initial_state_h</span><span class="s2">,</span>
+    <span class="s1">initial_state_c</span><span class="s2">,</span>
+    <span class="s1">kernel</span><span class="s2">,</span>
+    <span class="s1">recurrent_kernel</span><span class="s2">,</span>
+    <span class="s1">bias</span><span class="s2">,</span>
+    <span class="s1">mask</span><span class="s2">,</span>
+    <span class="s1">time_major</span><span class="s2">,</span>
+    <span class="s1">go_backwards</span><span class="s2">,</span>
+    <span class="s1">return_sequences</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">_assert_valid_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+        <span class="s1">sequence_lengths </span><span class="s2">= </span><span class="s1">_compute_sequence_length_from_mask</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">time_major</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">time_major</span><span class="s2">:</span>
+            <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">max_sequence_length </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">]</span>
+            <span class="s1">max_sequence_length </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)[</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">sequence_lengths </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">fill</span><span class="s2">([</span><span class="s1">batch_dim</span><span class="s2">], </span><span class="s1">max_sequence_length</span><span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">time_major </span><span class="s0">and </span><span class="s1">sequence_lengths </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">perm</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">, </span><span class="s4">2</span><span class="s2">))</span>
+        <span class="s1">seq_axis</span><span class="s2">, </span><span class="s1">batch_axis </span><span class="s2">= (</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">seq_axis</span><span class="s2">, </span><span class="s1">batch_axis </span><span class="s2">= (</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">) </span><span class="s0">if </span><span class="s1">time_major </span><span class="s0">else </span><span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">)</span>
+    <span class="s5"># For init_h and init_c, cuDNN expects one more dim of num_layers before or</span>
+    <span class="s5"># after batch dim for time major or batch major inputs respectively</span>
+    <span class="s1">init_h </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">initial_state_h</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">)</span>
+    <span class="s1">init_c </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">initial_state_c</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">)</span>
+
+    <span class="s1">weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">kernel</span><span class="s2">, </span><span class="s4">4</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s1">weights </span><span class="s2">+= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">recurrent_kernel</span><span class="s2">, </span><span class="s4">4</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s5"># cuDNN has an extra set of bias for inputs, we disable them (setting to 0),</span>
+    <span class="s5"># so that mathematically it is same as the canonical LSTM implementation.</span>
+    <span class="s1">full_bias </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">((</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">zeros_like</span><span class="s2">(</span><span class="s1">bias</span><span class="s2">), </span><span class="s1">bias</span><span class="s2">), </span><span class="s4">0</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">sysconfig</span><span class="s2">.</span><span class="s1">get_build_info</span><span class="s2">()[</span><span class="s6">&quot;is_rocm_build&quot;</span><span class="s2">]:</span>
+        <span class="s5"># ROCm MIOpen's weight sequence for LSTM is different from both</span>
+        <span class="s5"># canonical and Cudnn format</span>
+        <span class="s5"># MIOpen: [i, f, o, c] Cudnn/Canonical: [i, f, c, o]</span>
+        <span class="s5"># i is input gate weights.</span>
+        <span class="s5"># f is forget gate weights.</span>
+        <span class="s5"># o is output gate weights.</span>
+        <span class="s5"># c is cell gate weights.</span>
+        <span class="s1">weights </span><span class="s2">= [</span><span class="s1">weights</span><span class="s2">[</span><span class="s1">x</span><span class="s2">] </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s2">(</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">, </span><span class="s4">3</span><span class="s2">, </span><span class="s4">2</span><span class="s2">, </span><span class="s4">4</span><span class="s2">, </span><span class="s4">5</span><span class="s2">, </span><span class="s4">7</span><span class="s2">, </span><span class="s4">6</span><span class="s2">)]</span>
+        <span class="s5"># full_bias is a tensor of shape (8*n,)</span>
+        <span class="s1">full_bias </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">full_bias</span><span class="s2">, </span><span class="s4">8</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0</span><span class="s2">)</span>
+        <span class="s1">full_bias </span><span class="s2">= [</span><span class="s1">full_bias</span><span class="s2">[</span><span class="s1">x</span><span class="s2">] </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s2">(</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">, </span><span class="s4">3</span><span class="s2">, </span><span class="s4">2</span><span class="s2">, </span><span class="s4">4</span><span class="s2">, </span><span class="s4">5</span><span class="s2">, </span><span class="s4">7</span><span class="s2">, </span><span class="s4">6</span><span class="s2">)]</span>
+
+    <span class="s1">params </span><span class="s2">= </span><span class="s1">_standardize_cudnn_weights</span><span class="s2">(</span>
+        <span class="s1">weights</span><span class="s2">=</span><span class="s1">weights</span><span class="s2">,</span>
+        <span class="s1">biases</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">full_bias</span><span class="s2">, </span><span class="s4">8</span><span class="s2">),</span>
+        <span class="s1">shape</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">constant</span><span class="s2">([-</span><span class="s4">1</span><span class="s2">]),</span>
+        <span class="s1">transpose_weights</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+        <span class="s5"># Three reversals are required. E.g.,</span>
+        <span class="s5"># normal input = [1, 2, 3, 0, 0]  # where 0 need to be masked</span>
+        <span class="s5"># reversed_input_to_cudnn = [3, 2, 1, 0, 0]</span>
+        <span class="s5"># output_from_cudnn = [6, 5, 4, 0, 0]</span>
+        <span class="s5"># expected_output = [0, 0, 6, 5 ,4]</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse_sequence</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">,</span>
+            <span class="s1">sequence_lengths</span><span class="s2">,</span>
+            <span class="s1">seq_axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">,</span>
+            <span class="s1">batch_axis</span><span class="s2">=</span><span class="s1">batch_axis</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s1">outputs</span><span class="s2">, </span><span class="s1">h</span><span class="s2">, </span><span class="s1">c</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">raw_ops</span><span class="s2">.</span><span class="s1">CudnnRNNV3</span><span class="s2">(</span>
+        <span class="s1">input</span><span class="s2">=</span><span class="s1">inputs</span><span class="s2">,</span>
+        <span class="s1">input_h</span><span class="s2">=</span><span class="s1">init_h</span><span class="s2">,</span>
+        <span class="s1">input_c</span><span class="s2">=</span><span class="s1">init_c</span><span class="s2">,</span>
+        <span class="s1">params</span><span class="s2">=</span><span class="s1">params</span><span class="s2">,</span>
+        <span class="s1">is_training</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">rnn_mode</span><span class="s2">=</span><span class="s6">&quot;lstm&quot;</span><span class="s2">,</span>
+        <span class="s1">sequence_lengths</span><span class="s2">=</span><span class="s1">sequence_lengths</span><span class="s2">,</span>
+        <span class="s1">time_major</span><span class="s2">=</span><span class="s1">time_major</span><span class="s2">,</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">go_backwards</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse_sequence</span><span class="s2">(</span>
+            <span class="s1">outputs</span><span class="s2">,</span>
+            <span class="s1">sequence_lengths</span><span class="s2">,</span>
+            <span class="s1">seq_axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">,</span>
+            <span class="s1">batch_axis</span><span class="s2">=</span><span class="s1">batch_axis</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reverse</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=[</span><span class="s1">seq_axis</span><span class="s2">])</span>
+
+    <span class="s1">last_output </span><span class="s2">= </span><span class="s1">outputs</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">]</span>
+    <span class="s0">if not </span><span class="s1">time_major </span><span class="s0">and </span><span class="s1">sequence_lengths </span><span class="s0">is None and </span><span class="s1">return_sequences</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">perm</span><span class="s2">=[</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">, </span><span class="s4">2</span><span class="s2">])</span>
+    <span class="s1">h </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">h</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">)</span>
+    <span class="s1">c </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">c</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">seq_axis</span><span class="s2">)</span>
+
+    <span class="s5"># In the case of variable length input, the cudnn kernel will fill zeros for</span>
+    <span class="s5"># the output, whereas the default keras behavior is to bring over the</span>
+    <span class="s5"># previous output for t-1, so that in the return_sequence=False case, user</span>
+    <span class="s5"># can quickly get the final effect output instead just 0s at the last</span>
+    <span class="s5"># timestep.  In order to mimic the default keras behavior, we copy the final</span>
+    <span class="s5"># h state as the last_output, since it is numerically same as the output.</span>
+    <span class="s0">if </span><span class="s1">sequence_lengths </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">last_output </span><span class="s2">= </span><span class="s1">h</span>
+
+    <span class="s5"># Match CPU return format</span>
+    <span class="s0">if not </span><span class="s1">return_sequences</span><span class="s2">:</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">last_output</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0 </span><span class="s0">if </span><span class="s1">time_major </span><span class="s0">else </span><span class="s4">1</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s2">(</span><span class="s1">last_output</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">, [</span><span class="s1">h</span><span class="s2">, </span><span class="s1">c</span><span class="s2">])</span>
+</pre>
+</body>
+</html>

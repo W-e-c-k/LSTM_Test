@@ -1,0 +1,564 @@
+<html>
+<head>
+<title>decorators.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+decorators.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;This module implements decorators for implementing other decorators 
+as well as some commonly used decorators. 
+ 
+&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">sys</span>
+
+<span class="s1">PY2 </span><span class="s3">= </span><span class="s1">sys</span><span class="s3">.</span><span class="s1">version_info</span><span class="s3">[</span><span class="s4">0</span><span class="s3">] == </span><span class="s4">2</span>
+
+<span class="s2">if </span><span class="s1">PY2</span><span class="s3">:</span>
+    <span class="s1">string_types </span><span class="s3">= </span><span class="s1">basestring</span><span class="s3">,</span>
+
+    <span class="s2">def </span><span class="s1">exec_</span><span class="s3">(</span><span class="s1">_code_</span><span class="s3">, </span><span class="s1">_globs_</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">_locs_</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Execute code in a namespace.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">_globs_ </span><span class="s2">is None</span><span class="s3">:</span>
+            <span class="s1">frame </span><span class="s3">= </span><span class="s1">sys</span><span class="s3">.</span><span class="s1">_getframe</span><span class="s3">(</span><span class="s4">1</span><span class="s3">)</span>
+            <span class="s1">_globs_ </span><span class="s3">= </span><span class="s1">frame</span><span class="s3">.</span><span class="s1">f_globals</span>
+            <span class="s2">if </span><span class="s1">_locs_ </span><span class="s2">is None</span><span class="s3">:</span>
+                <span class="s1">_locs_ </span><span class="s3">= </span><span class="s1">frame</span><span class="s3">.</span><span class="s1">f_locals</span>
+            <span class="s2">del </span><span class="s1">frame</span>
+        <span class="s2">elif </span><span class="s1">_locs_ </span><span class="s2">is None</span><span class="s3">:</span>
+            <span class="s1">_locs_ </span><span class="s3">= </span><span class="s1">_globs_</span>
+        <span class="s1">exec</span><span class="s3">(</span><span class="s5">&quot;&quot;&quot;exec _code_ in _globs_, _locs_&quot;&quot;&quot;</span><span class="s3">)</span>
+
+<span class="s2">else</span><span class="s3">:</span>
+    <span class="s1">string_types </span><span class="s3">= </span><span class="s1">str</span><span class="s3">,</span>
+
+    <span class="s2">import </span><span class="s1">builtins</span>
+
+    <span class="s1">exec_ </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">builtins</span><span class="s3">, </span><span class="s5">&quot;exec&quot;</span><span class="s3">)</span>
+    <span class="s2">del </span><span class="s1">builtins</span>
+
+<span class="s2">from </span><span class="s1">functools </span><span class="s2">import </span><span class="s1">partial</span>
+<span class="s2">from </span><span class="s1">inspect </span><span class="s2">import </span><span class="s1">isclass</span>
+<span class="s2">from </span><span class="s1">threading </span><span class="s2">import </span><span class="s1">Lock</span><span class="s3">, </span><span class="s1">RLock</span>
+
+<span class="s2">from </span><span class="s3">.</span><span class="s1">arguments </span><span class="s2">import </span><span class="s1">formatargspec</span>
+
+<span class="s2">try</span><span class="s3">:</span>
+    <span class="s2">from </span><span class="s1">inspect </span><span class="s2">import </span><span class="s1">signature</span>
+<span class="s2">except </span><span class="s1">ImportError</span><span class="s3">:</span>
+    <span class="s2">pass</span>
+
+<span class="s2">from </span><span class="s3">.</span><span class="s1">__wrapt__ </span><span class="s2">import </span><span class="s3">(</span><span class="s1">FunctionWrapper</span><span class="s3">, </span><span class="s1">BoundFunctionWrapper</span><span class="s3">, </span><span class="s1">ObjectProxy</span><span class="s3">,</span>
+    <span class="s1">CallableObjectProxy</span><span class="s3">)</span>
+
+<span class="s6"># Adapter wrapper for the wrapped function which will overlay certain</span>
+<span class="s6"># properties from the adapter function onto the wrapped function so that</span>
+<span class="s6"># functions such as inspect.getargspec(), inspect.getfullargspec(),</span>
+<span class="s6"># inspect.signature() and inspect.getsource() return the correct results</span>
+<span class="s6"># one would expect.</span>
+
+<span class="s2">class </span><span class="s1">_AdapterFunctionCode</span><span class="s3">(</span><span class="s1">CallableObjectProxy</span><span class="s3">):</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">wrapped_code</span><span class="s3">, </span><span class="s1">adapter_code</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">_AdapterFunctionCode</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">wrapped_code</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter_code </span><span class="s3">= </span><span class="s1">adapter_code</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">co_argcount</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter_code</span><span class="s3">.</span><span class="s1">co_argcount</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">co_code</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter_code</span><span class="s3">.</span><span class="s1">co_code</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">co_flags</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter_code</span><span class="s3">.</span><span class="s1">co_flags</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">co_kwonlyargcount</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter_code</span><span class="s3">.</span><span class="s1">co_kwonlyargcount</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">co_varnames</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter_code</span><span class="s3">.</span><span class="s1">co_varnames</span>
+
+<span class="s2">class </span><span class="s1">_AdapterFunctionSurrogate</span><span class="s3">(</span><span class="s1">CallableObjectProxy</span><span class="s3">):</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">_AdapterFunctionSurrogate</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter </span><span class="s3">= </span><span class="s1">adapter</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__code__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">_AdapterFunctionCode</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">__wrapped__</span><span class="s3">.</span><span class="s1">__code__</span><span class="s3">,</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">.</span><span class="s1">__code__</span><span class="s3">)</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__defaults__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">.</span><span class="s1">__defaults__</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__kwdefaults__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">.</span><span class="s1">__kwdefaults__</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__signature__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s5">'signature' </span><span class="s2">not in </span><span class="s1">globals</span><span class="s3">():</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">.</span><span class="s1">__signature__</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">signature</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s1">PY2</span><span class="s3">:</span>
+        <span class="s1">func_code </span><span class="s3">= </span><span class="s1">__code__</span>
+        <span class="s1">func_defaults </span><span class="s3">= </span><span class="s1">__defaults__</span>
+
+<span class="s2">class </span><span class="s1">_BoundAdapterWrapper</span><span class="s3">(</span><span class="s1">BoundFunctionWrapper</span><span class="s3">):</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__func__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">_AdapterFunctionSurrogate</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">__wrapped__</span><span class="s3">.</span><span class="s1">__func__</span><span class="s3">,</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_parent</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">)</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__signature__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s5">'signature' </span><span class="s2">not in </span><span class="s1">globals</span><span class="s3">():</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">__wrapped__</span><span class="s3">.</span><span class="s1">__signature__</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">signature</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_parent</span><span class="s3">.</span><span class="s1">_self_adapter</span><span class="s3">)</span>
+
+    <span class="s2">if </span><span class="s1">PY2</span><span class="s3">:</span>
+        <span class="s1">im_func </span><span class="s3">= </span><span class="s1">__func__</span>
+
+<span class="s2">class </span><span class="s1">AdapterWrapper</span><span class="s3">(</span><span class="s1">FunctionWrapper</span><span class="s3">):</span>
+
+    <span class="s1">__bound_function_wrapper__ </span><span class="s3">= </span><span class="s1">_BoundAdapterWrapper</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s1">adapter </span><span class="s3">= </span><span class="s1">kwargs</span><span class="s3">.</span><span class="s1">pop</span><span class="s3">(</span><span class="s5">'adapter'</span><span class="s3">)</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">AdapterWrapper</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">(*</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_surrogate </span><span class="s3">= </span><span class="s1">_AdapterFunctionSurrogate</span><span class="s3">(</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">__wrapped__</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_adapter </span><span class="s3">= </span><span class="s1">adapter</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__code__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_surrogate</span><span class="s3">.</span><span class="s1">__code__</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__defaults__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_surrogate</span><span class="s3">.</span><span class="s1">__defaults__</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__kwdefaults__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_surrogate</span><span class="s3">.</span><span class="s1">__kwdefaults__</span>
+
+    <span class="s2">if </span><span class="s1">PY2</span><span class="s3">:</span>
+        <span class="s1">func_code </span><span class="s3">= </span><span class="s1">__code__</span>
+        <span class="s1">func_defaults </span><span class="s3">= </span><span class="s1">__defaults__</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">__signature__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_surrogate</span><span class="s3">.</span><span class="s1">__signature__</span>
+
+<span class="s2">class </span><span class="s1">AdapterFactory</span><span class="s3">(</span><span class="s1">object</span><span class="s3">):</span>
+    <span class="s2">def </span><span class="s1">__call__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">wrapped</span><span class="s3">):</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">()</span>
+
+<span class="s2">class </span><span class="s1">DelegatedAdapterFactory</span><span class="s3">(</span><span class="s1">AdapterFactory</span><span class="s3">):</span>
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">factory</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">DelegatedAdapterFactory</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">factory </span><span class="s3">= </span><span class="s1">factory</span>
+    <span class="s2">def </span><span class="s1">__call__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">wrapped</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">factory</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">)</span>
+
+<span class="s1">adapter_factory </span><span class="s3">= </span><span class="s1">DelegatedAdapterFactory</span>
+
+<span class="s6"># Decorator for creating other decorators. This decorator and the</span>
+<span class="s6"># wrappers which they use are designed to properly preserve any name</span>
+<span class="s6"># attributes, function signatures etc, in addition to the wrappers</span>
+<span class="s6"># themselves acting like a transparent proxy for the original wrapped</span>
+<span class="s6"># function so the wrapper is effectively indistinguishable from the</span>
+<span class="s6"># original wrapped function.</span>
+
+<span class="s2">def </span><span class="s1">decorator</span><span class="s3">(</span><span class="s1">wrapper</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">enabled</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">proxy</span><span class="s3">=</span><span class="s1">FunctionWrapper</span><span class="s3">):</span>
+    <span class="s6"># The decorator should be supplied with a single positional argument</span>
+    <span class="s6"># which is the wrapper function to be used to implement the</span>
+    <span class="s6"># decorator. This may be preceded by a step whereby the keyword</span>
+    <span class="s6"># arguments are supplied to customise the behaviour of the</span>
+    <span class="s6"># decorator. The 'adapter' argument is used to optionally denote a</span>
+    <span class="s6"># separate function which is notionally used by an adapter</span>
+    <span class="s6"># decorator. In that case parts of the function '__code__' and</span>
+    <span class="s6"># '__defaults__' attributes are used from the adapter function</span>
+    <span class="s6"># rather than those of the wrapped function. This allows for the</span>
+    <span class="s6"># argument specification from inspect.getfullargspec() and similar</span>
+    <span class="s6"># functions to be overridden with a prototype for a different</span>
+    <span class="s6"># function than what was wrapped. The 'enabled' argument provides a</span>
+    <span class="s6"># way to enable/disable the use of the decorator. If the type of</span>
+    <span class="s6"># 'enabled' is a boolean, then it is evaluated immediately and the</span>
+    <span class="s6"># wrapper not even applied if it is False. If not a boolean, it will</span>
+    <span class="s6"># be evaluated when the wrapper is called for an unbound wrapper,</span>
+    <span class="s6"># and when binding occurs for a bound wrapper. When being evaluated,</span>
+    <span class="s6"># if 'enabled' is callable it will be called to obtain the value to</span>
+    <span class="s6"># be checked. If False, the wrapper will not be called and instead</span>
+    <span class="s6"># the original wrapped function will be called directly instead.</span>
+    <span class="s6"># The 'proxy' argument provides a way of passing a custom version of</span>
+    <span class="s6"># the FunctionWrapper class used in decorating the function.</span>
+
+    <span class="s2">if </span><span class="s1">wrapper </span><span class="s2">is not None</span><span class="s3">:</span>
+        <span class="s6"># Helper function for creating wrapper of the appropriate</span>
+        <span class="s6"># time when we need it down below.</span>
+
+        <span class="s2">def </span><span class="s1">_build</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">wrapper</span><span class="s3">, </span><span class="s1">enabled</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+            <span class="s2">if </span><span class="s1">adapter</span><span class="s3">:</span>
+                <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">adapter</span><span class="s3">, </span><span class="s1">AdapterFactory</span><span class="s3">):</span>
+                    <span class="s1">adapter </span><span class="s3">= </span><span class="s1">adapter</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">)</span>
+
+                <span class="s2">if not </span><span class="s1">callable</span><span class="s3">(</span><span class="s1">adapter</span><span class="s3">):</span>
+                    <span class="s1">ns </span><span class="s3">= {}</span>
+
+                    <span class="s6"># Check if the signature argument specification has</span>
+                    <span class="s6"># annotations. If it does then we need to remember</span>
+                    <span class="s6"># it but also drop it when attempting to manufacture</span>
+                    <span class="s6"># a standin adapter function. This is necessary else</span>
+                    <span class="s6"># it will try and look up any types referenced in</span>
+                    <span class="s6"># the annotations in the empty namespace we use,</span>
+                    <span class="s6"># which will fail.</span>
+
+                    <span class="s1">annotations </span><span class="s3">= {}</span>
+
+                    <span class="s2">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">adapter</span><span class="s3">, </span><span class="s1">string_types</span><span class="s3">):</span>
+                        <span class="s2">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">adapter</span><span class="s3">) == </span><span class="s4">7</span><span class="s3">:</span>
+                            <span class="s1">annotations </span><span class="s3">= </span><span class="s1">adapter</span><span class="s3">[-</span><span class="s4">1</span><span class="s3">]</span>
+                            <span class="s1">adapter </span><span class="s3">= </span><span class="s1">adapter</span><span class="s3">[:-</span><span class="s4">1</span><span class="s3">]</span>
+                        <span class="s1">adapter </span><span class="s3">= </span><span class="s1">formatargspec</span><span class="s3">(*</span><span class="s1">adapter</span><span class="s3">)</span>
+
+                    <span class="s1">exec_</span><span class="s3">(</span><span class="s5">'def adapter{}: pass'</span><span class="s3">.</span><span class="s1">format</span><span class="s3">(</span><span class="s1">adapter</span><span class="s3">), </span><span class="s1">ns</span><span class="s3">, </span><span class="s1">ns</span><span class="s3">)</span>
+                    <span class="s1">adapter </span><span class="s3">= </span><span class="s1">ns</span><span class="s3">[</span><span class="s5">'adapter'</span><span class="s3">]</span>
+
+                    <span class="s6"># Override the annotations for the manufactured</span>
+                    <span class="s6"># adapter function so they match the original</span>
+                    <span class="s6"># adapter signature argument specification.</span>
+
+                    <span class="s2">if </span><span class="s1">annotations</span><span class="s3">:</span>
+                        <span class="s1">adapter</span><span class="s3">.</span><span class="s1">__annotations__ </span><span class="s3">= </span><span class="s1">annotations</span>
+
+                <span class="s2">return </span><span class="s1">AdapterWrapper</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">=</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">wrapper</span><span class="s3">=</span><span class="s1">wrapper</span><span class="s3">,</span>
+                        <span class="s1">enabled</span><span class="s3">=</span><span class="s1">enabled</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">=</span><span class="s1">adapter</span><span class="s3">)</span>
+
+            <span class="s2">return </span><span class="s1">proxy</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">=</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">wrapper</span><span class="s3">=</span><span class="s1">wrapper</span><span class="s3">, </span><span class="s1">enabled</span><span class="s3">=</span><span class="s1">enabled</span><span class="s3">)</span>
+
+        <span class="s6"># The wrapper has been provided so return the final decorator.</span>
+        <span class="s6"># The decorator is itself one of our function wrappers so we</span>
+        <span class="s6"># can determine when it is applied to functions, instance methods</span>
+        <span class="s6"># or class methods. This allows us to bind the instance or class</span>
+        <span class="s6"># method so the appropriate self or cls attribute is supplied</span>
+        <span class="s6"># when it is finally called.</span>
+
+        <span class="s2">def </span><span class="s1">_wrapper</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">instance</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">kwargs</span><span class="s3">):</span>
+            <span class="s6"># We first check for the case where the decorator was applied</span>
+            <span class="s6"># to a class type.</span>
+            <span class="s6">#</span>
+            <span class="s6">#     @decorator</span>
+            <span class="s6">#     class mydecoratorclass(object):</span>
+            <span class="s6">#         def __init__(self, arg=None):</span>
+            <span class="s6">#             self.arg = arg</span>
+            <span class="s6">#         def __call__(self, wrapped, instance, args, kwargs):</span>
+            <span class="s6">#             return wrapped(*args, **kwargs)</span>
+            <span class="s6">#</span>
+            <span class="s6">#     @mydecoratorclass(arg=1)</span>
+            <span class="s6">#     def function():</span>
+            <span class="s6">#         pass</span>
+            <span class="s6">#</span>
+            <span class="s6"># In this case an instance of the class is to be used as the</span>
+            <span class="s6"># decorator wrapper function. If args was empty at this point,</span>
+            <span class="s6"># then it means that there were optional keyword arguments</span>
+            <span class="s6"># supplied to be used when creating an instance of the class</span>
+            <span class="s6"># to be used as the wrapper function.</span>
+
+            <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None and </span><span class="s1">isclass</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">) </span><span class="s2">and not </span><span class="s1">args</span><span class="s3">:</span>
+                <span class="s6"># We still need to be passed the target function to be</span>
+                <span class="s6"># wrapped as yet, so we need to return a further function</span>
+                <span class="s6"># to be able to capture it.</span>
+
+                <span class="s2">def </span><span class="s1">_capture</span><span class="s3">(</span><span class="s1">target_wrapped</span><span class="s3">):</span>
+                    <span class="s6"># Now have the target function to be wrapped and need</span>
+                    <span class="s6"># to create an instance of the class which is to act</span>
+                    <span class="s6"># as the decorator wrapper function. Before we do that,</span>
+                    <span class="s6"># we need to first check that use of the decorator</span>
+                    <span class="s6"># hadn't been disabled by a simple boolean. If it was,</span>
+                    <span class="s6"># the target function to be wrapped is returned instead.</span>
+
+                    <span class="s1">_enabled </span><span class="s3">= </span><span class="s1">enabled</span>
+                    <span class="s2">if </span><span class="s1">type</span><span class="s3">(</span><span class="s1">_enabled</span><span class="s3">) </span><span class="s2">is </span><span class="s1">bool</span><span class="s3">:</span>
+                        <span class="s2">if not </span><span class="s1">_enabled</span><span class="s3">:</span>
+                            <span class="s2">return </span><span class="s1">target_wrapped</span>
+                        <span class="s1">_enabled </span><span class="s3">= </span><span class="s2">None</span>
+
+                    <span class="s6"># Now create an instance of the class which is to act</span>
+                    <span class="s6"># as the decorator wrapper function. Any arguments had</span>
+                    <span class="s6"># to be supplied as keyword only arguments so that is</span>
+                    <span class="s6"># all we pass when creating it.</span>
+
+                    <span class="s1">target_wrapper </span><span class="s3">= </span><span class="s1">wrapped</span><span class="s3">(**</span><span class="s1">kwargs</span><span class="s3">)</span>
+
+                    <span class="s6"># Finally build the wrapper itself and return it.</span>
+
+                    <span class="s2">return </span><span class="s1">_build</span><span class="s3">(</span><span class="s1">target_wrapped</span><span class="s3">, </span><span class="s1">target_wrapper</span><span class="s3">,</span>
+                            <span class="s1">_enabled</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">)</span>
+
+                <span class="s2">return </span><span class="s1">_capture</span>
+
+            <span class="s6"># We should always have the target function to be wrapped at</span>
+            <span class="s6"># this point as the first (and only) value in args.</span>
+
+            <span class="s1">target_wrapped </span><span class="s3">= </span><span class="s1">args</span><span class="s3">[</span><span class="s4">0</span><span class="s3">]</span>
+
+            <span class="s6"># Need to now check that use of the decorator hadn't been</span>
+            <span class="s6"># disabled by a simple boolean. If it was, then target</span>
+            <span class="s6"># function to be wrapped is returned instead.</span>
+
+            <span class="s1">_enabled </span><span class="s3">= </span><span class="s1">enabled</span>
+            <span class="s2">if </span><span class="s1">type</span><span class="s3">(</span><span class="s1">_enabled</span><span class="s3">) </span><span class="s2">is </span><span class="s1">bool</span><span class="s3">:</span>
+                <span class="s2">if not </span><span class="s1">_enabled</span><span class="s3">:</span>
+                    <span class="s2">return </span><span class="s1">target_wrapped</span>
+                <span class="s1">_enabled </span><span class="s3">= </span><span class="s2">None</span>
+
+            <span class="s6"># We now need to build the wrapper, but there are a couple of</span>
+            <span class="s6"># different cases we need to consider.</span>
+
+            <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None</span><span class="s3">:</span>
+                <span class="s2">if </span><span class="s1">isclass</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">):</span>
+                    <span class="s6"># In this case the decorator was applied to a class</span>
+                    <span class="s6"># type but optional keyword arguments were not supplied</span>
+                    <span class="s6"># for initialising an instance of the class to be used</span>
+                    <span class="s6"># as the decorator wrapper function.</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     @decorator</span>
+                    <span class="s6">#     class mydecoratorclass(object):</span>
+                    <span class="s6">#         def __init__(self, arg=None):</span>
+                    <span class="s6">#             self.arg = arg</span>
+                    <span class="s6">#         def __call__(self, wrapped, instance,</span>
+                    <span class="s6">#                 args, kwargs):</span>
+                    <span class="s6">#             return wrapped(*args, **kwargs)</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     @mydecoratorclass</span>
+                    <span class="s6">#     def function():</span>
+                    <span class="s6">#         pass</span>
+                    <span class="s6">#</span>
+                    <span class="s6"># We still need to create an instance of the class to</span>
+                    <span class="s6"># be used as the decorator wrapper function, but no</span>
+                    <span class="s6"># arguments are pass.</span>
+
+                    <span class="s1">target_wrapper </span><span class="s3">= </span><span class="s1">wrapped</span><span class="s3">()</span>
+
+                <span class="s2">else</span><span class="s3">:</span>
+                    <span class="s6"># In this case the decorator was applied to a normal</span>
+                    <span class="s6"># function, or possibly a static method of a class.</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     @decorator</span>
+                    <span class="s6">#     def mydecoratorfuntion(wrapped, instance,</span>
+                    <span class="s6">#             args, kwargs):</span>
+                    <span class="s6">#         return wrapped(*args, **kwargs)</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     @mydecoratorfunction</span>
+                    <span class="s6">#     def function():</span>
+                    <span class="s6">#         pass</span>
+                    <span class="s6">#</span>
+                    <span class="s6"># That normal function becomes the decorator wrapper</span>
+                    <span class="s6"># function.</span>
+
+                    <span class="s1">target_wrapper </span><span class="s3">= </span><span class="s1">wrapper</span>
+
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s2">if </span><span class="s1">isclass</span><span class="s3">(</span><span class="s1">instance</span><span class="s3">):</span>
+                    <span class="s6"># In this case the decorator was applied to a class</span>
+                    <span class="s6"># method.</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     class myclass(object):</span>
+                    <span class="s6">#         @decorator</span>
+                    <span class="s6">#         @classmethod</span>
+                    <span class="s6">#         def decoratorclassmethod(cls, wrapped,</span>
+                    <span class="s6">#                 instance, args, kwargs):</span>
+                    <span class="s6">#             return wrapped(*args, **kwargs)</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     instance = myclass()</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     @instance.decoratorclassmethod</span>
+                    <span class="s6">#     def function():</span>
+                    <span class="s6">#         pass</span>
+                    <span class="s6">#</span>
+                    <span class="s6"># This one is a bit strange because binding was actually</span>
+                    <span class="s6"># performed on the wrapper created by our decorator</span>
+                    <span class="s6"># factory. We need to apply that binding to the decorator</span>
+                    <span class="s6"># wrapper function that the decorator factory</span>
+                    <span class="s6"># was applied to.</span>
+
+                    <span class="s1">target_wrapper </span><span class="s3">= </span><span class="s1">wrapper</span><span class="s3">.</span><span class="s1">__get__</span><span class="s3">(</span><span class="s2">None</span><span class="s3">, </span><span class="s1">instance</span><span class="s3">)</span>
+
+                <span class="s2">else</span><span class="s3">:</span>
+                    <span class="s6"># In this case the decorator was applied to an instance</span>
+                    <span class="s6"># method.</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     class myclass(object):</span>
+                    <span class="s6">#         @decorator</span>
+                    <span class="s6">#         def decoratorclassmethod(self, wrapped,</span>
+                    <span class="s6">#                 instance, args, kwargs):</span>
+                    <span class="s6">#             return wrapped(*args, **kwargs)</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     instance = myclass()</span>
+                    <span class="s6">#</span>
+                    <span class="s6">#     @instance.decoratorclassmethod</span>
+                    <span class="s6">#     def function():</span>
+                    <span class="s6">#         pass</span>
+                    <span class="s6">#</span>
+                    <span class="s6"># This one is a bit strange because binding was actually</span>
+                    <span class="s6"># performed on the wrapper created by our decorator</span>
+                    <span class="s6"># factory. We need to apply that binding to the decorator</span>
+                    <span class="s6"># wrapper function that the decorator factory</span>
+                    <span class="s6"># was applied to.</span>
+
+                    <span class="s1">target_wrapper </span><span class="s3">= </span><span class="s1">wrapper</span><span class="s3">.</span><span class="s1">__get__</span><span class="s3">(</span><span class="s1">instance</span><span class="s3">, </span><span class="s1">type</span><span class="s3">(</span><span class="s1">instance</span><span class="s3">))</span>
+
+            <span class="s6"># Finally build the wrapper itself and return it.</span>
+
+            <span class="s2">return </span><span class="s1">_build</span><span class="s3">(</span><span class="s1">target_wrapped</span><span class="s3">, </span><span class="s1">target_wrapper</span><span class="s3">, </span><span class="s1">_enabled</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">)</span>
+
+        <span class="s6"># We first return our magic function wrapper here so we can</span>
+        <span class="s6"># determine in what context the decorator factory was used. In</span>
+        <span class="s6"># other words, it is itself a universal decorator. The decorator</span>
+        <span class="s6"># function is used as the adapter so that linters see a signature</span>
+        <span class="s6"># corresponding to the decorator and not the wrapper it is being</span>
+        <span class="s6"># applied to.</span>
+
+        <span class="s2">return </span><span class="s1">_build</span><span class="s3">(</span><span class="s1">wrapper</span><span class="s3">, </span><span class="s1">_wrapper</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">=</span><span class="s1">decorator</span><span class="s3">)</span>
+
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s6"># The wrapper still has not been provided, so we are just</span>
+        <span class="s6"># collecting the optional keyword arguments. Return the</span>
+        <span class="s6"># decorator again wrapped in a partial using the collected</span>
+        <span class="s6"># arguments.</span>
+
+        <span class="s2">return </span><span class="s1">partial</span><span class="s3">(</span><span class="s1">decorator</span><span class="s3">, </span><span class="s1">enabled</span><span class="s3">=</span><span class="s1">enabled</span><span class="s3">, </span><span class="s1">adapter</span><span class="s3">=</span><span class="s1">adapter</span><span class="s3">,</span>
+                <span class="s1">proxy</span><span class="s3">=</span><span class="s1">proxy</span><span class="s3">)</span>
+
+<span class="s6"># Decorator for implementing thread synchronization. It can be used as a</span>
+<span class="s6"># decorator, in which case the synchronization context is determined by</span>
+<span class="s6"># what type of function is wrapped, or it can also be used as a context</span>
+<span class="s6"># manager, where the user needs to supply the correct synchronization</span>
+<span class="s6"># context. It is also possible to supply an object which appears to be a</span>
+<span class="s6"># synchronization primitive of some sort, by virtue of having release()</span>
+<span class="s6"># and acquire() methods. In that case that will be used directly as the</span>
+<span class="s6"># synchronization primitive without creating a separate lock against the</span>
+<span class="s6"># derived or supplied context.</span>
+
+<span class="s2">def </span><span class="s1">synchronized</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">):</span>
+    <span class="s6"># Determine if being passed an object which is a synchronization</span>
+    <span class="s6"># primitive. We can't check by type for Lock, RLock, Semaphore etc,</span>
+    <span class="s6"># as the means of creating them isn't the type. Therefore use the</span>
+    <span class="s6"># existence of acquire() and release() methods. This is more</span>
+    <span class="s6"># extensible anyway as it allows custom synchronization mechanisms.</span>
+
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s5">'acquire'</span><span class="s3">) </span><span class="s2">and </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s5">'release'</span><span class="s3">):</span>
+        <span class="s6"># We remember what the original lock is and then return a new</span>
+        <span class="s6"># decorator which accesses and locks it. When returning the new</span>
+        <span class="s6"># decorator we wrap it with an object proxy so we can override</span>
+        <span class="s6"># the context manager methods in case it is being used to wrap</span>
+        <span class="s6"># synchronized statements with a 'with' statement.</span>
+
+        <span class="s1">lock </span><span class="s3">= </span><span class="s1">wrapped</span>
+
+        <span class="s3">@</span><span class="s1">decorator</span>
+        <span class="s2">def </span><span class="s1">_synchronized</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">instance</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">kwargs</span><span class="s3">):</span>
+            <span class="s6"># Execute the wrapped function while the original supplied</span>
+            <span class="s6"># lock is held.</span>
+
+            <span class="s2">with </span><span class="s1">lock</span><span class="s3">:</span>
+                <span class="s2">return </span><span class="s1">wrapped</span><span class="s3">(*</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+
+        <span class="s2">class </span><span class="s1">_PartialDecorator</span><span class="s3">(</span><span class="s1">CallableObjectProxy</span><span class="s3">):</span>
+
+            <span class="s2">def </span><span class="s1">__enter__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+                <span class="s1">lock</span><span class="s3">.</span><span class="s1">acquire</span><span class="s3">()</span>
+                <span class="s2">return </span><span class="s1">lock</span>
+
+            <span class="s2">def </span><span class="s1">__exit__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">):</span>
+                <span class="s1">lock</span><span class="s3">.</span><span class="s1">release</span><span class="s3">()</span>
+
+        <span class="s2">return </span><span class="s1">_PartialDecorator</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">=</span><span class="s1">_synchronized</span><span class="s3">)</span>
+
+    <span class="s6"># Following only apply when the lock is being created automatically</span>
+    <span class="s6"># based on the context of what was supplied. In this case we supply</span>
+    <span class="s6"># a final decorator, but need to use FunctionWrapper directly as we</span>
+    <span class="s6"># want to derive from it to add context manager methods in case it is</span>
+    <span class="s6"># being used to wrap synchronized statements with a 'with' statement.</span>
+
+    <span class="s2">def </span><span class="s1">_synchronized_lock</span><span class="s3">(</span><span class="s1">context</span><span class="s3">):</span>
+        <span class="s6"># Attempt to retrieve the lock for the specific context.</span>
+
+        <span class="s1">lock </span><span class="s3">= </span><span class="s1">vars</span><span class="s3">(</span><span class="s1">context</span><span class="s3">).</span><span class="s1">get</span><span class="s3">(</span><span class="s5">'_synchronized_lock'</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">lock </span><span class="s2">is None</span><span class="s3">:</span>
+            <span class="s6"># There is no existing lock defined for the context we</span>
+            <span class="s6"># are dealing with so we need to create one. This needs</span>
+            <span class="s6"># to be done in a way to guarantee there is only one</span>
+            <span class="s6"># created, even if multiple threads try and create it at</span>
+            <span class="s6"># the same time. We can't always use the setdefault()</span>
+            <span class="s6"># method on the __dict__ for the context. This is the</span>
+            <span class="s6"># case where the context is a class, as __dict__ is</span>
+            <span class="s6"># actually a dictproxy. What we therefore do is use a</span>
+            <span class="s6"># meta lock on this wrapper itself, to control the</span>
+            <span class="s6"># creation and assignment of the lock attribute against</span>
+            <span class="s6"># the context.</span>
+
+            <span class="s2">with </span><span class="s1">synchronized</span><span class="s3">.</span><span class="s1">_synchronized_meta_lock</span><span class="s3">:</span>
+                <span class="s6"># We need to check again for whether the lock we want</span>
+                <span class="s6"># exists in case two threads were trying to create it</span>
+                <span class="s6"># at the same time and were competing to create the</span>
+                <span class="s6"># meta lock.</span>
+
+                <span class="s1">lock </span><span class="s3">= </span><span class="s1">vars</span><span class="s3">(</span><span class="s1">context</span><span class="s3">).</span><span class="s1">get</span><span class="s3">(</span><span class="s5">'_synchronized_lock'</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+
+                <span class="s2">if </span><span class="s1">lock </span><span class="s2">is None</span><span class="s3">:</span>
+                    <span class="s1">lock </span><span class="s3">= </span><span class="s1">RLock</span><span class="s3">()</span>
+                    <span class="s1">setattr</span><span class="s3">(</span><span class="s1">context</span><span class="s3">, </span><span class="s5">'_synchronized_lock'</span><span class="s3">, </span><span class="s1">lock</span><span class="s3">)</span>
+
+        <span class="s2">return </span><span class="s1">lock</span>
+
+    <span class="s2">def </span><span class="s1">_synchronized_wrapper</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">instance</span><span class="s3">, </span><span class="s1">args</span><span class="s3">, </span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s6"># Execute the wrapped function while the lock for the</span>
+        <span class="s6"># desired context is held. If instance is None then the</span>
+        <span class="s6"># wrapped function is used as the context.</span>
+
+        <span class="s2">with </span><span class="s1">_synchronized_lock</span><span class="s3">(</span><span class="s1">instance </span><span class="s2">if </span><span class="s1">instance </span><span class="s2">is not None else </span><span class="s1">wrapped</span><span class="s3">):</span>
+            <span class="s2">return </span><span class="s1">wrapped</span><span class="s3">(*</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+
+    <span class="s2">class </span><span class="s1">_FinalDecorator</span><span class="s3">(</span><span class="s1">FunctionWrapper</span><span class="s3">):</span>
+
+        <span class="s2">def </span><span class="s1">__enter__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_lock </span><span class="s3">= </span><span class="s1">_synchronized_lock</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">__wrapped__</span><span class="s3">)</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_lock</span><span class="s3">.</span><span class="s1">acquire</span><span class="s3">()</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_self_lock</span>
+
+        <span class="s2">def </span><span class="s1">__exit__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">):</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_self_lock</span><span class="s3">.</span><span class="s1">release</span><span class="s3">()</span>
+
+    <span class="s2">return </span><span class="s1">_FinalDecorator</span><span class="s3">(</span><span class="s1">wrapped</span><span class="s3">=</span><span class="s1">wrapped</span><span class="s3">, </span><span class="s1">wrapper</span><span class="s3">=</span><span class="s1">_synchronized_wrapper</span><span class="s3">)</span>
+
+<span class="s1">synchronized</span><span class="s3">.</span><span class="s1">_synchronized_meta_lock </span><span class="s3">= </span><span class="s1">Lock</span><span class="s3">()</span>
+</pre>
+</body>
+</html>

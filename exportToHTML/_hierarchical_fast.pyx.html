@@ -1,0 +1,523 @@
+<html>
+<head>
+<title>_hierarchical_fast.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_hierarchical_fast.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Author: Gael Varoquaux &lt;gael.varoquaux@normalesup.org&gt;</span>
+
+<span class="s0">import numpy as np</span>
+<span class="s0">cimport cython</span>
+
+<span class="s0">from ..metrics._dist_metrics cimport DistanceMetric64</span>
+<span class="s0">from ..utils._fast_dict cimport IntFloatDict</span>
+<span class="s0">from ..utils._typedefs cimport float64_t, intp_t, uint8_t</span>
+
+<span class="s0"># C++</span>
+<span class="s0">from cython.operator cimport dereference as deref, preincrement as inc</span>
+<span class="s0">from libcpp.map cimport map as cpp_map</span>
+<span class="s0">from libc.math cimport fmax, INFINITY</span>
+
+
+<span class="s0">###############################################################################</span>
+<span class="s0"># Utilities for computing the ward momentum</span>
+
+<span class="s0">def compute_ward_dist(</span>
+    <span class="s0">const float64_t[::1] m_1,</span>
+    <span class="s0">const float64_t[:, ::1] m_2,</span>
+    <span class="s0">const intp_t[::1] coord_row,</span>
+    <span class="s0">const intp_t[::1] coord_col,</span>
+    <span class="s0">float64_t[::1] res</span>
+<span class="s0">):</span>
+    <span class="s0">cdef intp_t size_max = coord_row.shape[0]</span>
+    <span class="s0">cdef intp_t n_features = m_2.shape[1]</span>
+    <span class="s0">cdef intp_t i, j, row, col</span>
+    <span class="s0">cdef float64_t pa, n</span>
+
+    <span class="s0">for i in range(size_max):</span>
+        <span class="s0">row = coord_row[i]</span>
+        <span class="s0">col = coord_col[i]</span>
+        <span class="s0">n = (m_1[row] * m_1[col]) / (m_1[row] + m_1[col])</span>
+        <span class="s0">pa = 0.</span>
+        <span class="s0">for j in range(n_features):</span>
+            <span class="s0">pa += (m_2[row, j] / m_1[row] - m_2[col, j] / m_1[col]) ** 2</span>
+        <span class="s0">res[i] = pa * n</span>
+
+
+<span class="s0">###############################################################################</span>
+<span class="s0"># Utilities for cutting and exploring a hierarchical tree</span>
+
+<span class="s0">def _hc_get_descendent(intp_t node, children, intp_t n_leaves):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Function returning all the descendent leaves of a set of nodes in the tree.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">node : integer</span>
+        <span class="s0">The node for which we want the descendents.</span>
+
+    <span class="s0">children : list of pairs, length n_nodes</span>
+        <span class="s0">The children of each non-leaf node. Values less than `n_samples` refer</span>
+        <span class="s0">to leaves of the tree. A greater value `i` indicates a node with</span>
+        <span class="s0">children `children[i - n_samples]`.</span>
+
+    <span class="s0">n_leaves : integer</span>
+        <span class="s0">Number of leaves.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">descendent : list of int</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">ind = [node]</span>
+    <span class="s0">if node &lt; n_leaves:</span>
+        <span class="s0">return ind</span>
+    <span class="s0">descendent = []</span>
+
+    <span class="s0"># It is actually faster to do the accounting of the number of</span>
+    <span class="s0"># elements is the list ourselves: len is a lengthy operation on a</span>
+    <span class="s0"># chained list</span>
+    <span class="s0">cdef intp_t i, n_indices = 1</span>
+
+    <span class="s0">while n_indices:</span>
+        <span class="s0">i = ind.pop()</span>
+        <span class="s0">if i &lt; n_leaves:</span>
+            <span class="s0">descendent.append(i)</span>
+            <span class="s0">n_indices -= 1</span>
+        <span class="s0">else:</span>
+            <span class="s0">ind.extend(children[i - n_leaves])</span>
+            <span class="s0">n_indices += 1</span>
+    <span class="s0">return descendent</span>
+
+
+<span class="s0">def hc_get_heads(intp_t[:] parents, copy=True):</span>
+    <span class="s0">&quot;&quot;&quot;Returns the heads of the forest, as defined by parents.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">parents : array of integers</span>
+        <span class="s0">The parent structure defining the forest (ensemble of trees)</span>
+    <span class="s0">copy : boolean</span>
+        <span class="s0">If copy is False, the input 'parents' array is modified inplace</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">heads : array of integers of same shape as parents</span>
+        <span class="s0">The indices in the 'parents' of the tree heads</span>
+
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef intp_t parent, node0, node, size</span>
+    <span class="s0">if copy:</span>
+        <span class="s0">parents = np.copy(parents)</span>
+    <span class="s0">size = parents.size</span>
+
+    <span class="s0"># Start from the top of the tree and go down</span>
+    <span class="s0">for node0 in range(size - 1, -1, -1):</span>
+        <span class="s0">node = node0</span>
+        <span class="s0">parent = parents[node]</span>
+        <span class="s0">while parent != node:</span>
+            <span class="s0">parents[node0] = parent</span>
+            <span class="s0">node = parent</span>
+            <span class="s0">parent = parents[node]</span>
+    <span class="s0">return parents</span>
+
+
+<span class="s0">def _get_parents(</span>
+    <span class="s0">nodes,</span>
+    <span class="s0">heads,</span>
+    <span class="s0">const intp_t[:] parents,</span>
+    <span class="s0">uint8_t[::1] not_visited</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Returns the heads of the given nodes, as defined by parents.</span>
+
+    <span class="s0">Modifies 'heads' and 'not_visited' in-place.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">nodes : list of integers</span>
+        <span class="s0">The nodes to start from</span>
+    <span class="s0">heads : list of integers</span>
+        <span class="s0">A list to hold the results (modified inplace)</span>
+    <span class="s0">parents : array of integers</span>
+        <span class="s0">The parent structure defining the tree</span>
+    <span class="s0">not_visited</span>
+        <span class="s0">The tree nodes to consider (modified inplace)</span>
+
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef intp_t parent, node</span>
+
+    <span class="s0">for node in nodes:</span>
+        <span class="s0">parent = parents[node]</span>
+        <span class="s0">while parent != node:</span>
+            <span class="s0">node = parent</span>
+            <span class="s0">parent = parents[node]</span>
+        <span class="s0">if not_visited[node]:</span>
+            <span class="s0">not_visited[node] = 0</span>
+            <span class="s0">heads.append(node)</span>
+
+
+<span class="s0">###############################################################################</span>
+<span class="s0"># merge strategies implemented on IntFloatDicts</span>
+
+<span class="s0"># These are used in the hierarchical clustering code, to implement</span>
+<span class="s0"># merging between two clusters, defined as a dict containing node number</span>
+<span class="s0"># as keys and edge weights as values.</span>
+
+
+<span class="s0">def max_merge(</span>
+    <span class="s0">IntFloatDict a,</span>
+    <span class="s0">IntFloatDict b,</span>
+    <span class="s0">const intp_t[:] mask,</span>
+    <span class="s0">intp_t n_a,</span>
+    <span class="s0">intp_t n_b</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Merge two IntFloatDicts with the max strategy: when the same key is</span>
+    <span class="s0">present in the two dicts, the max of the two values is used.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">==========</span>
+    <span class="s0">a, b : IntFloatDict object</span>
+        <span class="s0">The IntFloatDicts to merge</span>
+    <span class="s0">mask : ndarray array of dtype integer and of dimension 1</span>
+        <span class="s0">a mask for keys to ignore: if not mask[key] the corresponding key</span>
+        <span class="s0">is skipped in the output dictionary</span>
+    <span class="s0">n_a, n_b : float</span>
+        <span class="s0">n_a and n_b are weights for a and b for the merge strategy.</span>
+        <span class="s0">They are not used in the case of a max merge.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">=======</span>
+    <span class="s0">out : IntFloatDict object</span>
+        <span class="s0">The IntFloatDict resulting from the merge</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef IntFloatDict out_obj = IntFloatDict.__new__(IntFloatDict)</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator a_it = a.my_map.begin()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator a_end = a.my_map.end()</span>
+    <span class="s0">cdef intp_t key</span>
+    <span class="s0">cdef float64_t value</span>
+    <span class="s0"># First copy a into out</span>
+    <span class="s0">while a_it != a_end:</span>
+        <span class="s0">key = deref(a_it).first</span>
+        <span class="s0">if mask[key]:</span>
+            <span class="s0">out_obj.my_map[key] = deref(a_it).second</span>
+        <span class="s0">inc(a_it)</span>
+
+    <span class="s0"># Then merge b into out</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator out_it = out_obj.my_map.begin()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator out_end = out_obj.my_map.end()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator b_it = b.my_map.begin()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator b_end = b.my_map.end()</span>
+    <span class="s0">while b_it != b_end:</span>
+        <span class="s0">key = deref(b_it).first</span>
+        <span class="s0">value = deref(b_it).second</span>
+        <span class="s0">if mask[key]:</span>
+            <span class="s0">out_it = out_obj.my_map.find(key)</span>
+            <span class="s0">if out_it == out_end:</span>
+                <span class="s0"># Key not found</span>
+                <span class="s0">out_obj.my_map[key] = value</span>
+            <span class="s0">else:</span>
+                <span class="s0">deref(out_it).second = fmax(deref(out_it).second, value)</span>
+        <span class="s0">inc(b_it)</span>
+    <span class="s0">return out_obj</span>
+
+
+<span class="s0">def average_merge(</span>
+    <span class="s0">IntFloatDict a,</span>
+    <span class="s0">IntFloatDict b,</span>
+    <span class="s0">const intp_t[:] mask,</span>
+    <span class="s0">intp_t n_a,</span>
+    <span class="s0">intp_t n_b</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Merge two IntFloatDicts with the average strategy: when the</span>
+    <span class="s0">same key is present in the two dicts, the weighted average of the two</span>
+    <span class="s0">values is used.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">==========</span>
+    <span class="s0">a, b : IntFloatDict object</span>
+        <span class="s0">The IntFloatDicts to merge</span>
+    <span class="s0">mask : ndarray array of dtype integer and of dimension 1</span>
+        <span class="s0">a mask for keys to ignore: if not mask[key] the corresponding key</span>
+        <span class="s0">is skipped in the output dictionary</span>
+    <span class="s0">n_a, n_b : float</span>
+        <span class="s0">n_a and n_b are weights for a and b for the merge strategy.</span>
+        <span class="s0">They are used for a weighted mean.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">=======</span>
+    <span class="s0">out : IntFloatDict object</span>
+        <span class="s0">The IntFloatDict resulting from the merge</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef IntFloatDict out_obj = IntFloatDict.__new__(IntFloatDict)</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator a_it = a.my_map.begin()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator a_end = a.my_map.end()</span>
+    <span class="s0">cdef intp_t key</span>
+    <span class="s0">cdef float64_t value</span>
+    <span class="s0">cdef float64_t n_out = &lt;float64_t&gt; (n_a + n_b)</span>
+    <span class="s0"># First copy a into out</span>
+    <span class="s0">while a_it != a_end:</span>
+        <span class="s0">key = deref(a_it).first</span>
+        <span class="s0">if mask[key]:</span>
+            <span class="s0">out_obj.my_map[key] = deref(a_it).second</span>
+        <span class="s0">inc(a_it)</span>
+
+    <span class="s0"># Then merge b into out</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator out_it = out_obj.my_map.begin()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator out_end = out_obj.my_map.end()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator b_it = b.my_map.begin()</span>
+    <span class="s0">cdef cpp_map[intp_t, float64_t].iterator b_end = b.my_map.end()</span>
+    <span class="s0">while b_it != b_end:</span>
+        <span class="s0">key = deref(b_it).first</span>
+        <span class="s0">value = deref(b_it).second</span>
+        <span class="s0">if mask[key]:</span>
+            <span class="s0">out_it = out_obj.my_map.find(key)</span>
+            <span class="s0">if out_it == out_end:</span>
+                <span class="s0"># Key not found</span>
+                <span class="s0">out_obj.my_map[key] = value</span>
+            <span class="s0">else:</span>
+                <span class="s0">deref(out_it).second = (n_a * deref(out_it).second</span>
+                                        <span class="s0">+ n_b * value) / n_out</span>
+        <span class="s0">inc(b_it)</span>
+    <span class="s0">return out_obj</span>
+
+
+<span class="s0">###############################################################################</span>
+<span class="s0"># An edge object for fast comparisons</span>
+
+<span class="s0">cdef class WeightedEdge:</span>
+    <span class="s0">cdef public intp_t a</span>
+    <span class="s0">cdef public intp_t b</span>
+    <span class="s0">cdef public float64_t weight</span>
+
+    <span class="s0">def __init__(self, float64_t weight, intp_t a, intp_t b):</span>
+        <span class="s0">self.weight = weight</span>
+        <span class="s0">self.a = a</span>
+        <span class="s0">self.b = b</span>
+
+    <span class="s0">def __richcmp__(self, WeightedEdge other, int op):</span>
+        <span class="s0">&quot;&quot;&quot;Cython-specific comparison method.</span>
+
+        <span class="s0">op is the comparison code::</span>
+            <span class="s0">&lt;   0</span>
+            <span class="s0">==  2</span>
+            <span class="s0">&gt;   4</span>
+            <span class="s0">&lt;=  1</span>
+            <span class="s0">!=  3</span>
+            <span class="s0">&gt;=  5</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if op == 0:</span>
+            <span class="s0">return self.weight &lt; other.weight</span>
+        <span class="s0">elif op == 1:</span>
+            <span class="s0">return self.weight &lt;= other.weight</span>
+        <span class="s0">elif op == 2:</span>
+            <span class="s0">return self.weight == other.weight</span>
+        <span class="s0">elif op == 3:</span>
+            <span class="s0">return self.weight != other.weight</span>
+        <span class="s0">elif op == 4:</span>
+            <span class="s0">return self.weight &gt; other.weight</span>
+        <span class="s0">elif op == 5:</span>
+            <span class="s0">return self.weight &gt;= other.weight</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return &quot;%s(weight=%f, a=%i, b=%i)&quot; % (self.__class__.__name__,</span>
+                                              <span class="s0">self.weight,</span>
+                                              <span class="s0">self.a, self.b)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Efficient labelling/conversion of MSTs to single linkage hierarchies</span>
+
+<span class="s0">cdef class UnionFind(object):</span>
+
+    <span class="s0">def __init__(self, N):</span>
+        <span class="s0">self.parent = np.full(2 * N - 1, -1., dtype=np.intp, order='C')</span>
+        <span class="s0">self.next_label = N</span>
+        <span class="s0">self.size = np.hstack((np.ones(N, dtype=np.intp),</span>
+                               <span class="s0">np.zeros(N - 1, dtype=np.intp)))</span>
+
+    <span class="s0">cdef void union(self, intp_t m, intp_t n) noexcept:</span>
+        <span class="s0">self.parent[m] = self.next_label</span>
+        <span class="s0">self.parent[n] = self.next_label</span>
+        <span class="s0">self.size[self.next_label] = self.size[m] + self.size[n]</span>
+        <span class="s0">self.next_label += 1</span>
+        <span class="s0">return</span>
+
+    <span class="s0">@cython.wraparound(True)</span>
+    <span class="s0">cdef intp_t fast_find(self, intp_t n) noexcept:</span>
+        <span class="s0">cdef intp_t p</span>
+        <span class="s0">p = n</span>
+        <span class="s0"># find the highest node in the linkage graph so far</span>
+        <span class="s0">while self.parent[n] != -1:</span>
+            <span class="s0">n = self.parent[n]</span>
+        <span class="s0"># provide a shortcut up to the highest node</span>
+        <span class="s0">while self.parent[p] != n:</span>
+            <span class="s0">p, self.parent[p] = self.parent[p], n</span>
+        <span class="s0">return n</span>
+
+
+<span class="s0">def _single_linkage_label(const float64_t[:, :] L):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Convert an linkage array or MST to a tree by labelling clusters at merges.</span>
+    <span class="s0">This is done by using a Union find structure to keep track of merges</span>
+    <span class="s0">efficiently. This is the private version of the function that assumes that</span>
+    <span class="s0">``L`` has been properly validated. See ``single_linkage_label`` for the</span>
+    <span class="s0">user facing version of this function.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">L: array of shape (n_samples - 1, 3)</span>
+        <span class="s0">The linkage array or MST where each row specifies two samples</span>
+        <span class="s0">to be merged and a distance or weight at which the merge occurs. This</span>
+         <span class="s0">array is assumed to be sorted by the distance/weight.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">A tree in the format used by scipy.cluster.hierarchy.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef float64_t[:, ::1] result_arr</span>
+
+    <span class="s0">cdef intp_t left, left_cluster, right, right_cluster, index</span>
+    <span class="s0">cdef float64_t delta</span>
+
+    <span class="s0">result_arr = np.zeros((L.shape[0], 4), dtype=np.float64)</span>
+    <span class="s0">U = UnionFind(L.shape[0] + 1)</span>
+
+    <span class="s0">for index in range(L.shape[0]):</span>
+
+        <span class="s0">left = &lt;intp_t&gt; L[index, 0]</span>
+        <span class="s0">right = &lt;intp_t&gt; L[index, 1]</span>
+        <span class="s0">delta = L[index, 2]</span>
+
+        <span class="s0">left_cluster = U.fast_find(left)</span>
+        <span class="s0">right_cluster = U.fast_find(right)</span>
+
+        <span class="s0">result_arr[index][0] = left_cluster</span>
+        <span class="s0">result_arr[index][1] = right_cluster</span>
+        <span class="s0">result_arr[index][2] = delta</span>
+        <span class="s0">result_arr[index][3] = U.size[left_cluster] + U.size[right_cluster]</span>
+
+        <span class="s0">U.union(left_cluster, right_cluster)</span>
+
+    <span class="s0">return np.asarray(result_arr)</span>
+
+
+<span class="s0">@cython.wraparound(True)</span>
+<span class="s0">def single_linkage_label(L):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Convert an linkage array or MST to a tree by labelling clusters at merges.</span>
+    <span class="s0">This is done by using a Union find structure to keep track of merges</span>
+    <span class="s0">efficiently.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">L: array of shape (n_samples - 1, 3)</span>
+        <span class="s0">The linkage array or MST where each row specifies two samples</span>
+        <span class="s0">to be merged and a distance or weight at which the merge occurs. This</span>
+         <span class="s0">array is assumed to be sorted by the distance/weight.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">A tree in the format used by scipy.cluster.hierarchy.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0"># Validate L</span>
+    <span class="s0">if L[:, :2].min() &lt; 0 or L[:, :2].max() &gt;= 2 * L.shape[0] + 1:</span>
+        <span class="s0">raise ValueError(&quot;Input MST array is not a validly formatted MST array&quot;)</span>
+
+    <span class="s0">is_sorted = lambda x: np.all(x[:-1] &lt;= x[1:])</span>
+    <span class="s0">if not is_sorted(L[:, 2]):</span>
+        <span class="s0">raise ValueError(&quot;Input MST array must be sorted by weight&quot;)</span>
+
+    <span class="s0">return _single_linkage_label(L)</span>
+
+
+<span class="s0"># Implements MST-LINKAGE-CORE from https://arxiv.org/abs/1109.2378</span>
+<span class="s0">def mst_linkage_core(</span>
+        <span class="s0">const float64_t [:, ::1] raw_data,</span>
+        <span class="s0">DistanceMetric64 dist_metric):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Compute the necessary elements of a minimum spanning</span>
+    <span class="s0">tree for computation of single linkage clustering. This</span>
+    <span class="s0">represents the MST-LINKAGE-CORE algorithm (Figure 6) from</span>
+    <span class="s0">:arxiv:`Daniel Mullner, &quot;Modern hierarchical, agglomerative clustering</span>
+    <span class="s0">algorithms&quot; &lt;1109.2378&gt;`.</span>
+
+    <span class="s0">In contrast to the scipy implementation is never computes</span>
+    <span class="s0">a full distance matrix, generating distances only as they</span>
+    <span class="s0">are needed and releasing them when no longer needed.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">raw_data: array of shape (n_samples, n_features)</span>
+        <span class="s0">The array of feature data to be clustered. Must be C-aligned</span>
+
+    <span class="s0">dist_metric: DistanceMetric64</span>
+        <span class="s0">A DistanceMetric64 object conforming to the API from</span>
+        <span class="s0">``sklearn.metrics._dist_metrics.pxd`` that will be</span>
+        <span class="s0">used to compute distances.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">mst_core_data: array of shape (n_samples, 3)</span>
+        <span class="s0">An array providing information from which one</span>
+        <span class="s0">can either compute an MST, or the linkage hierarchy</span>
+        <span class="s0">very efficiently. See :arxiv:`Daniel Mullner, &quot;Modern hierarchical,</span>
+        <span class="s0">agglomerative clustering algorithms&quot; &lt;1109.2378&gt;` algorithm</span>
+        <span class="s0">MST-LINKAGE-CORE for more details.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">intp_t n_samples = raw_data.shape[0]</span>
+        <span class="s0">uint8_t[:] in_tree = np.zeros(n_samples, dtype=bool)</span>
+        <span class="s0">float64_t[:, ::1] result = np.zeros((n_samples - 1, 3))</span>
+
+        <span class="s0">intp_t current_node = 0</span>
+        <span class="s0">intp_t new_node</span>
+        <span class="s0">intp_t i</span>
+        <span class="s0">intp_t j</span>
+        <span class="s0">intp_t num_features = raw_data.shape[1]</span>
+
+        <span class="s0">float64_t right_value</span>
+        <span class="s0">float64_t left_value</span>
+        <span class="s0">float64_t new_distance</span>
+
+        <span class="s0">float64_t[:] current_distances = np.full(n_samples, INFINITY)</span>
+
+    <span class="s0">for i in range(n_samples - 1):</span>
+
+        <span class="s0">in_tree[current_node] = 1</span>
+
+        <span class="s0">new_distance = INFINITY</span>
+        <span class="s0">new_node = 0</span>
+
+        <span class="s0">for j in range(n_samples):</span>
+            <span class="s0">if in_tree[j]:</span>
+                <span class="s0">continue</span>
+
+            <span class="s0">right_value = current_distances[j]</span>
+            <span class="s0">left_value = dist_metric.dist(&amp;raw_data[current_node, 0],</span>
+                                          <span class="s0">&amp;raw_data[j, 0],</span>
+                                          <span class="s0">num_features)</span>
+
+            <span class="s0">if left_value &lt; right_value:</span>
+                <span class="s0">current_distances[j] = left_value</span>
+
+            <span class="s0">if current_distances[j] &lt; new_distance:</span>
+                <span class="s0">new_distance = current_distances[j]</span>
+                <span class="s0">new_node = j</span>
+
+        <span class="s0">result[i, 0] = current_node</span>
+        <span class="s0">result[i, 1] = new_node</span>
+        <span class="s0">result[i, 2] = new_distance</span>
+        <span class="s0">current_node = new_node</span>
+
+    <span class="s0">return np.array(result)</span>
+</pre>
+</body>
+</html>

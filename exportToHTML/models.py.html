@@ -1,0 +1,1548 @@
+<html>
+<head>
+<title>models.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #7a7e85;}
+.s5 { color: #2aacb8;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+models.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+<span class="s0">from </span><span class="s1">scipy</span><span class="s2">.</span><span class="s1">linalg </span><span class="s0">import </span><span class="s1">eigh</span>
+
+<span class="s0">from </span><span class="s2">.</span><span class="s1">settings </span><span class="s0">import </span><span class="s1">Options</span>
+<span class="s0">from </span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">MaxEvalError</span><span class="s2">, </span><span class="s1">TargetSuccess</span><span class="s2">, </span><span class="s1">FeasibleSuccess</span>
+
+
+<span class="s1">EPS </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">finfo</span><span class="s2">(</span><span class="s1">float</span><span class="s2">).</span><span class="s1">eps</span>
+
+
+<span class="s0">class </span><span class="s1">Interpolation</span><span class="s2">:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Interpolation set. 
+ 
+    This class stores a base point around which the models are expanded and the 
+    interpolation points. The coordinates of the interpolation points are 
+    relative to the base point. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">pb</span><span class="s2">, </span><span class="s1">options</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Initialize the interpolation set. 
+ 
+        Parameters 
+        ---------- 
+        pb : `cobyqa.problem.Problem` 
+            Problem to be solved. 
+        options : dict 
+            Options of the solver. 
+        &quot;&quot;&quot;</span>
+        <span class="s4"># Reduce the initial trust-region radius if necessary.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_debug </span><span class="s2">= </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">DEBUG</span><span class="s2">]</span>
+        <span class="s1">max_radius </span><span class="s2">= </span><span class="s5">0.5 </span><span class="s2">* </span><span class="s1">np</span><span class="s2">.</span><span class="s1">min</span><span class="s2">(</span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">] &gt; </span><span class="s1">max_radius</span><span class="s2">:</span>
+            <span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">.</span><span class="s1">value</span><span class="s2">] = </span><span class="s1">max_radius</span>
+            <span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOEND</span><span class="s2">.</span><span class="s1">value</span><span class="s2">] = </span><span class="s1">np</span><span class="s2">.</span><span class="s1">min</span><span class="s2">(</span>
+                <span class="s2">[</span>
+                    <span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOEND</span><span class="s2">],</span>
+                    <span class="s1">max_radius</span><span class="s2">,</span>
+                <span class="s2">]</span>
+            <span class="s2">)</span>
+
+        <span class="s4"># Set the initial point around which the models are expanded.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_x_base </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">copy</span><span class="s2">(</span><span class="s1">pb</span><span class="s2">.</span><span class="s1">x0</span><span class="s2">)</span>
+        <span class="s1">very_close_xl_idx </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base </span><span class="s2">&lt;= </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl </span><span class="s2">+ </span><span class="s5">0.5 </span><span class="s2">* </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base</span><span class="s2">[</span><span class="s1">very_close_xl_idx</span><span class="s2">] = </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl</span><span class="s2">[</span><span class="s1">very_close_xl_idx</span><span class="s2">]</span>
+        <span class="s1">close_xl_idx </span><span class="s2">= (</span>
+            <span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl </span><span class="s2">+ </span><span class="s5">0.5 </span><span class="s2">* </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">] &lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">x_base</span>
+        <span class="s2">) &amp; (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">x_base </span><span class="s2">&lt;= </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl </span><span class="s2">+ </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">])</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base</span><span class="s2">[</span><span class="s1">close_xl_idx</span><span class="s2">] = </span><span class="s1">np</span><span class="s2">.</span><span class="s1">minimum</span><span class="s2">(</span>
+            <span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl</span><span class="s2">[</span><span class="s1">close_xl_idx</span><span class="s2">] + </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">],</span>
+            <span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu</span><span class="s2">[</span><span class="s1">close_xl_idx</span><span class="s2">],</span>
+        <span class="s2">)</span>
+        <span class="s1">very_close_xu_idx </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base </span><span class="s2">&gt;= </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu </span><span class="s2">- </span><span class="s5">0.5 </span><span class="s2">* </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base</span><span class="s2">[</span><span class="s1">very_close_xu_idx</span><span class="s2">] = </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu</span><span class="s2">[</span><span class="s1">very_close_xu_idx</span><span class="s2">]</span>
+        <span class="s1">close_xu_idx </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base </span><span class="s2">&lt; </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu </span><span class="s2">- </span><span class="s5">0.5 </span><span class="s2">* </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+        <span class="s2">) &amp; (</span><span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu </span><span class="s2">- </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">] &lt;= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">x_base</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">x_base</span><span class="s2">[</span><span class="s1">close_xu_idx</span><span class="s2">] = </span><span class="s1">np</span><span class="s2">.</span><span class="s1">maximum</span><span class="s2">(</span>
+            <span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xu</span><span class="s2">[</span><span class="s1">close_xu_idx</span><span class="s2">] - </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">],</span>
+            <span class="s1">pb</span><span class="s2">.</span><span class="s1">bounds</span><span class="s2">.</span><span class="s1">xl</span><span class="s2">[</span><span class="s1">close_xu_idx</span><span class="s2">],</span>
+        <span class="s2">)</span>
+
+        <span class="s4"># Set the initial interpolation set.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_xpt </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n</span><span class="s2">, </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">NPT</span><span class="s2">]))</span>
+        <span class="s0">for </span><span class="s1">k </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s5">1</span><span class="s2">, </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">NPT</span><span class="s2">]):</span>
+            <span class="s0">if </span><span class="s1">k </span><span class="s2">&lt;= </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n</span><span class="s2">:</span>
+                <span class="s0">if </span><span class="s1">very_close_xu_idx</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s5">1</span><span class="s2">]:</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s5">1</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = -</span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s5">1</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+            <span class="s0">elif </span><span class="s1">k </span><span class="s2">&lt;= </span><span class="s5">2 </span><span class="s2">* </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n</span><span class="s2">:</span>
+                <span class="s0">if </span><span class="s1">very_close_xl_idx</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span><span class="s2">]:</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = </span><span class="s5">2.0 </span><span class="s2">* </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+                <span class="s0">elif </span><span class="s1">very_close_xu_idx</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span><span class="s2">]:</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = -</span><span class="s5">2.0 </span><span class="s2">* </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = -</span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">RHOBEG</span><span class="s2">]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">spread </span><span class="s2">= (</span><span class="s1">k </span><span class="s2">- </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) // </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n</span>
+                <span class="s1">k1 </span><span class="s2">= </span><span class="s1">k </span><span class="s2">- (</span><span class="s5">1 </span><span class="s2">+ </span><span class="s1">spread</span><span class="s2">) * </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n </span><span class="s2">- </span><span class="s5">1</span>
+                <span class="s1">k2 </span><span class="s2">= (</span><span class="s1">k1 </span><span class="s2">+ </span><span class="s1">spread</span><span class="s2">) % </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">n</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k1</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k1</span><span class="s2">, </span><span class="s1">k1 </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">]</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k2</span><span class="s2">, </span><span class="s1">k</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[</span><span class="s1">k2</span><span class="s2">, </span><span class="s1">k2 </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">n</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of variables. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of variables. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">npt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of interpolation points. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">xpt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Interpolation points. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n, npt) 
+            Interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_xpt</span>
+
+    <span class="s2">@</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">xpt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">xpt</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Set the interpolation points. 
+ 
+        Parameters 
+        ---------- 
+        xpt : `numpy.ndarray`, shape (n, npt) 
+            New interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `xpt` is not valid.&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_xpt </span><span class="s2">= </span><span class="s1">xpt</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Base point around which the models are expanded. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            Base point around which the models are expanded. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_x_base</span>
+
+    <span class="s2">@</span><span class="s1">x_base</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x_base</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Set the base point around which the models are expanded. 
+ 
+        Parameters 
+        ---------- 
+        x_base : `numpy.ndarray`, shape (n,) 
+            New base point around which the models are expanded. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x_base</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `x_base` is not valid.&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_x_base </span><span class="s2">= </span><span class="s1">x_base</span>
+
+    <span class="s0">def </span><span class="s1">point</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">k</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Get the `k`-th interpolation point. 
+ 
+        The return point is relative to the origin. 
+ 
+        Parameters 
+        ---------- 
+        k : int 
+            Index of the interpolation point. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            `k`-th interpolation point. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s5">0 </span><span class="s2">&lt;= </span><span class="s1">k </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">, </span><span class="s6">&quot;The index `k` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">x_base </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[:, </span><span class="s1">k</span><span class="s2">]</span>
+
+
+<span class="s1">_cache </span><span class="s2">= {</span><span class="s6">&quot;xpt&quot;</span><span class="s2">: </span><span class="s0">None</span><span class="s2">, </span><span class="s6">&quot;a&quot;</span><span class="s2">: </span><span class="s0">None</span><span class="s2">, </span><span class="s6">&quot;right_scaling&quot;</span><span class="s2">: </span><span class="s0">None</span><span class="s2">, </span><span class="s6">&quot;eigh&quot;</span><span class="s2">: </span><span class="s0">None</span><span class="s2">}</span>
+
+
+<span class="s0">def </span><span class="s1">build_system</span><span class="s2">(</span><span class="s1">interpolation</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Build the left-hand side matrix of the interpolation system. The 
+    matrix below stores W * diag(right_scaling), 
+    where W is the theoretical matrix of the interpolation system. The 
+    right scaling matrices is chosen to keep the elements in 
+    the matrix well-balanced. 
+ 
+    Parameters 
+    ---------- 
+    interpolation : `cobyqa.models.Interpolation` 
+        Interpolation set. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s4"># Compute the scaled directions from the base point to the</span>
+    <span class="s4"># interpolation points. We scale the directions to avoid numerical</span>
+    <span class="s4"># difficulties.</span>
+    <span class="s0">if </span><span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;xpt&quot;</span><span class="s2">] </span><span class="s0">is not None and </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array_equal</span><span class="s2">(</span>
+        <span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">, </span><span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;xpt&quot;</span><span class="s2">]</span>
+    <span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;a&quot;</span><span class="s2">], </span><span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;right_scaling&quot;</span><span class="s2">], </span><span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;eigh&quot;</span><span class="s2">]</span>
+
+    <span class="s1">scale </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">linalg</span><span class="s2">.</span><span class="s1">norm</span><span class="s2">(</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">), </span><span class="s1">initial</span><span class="s2">=</span><span class="s1">EPS</span><span class="s2">)</span>
+    <span class="s1">xpt_scale </span><span class="s2">= </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt </span><span class="s2">/ </span><span class="s1">scale</span>
+
+    <span class="s1">n</span><span class="s2">, </span><span class="s1">npt </span><span class="s2">= </span><span class="s1">xpt_scale</span><span class="s2">.</span><span class="s1">shape</span>
+    <span class="s1">a </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">, </span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">))</span>
+    <span class="s1">a</span><span class="s2">[:</span><span class="s1">npt</span><span class="s2">, :</span><span class="s1">npt</span><span class="s2">] = </span><span class="s5">0.5 </span><span class="s2">* (</span><span class="s1">xpt_scale</span><span class="s2">.</span><span class="s1">T </span><span class="s2">@ </span><span class="s1">xpt_scale</span><span class="s2">) ** </span><span class="s5">2.0</span>
+    <span class="s1">a</span><span class="s2">[:</span><span class="s1">npt</span><span class="s2">, </span><span class="s1">npt</span><span class="s2">] = </span><span class="s5">1.0</span>
+    <span class="s1">a</span><span class="s2">[:</span><span class="s1">npt</span><span class="s2">, </span><span class="s1">npt </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">:] = </span><span class="s1">xpt_scale</span><span class="s2">.</span><span class="s1">T</span>
+    <span class="s1">a</span><span class="s2">[</span><span class="s1">npt</span><span class="s2">, :</span><span class="s1">npt</span><span class="s2">] = </span><span class="s5">1.0</span>
+    <span class="s1">a</span><span class="s2">[</span><span class="s1">npt </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">:, :</span><span class="s1">npt</span><span class="s2">] = </span><span class="s1">xpt_scale</span>
+
+    <span class="s4"># Build the left and right scaling diagonal matrices.</span>
+    <span class="s1">right_scaling </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">empty</span><span class="s2">(</span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s1">right_scaling</span><span class="s2">[:</span><span class="s1">npt</span><span class="s2">] = </span><span class="s5">1.0 </span><span class="s2">/ </span><span class="s1">scale</span><span class="s2">**</span><span class="s5">2.0</span>
+    <span class="s1">right_scaling</span><span class="s2">[</span><span class="s1">npt</span><span class="s2">] = </span><span class="s1">scale</span><span class="s2">**</span><span class="s5">2.0</span>
+    <span class="s1">right_scaling</span><span class="s2">[</span><span class="s1">npt </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">:] = </span><span class="s1">scale</span>
+
+    <span class="s1">eig_values</span><span class="s2">, </span><span class="s1">eig_vectors </span><span class="s2">= </span><span class="s1">eigh</span><span class="s2">(</span><span class="s1">a</span><span class="s2">, </span><span class="s1">check_finite</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+
+    <span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;xpt&quot;</span><span class="s2">] = </span><span class="s1">np</span><span class="s2">.</span><span class="s1">copy</span><span class="s2">(</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">)</span>
+    <span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;a&quot;</span><span class="s2">] = </span><span class="s1">np</span><span class="s2">.</span><span class="s1">copy</span><span class="s2">(</span><span class="s1">a</span><span class="s2">)</span>
+    <span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;right_scaling&quot;</span><span class="s2">] = </span><span class="s1">np</span><span class="s2">.</span><span class="s1">copy</span><span class="s2">(</span><span class="s1">right_scaling</span><span class="s2">)</span>
+    <span class="s1">_cache</span><span class="s2">[</span><span class="s6">&quot;eigh&quot;</span><span class="s2">] = (</span><span class="s1">eig_values</span><span class="s2">, </span><span class="s1">eig_vectors</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">a</span><span class="s2">, </span><span class="s1">right_scaling</span><span class="s2">, (</span><span class="s1">eig_values</span><span class="s2">, </span><span class="s1">eig_vectors</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">Quadratic</span><span class="s2">:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Quadratic model. 
+ 
+    This class stores the Hessian matrix of the quadratic model using the 
+    implicit/explicit representation designed by Powell for NEWUOA [1]_. 
+ 
+    References 
+    ---------- 
+    .. [1] M. J. D. Powell. The NEWUOA software for unconstrained optimization 
+       without derivatives. In G. Di Pillo and M. Roma, editors, *Large-Scale 
+       Nonlinear Optimization*, volume 83 of Nonconvex Optim. Appl., pages 
+       255--297. Springer, Boston, MA, USA, 2006. `doi:10.1007/0-387-30065-1_16 
+       &lt;https://doi.org/10.1007/0-387-30065-1_16&gt;`_. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, </span><span class="s1">debug</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Initialize the quadratic model. 
+ 
+        Parameters 
+        ---------- 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+        values : `numpy.ndarray`, shape (npt,) 
+            Values of the interpolated function at the interpolation points. 
+        debug : bool 
+            Whether to make debugging tests during the execution. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_debug </span><span class="s2">= </span><span class="s1">debug</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">values</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">interpolation</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `values` is not valid.&quot;</span>
+        <span class="s0">if </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">npt </span><span class="s2">&lt; </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s6">f&quot;The number of interpolation points must be at least &quot;</span>
+                <span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s0">}</span><span class="s6">.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_const</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_grad</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_model</span><span class="s2">(</span>
+            <span class="s1">interpolation</span><span class="s2">,</span>
+            <span class="s1">values</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">__call__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the quadratic model at a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which the quadratic model is evaluated. 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+ 
+        Returns 
+        ------- 
+        float 
+            Value of the quadratic model at `x`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+        <span class="s1">x_diff </span><span class="s2">= </span><span class="s1">x </span><span class="s2">- </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base</span>
+        <span class="s0">return </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_const</span>
+            <span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_grad </span><span class="s2">@ </span><span class="s1">x_diff</span>
+            <span class="s2">+ </span><span class="s5">0.5</span>
+            <span class="s2">* (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess </span><span class="s2">@ (</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">T </span><span class="s2">@ </span><span class="s1">x_diff</span><span class="s2">) ** </span><span class="s5">2.0</span>
+                <span class="s2">+ </span><span class="s1">x_diff </span><span class="s2">@ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">@ </span><span class="s1">x_diff</span>
+            <span class="s2">)</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">n</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of variables. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of variables. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_grad</span><span class="s2">.</span><span class="s1">size</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">npt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of interpolation points used to define the quadratic model. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of interpolation points used to define the quadratic model. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess</span><span class="s2">.</span><span class="s1">size</span>
+
+    <span class="s0">def </span><span class="s1">grad</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the gradient of the quadratic model at a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which the gradient of the quadratic model is evaluated. 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            Gradient of the quadratic model at `x`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+        <span class="s1">x_diff </span><span class="s2">= </span><span class="s1">x </span><span class="s2">- </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_grad </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">hess_prod</span><span class="s2">(</span><span class="s1">x_diff</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the Hessian matrix of the quadratic model. 
+ 
+        Parameters 
+        ---------- 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n, n) 
+            Hessian matrix of the quadratic model. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">+ </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt </span><span class="s2">@ (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess</span><span class="s2">[:, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">newaxis</span><span class="s2">] * </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">T</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">hess_prod</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the right product of the Hessian matrix of the quadratic model 
+        with a given vector. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Vector with which the Hessian matrix of the quadratic model is 
+            multiplied from the right. 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            Right product of the Hessian matrix of the quadratic model with 
+            `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">@ </span><span class="s1">v </span><span class="s2">+ </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt </span><span class="s2">@ (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess </span><span class="s2">* (</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">T </span><span class="s2">@ </span><span class="s1">v</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">curv</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the curvature of the quadratic model along a given direction. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Direction along which the curvature of the quadratic model is 
+            evaluated. 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+ 
+        Returns 
+        ------- 
+        float 
+            Curvature of the quadratic model along `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s2">(</span>
+            <span class="s1">v </span><span class="s2">@ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">@ </span><span class="s1">v</span>
+            <span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess </span><span class="s2">@ (</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">T </span><span class="s2">@ </span><span class="s1">v</span><span class="s2">) ** </span><span class="s5">2.0</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">k_new</span><span class="s2">, </span><span class="s1">dir_old</span><span class="s2">, </span><span class="s1">values_diff</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Update the quadratic model. 
+ 
+        This method applies the derivative-free symmetric Broyden update to the 
+        quadratic model. The `knew`-th interpolation point must be updated 
+        before calling this method. 
+ 
+        Parameters 
+        ---------- 
+        interpolation : `cobyqa.models.Interpolation` 
+            Updated interpolation set. 
+        k_new : int 
+            Index of the updated interpolation point. 
+        dir_old : `numpy.ndarray`, shape (n,) 
+            Value of ``interpolation.xpt[:, k_new]`` before the update. 
+        values_diff : `numpy.ndarray`, shape (npt,) 
+            Differences between the values of the interpolated nonlinear 
+            function and the previous quadratic model at the updated 
+            interpolation points. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s5">0 </span><span class="s2">&lt;= </span><span class="s1">k_new </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">, </span><span class="s6">&quot;The index `k_new` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">dir_old</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `dir_old` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">values_diff</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `values_diff` is not valid.&quot;</span>
+
+        <span class="s4"># Forward the k_new-th element of the implicit Hessian matrix to the</span>
+        <span class="s4"># explicit Hessian matrix. This must be done because the implicit</span>
+        <span class="s4"># Hessian matrix is related to the interpolation points, and the</span>
+        <span class="s4"># k_new-th interpolation point is modified.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">+= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">] * </span><span class="s1">np</span><span class="s2">.</span><span class="s1">outer</span><span class="s2">(</span><span class="s1">dir_old</span><span class="s2">, </span><span class="s1">dir_old</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">] = </span><span class="s5">0.0</span>
+
+        <span class="s4"># Update the quadratic model.</span>
+        <span class="s1">const</span><span class="s2">, </span><span class="s1">grad</span><span class="s2">, </span><span class="s1">i_hess</span><span class="s2">, </span><span class="s1">ill_conditioned </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_model</span><span class="s2">(</span>
+            <span class="s1">interpolation</span><span class="s2">,</span>
+            <span class="s1">values_diff</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_const </span><span class="s2">+= </span><span class="s1">const</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_grad </span><span class="s2">+= </span><span class="s1">grad</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess </span><span class="s2">+= </span><span class="s1">i_hess</span>
+        <span class="s0">return </span><span class="s1">ill_conditioned</span>
+
+    <span class="s0">def </span><span class="s1">shift_x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">new_x_base</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Shift the point around which the quadratic model is defined. 
+ 
+        Parameters 
+        ---------- 
+        interpolation : `cobyqa.models.Interpolation` 
+            Previous interpolation set. 
+        new_x_base : `numpy.ndarray`, shape (n,) 
+            Point that will replace ``interpolation.x_base``. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">new_x_base</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `new_x_base` is not valid.&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_const </span><span class="s2">= </span><span class="s1">self</span><span class="s2">(</span><span class="s1">new_x_base</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_grad </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">grad</span><span class="s2">(</span><span class="s1">new_x_base</span><span class="s2">, </span><span class="s1">interpolation</span><span class="s2">)</span>
+        <span class="s1">shift </span><span class="s2">= </span><span class="s1">new_x_base </span><span class="s2">- </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base</span>
+        <span class="s1">update </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">outer</span><span class="s2">(</span>
+            <span class="s1">shift</span><span class="s2">,</span>
+            <span class="s2">(</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt </span><span class="s2">- </span><span class="s5">0.5 </span><span class="s2">* </span><span class="s1">shift</span><span class="s2">[:, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">newaxis</span><span class="s2">]) @ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_i_hess</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_e_hess </span><span class="s2">+= </span><span class="s1">update </span><span class="s2">+ </span><span class="s1">update</span><span class="s2">.</span><span class="s1">T</span>
+
+    <span class="s2">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">solve_systems</span><span class="s2">(</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">rhs</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Solve the interpolation systems. 
+ 
+        Parameters 
+        ---------- 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+        rhs : `numpy.ndarray`, shape (npt + n + 1, m) 
+            Right-hand side vectors of the ``m`` interpolation systems. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (npt + n + 1, m) 
+            Solutions of the interpolation systems. 
+        `numpy.ndarray`, shape (m, ) 
+            Whether the interpolation systems are ill-conditioned. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation systems are ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">n</span><span class="s2">, </span><span class="s1">npt </span><span class="s2">= </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">shape</span>
+        <span class="s0">assert </span><span class="s2">(</span>
+            <span class="s1">rhs</span><span class="s2">.</span><span class="s1">ndim </span><span class="s2">== </span><span class="s5">2 </span><span class="s0">and </span><span class="s1">rhs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] == </span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span>
+        <span class="s2">), </span><span class="s6">&quot;The shape of `rhs` is not valid.&quot;</span>
+
+        <span class="s4"># Build the left-hand side matrix of the interpolation system. The</span>
+        <span class="s4"># matrix below stores diag(left_scaling) * W * diag(right_scaling),</span>
+        <span class="s4"># where W is the theoretical matrix of the interpolation system. The</span>
+        <span class="s4"># left and right scaling matrices are chosen to keep the elements in</span>
+        <span class="s4"># the matrix well-balanced.</span>
+        <span class="s1">a</span><span class="s2">, </span><span class="s1">right_scaling</span><span class="s2">, </span><span class="s1">eig </span><span class="s2">= </span><span class="s1">build_system</span><span class="s2">(</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+        <span class="s4"># Build the solution. After a discussion with Mike Saunders and Alexis</span>
+        <span class="s4"># Montoison during their visit to the Hong Kong Polytechnic University</span>
+        <span class="s4"># in 2024, we decided to use the eigendecomposition of the symmetric</span>
+        <span class="s4"># matrix a. This is more stable than the previously employed LBL</span>
+        <span class="s4"># decomposition, and allows us to directly detect ill-conditioning of</span>
+        <span class="s4"># the system and to build the least-squares solution if necessary.</span>
+        <span class="s4"># Numerical experiments have shown that this strategy improves the</span>
+        <span class="s4"># performance of the solver.</span>
+        <span class="s1">rhs_scaled </span><span class="s2">= </span><span class="s1">rhs </span><span class="s2">* </span><span class="s1">right_scaling</span><span class="s2">[:, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">newaxis</span><span class="s2">]</span>
+        <span class="s0">if not </span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">all</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">isfinite</span><span class="s2">(</span><span class="s1">a</span><span class="s2">)) </span><span class="s0">and </span><span class="s1">np</span><span class="s2">.</span><span class="s1">all</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">isfinite</span><span class="s2">(</span><span class="s1">rhs_scaled</span><span class="s2">))):</span>
+            <span class="s0">raise </span><span class="s1">np</span><span class="s2">.</span><span class="s1">linalg</span><span class="s2">.</span><span class="s1">LinAlgError</span><span class="s2">(</span>
+                <span class="s6">&quot;The interpolation system is ill-defined.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s4"># calculated in build_system</span>
+        <span class="s1">eig_values</span><span class="s2">, </span><span class="s1">eig_vectors </span><span class="s2">= </span><span class="s1">eig</span>
+
+        <span class="s1">large_eig_values </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span><span class="s1">eig_values</span><span class="s2">) &gt; </span><span class="s1">EPS</span>
+        <span class="s1">eig_vectors </span><span class="s2">= </span><span class="s1">eig_vectors</span><span class="s2">[:, </span><span class="s1">large_eig_values</span><span class="s2">]</span>
+        <span class="s1">inv_eig_values </span><span class="s2">= </span><span class="s5">1.0 </span><span class="s2">/ </span><span class="s1">eig_values</span><span class="s2">[</span><span class="s1">large_eig_values</span><span class="s2">]</span>
+        <span class="s1">ill_conditioned </span><span class="s2">= ~</span><span class="s1">np</span><span class="s2">.</span><span class="s1">all</span><span class="s2">(</span><span class="s1">large_eig_values</span><span class="s2">, </span><span class="s5">0</span><span class="s2">)</span>
+        <span class="s1">left_scaled_solutions </span><span class="s2">= </span><span class="s1">eig_vectors </span><span class="s2">@ (</span>
+            <span class="s2">(</span><span class="s1">eig_vectors</span><span class="s2">.</span><span class="s1">T </span><span class="s2">@ </span><span class="s1">rhs_scaled</span><span class="s2">) * </span><span class="s1">inv_eig_values</span><span class="s2">[:, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">newaxis</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s2">(</span>
+            <span class="s1">left_scaled_solutions </span><span class="s2">* </span><span class="s1">right_scaling</span><span class="s2">[:, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">newaxis</span><span class="s2">],</span>
+            <span class="s1">ill_conditioned</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">_get_model</span><span class="s2">(</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">values</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Solve the interpolation system. 
+ 
+        Parameters 
+        ---------- 
+        interpolation : `cobyqa.models.Interpolation` 
+            Interpolation set. 
+        values : `numpy.ndarray`, shape (npt,) 
+            Values of the interpolated function at the interpolation points. 
+ 
+        Returns 
+        ------- 
+        float 
+            Constant term of the quadratic model. 
+        `numpy.ndarray`, shape (n,) 
+            Gradient of the quadratic model at ``interpolation.x_base``. 
+        `numpy.ndarray`, shape (npt,) 
+            Implicit Hessian matrix of the quadratic model. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">assert </span><span class="s1">values</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+            <span class="s1">interpolation</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">,</span>
+        <span class="s2">), </span><span class="s6">&quot;The shape of `values` is not valid.&quot;</span>
+        <span class="s1">n</span><span class="s2">, </span><span class="s1">npt </span><span class="s2">= </span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">shape</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">ill_conditioned </span><span class="s2">= </span><span class="s1">Quadratic</span><span class="s2">.</span><span class="s1">solve_systems</span><span class="s2">(</span>
+            <span class="s1">interpolation</span><span class="s2">,</span>
+            <span class="s1">np</span><span class="s2">.</span><span class="s1">block</span><span class="s2">(</span>
+                <span class="s2">[</span>
+                    <span class="s2">[</span>
+                        <span class="s1">values</span><span class="s2">,</span>
+                        <span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">),</span>
+                    <span class="s2">]</span>
+                <span class="s2">]</span>
+            <span class="s2">).</span><span class="s1">T</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">[</span><span class="s1">npt</span><span class="s2">, </span><span class="s5">0</span><span class="s2">], </span><span class="s1">x</span><span class="s2">[</span><span class="s1">npt </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">:, </span><span class="s5">0</span><span class="s2">], </span><span class="s1">x</span><span class="s2">[:</span><span class="s1">npt</span><span class="s2">, </span><span class="s5">0</span><span class="s2">], </span><span class="s1">ill_conditioned</span>
+
+
+<span class="s0">class </span><span class="s1">Models</span><span class="s2">:</span>
+    <span class="s3">&quot;&quot;&quot; 
+    Models for a nonlinear optimization problem. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">pb</span><span class="s2">, </span><span class="s1">options</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Initialize the models. 
+ 
+        Parameters 
+        ---------- 
+        pb : `cobyqa.problem.Problem` 
+            Problem to be solved. 
+        options : dict 
+            Options of the solver. 
+ 
+        Raises 
+        ------ 
+        `cobyqa.utils.MaxEvalError` 
+            If the maximum number of evaluations is reached. 
+        `cobyqa.utils.TargetSuccess` 
+            If a nearly feasible point has been found with an objective 
+            function value below the target. 
+        `cobyqa.utils.FeasibleSuccess` 
+            If a feasible point has been found for a feasibility problem. 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s4"># Set the initial interpolation set.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_debug </span><span class="s2">= </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">DEBUG</span><span class="s2">]</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_interpolation </span><span class="s2">= </span><span class="s1">Interpolation</span><span class="s2">(</span><span class="s1">pb</span><span class="s2">, </span><span class="s1">options</span><span class="s2">)</span>
+
+        <span class="s4"># Evaluate the nonlinear functions at the initial interpolation points.</span>
+        <span class="s1">x_eval </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s5">0</span><span class="s2">)</span>
+        <span class="s1">fun_init</span><span class="s2">, </span><span class="s1">cub_init</span><span class="s2">, </span><span class="s1">ceq_init </span><span class="s2">= </span><span class="s1">pb</span><span class="s2">(</span><span class="s1">x_eval</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_fun_val </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">full</span><span class="s2">(</span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">NPT</span><span class="s2">], </span><span class="s1">np</span><span class="s2">.</span><span class="s1">nan</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_cub_val </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">full</span><span class="s2">((</span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">NPT</span><span class="s2">], </span><span class="s1">cub_init</span><span class="s2">.</span><span class="s1">size</span><span class="s2">), </span><span class="s1">np</span><span class="s2">.</span><span class="s1">nan</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq_val </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">full</span><span class="s2">((</span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">NPT</span><span class="s2">], </span><span class="s1">ceq_init</span><span class="s2">.</span><span class="s1">size</span><span class="s2">), </span><span class="s1">np</span><span class="s2">.</span><span class="s1">nan</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">k </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">NPT</span><span class="s2">]):</span>
+            <span class="s0">if </span><span class="s1">k </span><span class="s2">&gt;= </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">MAX_EVAL</span><span class="s2">]:</span>
+                <span class="s0">raise </span><span class="s1">MaxEvalError</span>
+            <span class="s0">if </span><span class="s1">k </span><span class="s2">== </span><span class="s5">0</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">] = </span><span class="s1">fun_init</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :] = </span><span class="s1">cub_init</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :] = </span><span class="s1">ceq_init</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">x_eval </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s1">k</span><span class="s2">)</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :] = </span><span class="s1">pb</span><span class="s2">(</span>
+                    <span class="s1">x_eval</span>
+                <span class="s2">)</span>
+
+            <span class="s4"># Stop the iterations if the problem is a feasibility problem and</span>
+            <span class="s4"># the current interpolation point is feasible.</span>
+            <span class="s0">if </span><span class="s2">(</span>
+                <span class="s1">pb</span><span class="s2">.</span><span class="s1">is_feasibility</span>
+                <span class="s0">and </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">maxcv</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s1">k</span><span class="s2">),</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :],</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :],</span>
+                <span class="s2">)</span>
+                <span class="s2">&lt;= </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">FEASIBILITY_TOL</span><span class="s2">]</span>
+            <span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">FeasibleSuccess</span>
+
+            <span class="s4"># Stop the iterations if the current interpolation point is nearly</span>
+            <span class="s4"># feasible and has an objective function value below the target.</span>
+            <span class="s0">if </span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_fun_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">] &lt;= </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">TARGET</span><span class="s2">]</span>
+                <span class="s0">and </span><span class="s1">pb</span><span class="s2">.</span><span class="s1">maxcv</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s1">k</span><span class="s2">),</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :],</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :],</span>
+                <span class="s2">)</span>
+                <span class="s2">&lt;= </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">FEASIBILITY_TOL</span><span class="s2">]</span>
+            <span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">TargetSuccess</span>
+
+        <span class="s4"># Build the initial quadratic models.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_fun </span><span class="s2">= </span><span class="s1">Quadratic</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_fun_val</span><span class="s2">,</span>
+            <span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">DEBUG</span><span class="s2">],</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_cub </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">empty</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">Quadratic</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">empty</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">Quadratic</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_cub</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] = </span><span class="s1">Quadratic</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">],</span>
+                <span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">DEBUG</span><span class="s2">],</span>
+            <span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] = </span><span class="s1">Quadratic</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">],</span>
+                <span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">DEBUG</span><span class="s2">],</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_interpolation_conditions</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">n</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Dimension of the problem. 
+ 
+        Returns 
+        ------- 
+        int 
+            Dimension of the problem. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">n</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">npt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of interpolation points. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">npt</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">m_nonlinear_ub</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of nonlinear inequality constraints. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of nonlinear inequality constraints. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">m_nonlinear_eq</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Number of nonlinear equality constraints. 
+ 
+        Returns 
+        ------- 
+        int 
+            Number of nonlinear equality constraints. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">interpolation</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Interpolation set. 
+ 
+        Returns 
+        ------- 
+        `cobyqa.models.Interpolation` 
+            Interpolation set. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_interpolation</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">fun_val</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Values of the objective function at the interpolation points. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (npt,) 
+            Values of the objective function at the interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun_val</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">cub_val</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Values of the nonlinear inequality constraint functions at the 
+        interpolation points. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (npt, m_nonlinear_ub) 
+            Values of the nonlinear inequality constraint functions at the 
+            interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cub_val</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">ceq_val</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Values of the nonlinear equality constraint functions at the 
+        interpolation points. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (npt, m_nonlinear_eq) 
+            Values of the nonlinear equality constraint functions at the 
+            interpolation points. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq_val</span>
+
+    <span class="s0">def </span><span class="s1">fun</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the quadratic model of the objective function at a given 
+        point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the quadratic model of the objective 
+            function. 
+ 
+        Returns 
+        ------- 
+        float 
+            Value of the quadratic model of the objective function at `x`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">fun_grad</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the gradient of the quadratic model of the objective function 
+        at a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the gradient of the quadratic model of 
+            the objective function. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            Gradient of the quadratic model of the objective function at `x`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">.</span><span class="s1">grad</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">fun_hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the Hessian matrix of the quadratic model of the objective 
+        function. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n, n) 
+            Hessian matrix of the quadratic model of the objective function. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">.</span><span class="s1">hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">fun_hess_prod</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the right product of the Hessian matrix of the quadratic model 
+        of the objective function with a given vector. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Vector with which the Hessian matrix of the quadratic model of the 
+            objective function is multiplied from the right. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            Right product of the Hessian matrix of the quadratic model of the 
+            objective function with `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">.</span><span class="s1">hess_prod</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">fun_curv</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the curvature of the quadratic model of the objective function 
+        along a given direction. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Direction along which the curvature of the quadratic model of the 
+            objective function is evaluated. 
+ 
+        Returns 
+        ------- 
+        float 
+            Curvature of the quadratic model of the objective function along 
+            `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">.</span><span class="s1">curv</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">fun_alt_grad</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the gradient of the alternative quadratic model of the 
+        objective function at a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the gradient of the alternative 
+            quadratic model of the objective function. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray`, shape (n,) 
+            Gradient of the alternative quadratic model of the objective 
+            function at `x`. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+        <span class="s1">model </span><span class="s2">= </span><span class="s1">Quadratic</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">model</span><span class="s2">.</span><span class="s1">grad</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">cub</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the quadratic models of the nonlinear inequality functions at 
+        a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the quadratic models of the nonlinear 
+            inequality functions. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_ub,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Values of the quadratic model of the nonlinear inequality 
+            functions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">) </span><span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_cub</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)]</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">cub_grad</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the gradients of the quadratic models of the nonlinear 
+        inequality functions at a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the gradients of the quadratic models of 
+            the nonlinear inequality functions. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Gradients of the quadratic model of the nonlinear inequality 
+            functions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">.</span><span class="s1">grad</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+             <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_cub</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)],</span>
+            <span class="s2">(-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">cub_hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the Hessian matrices of the quadratic models of the nonlinear 
+        inequality functions. 
+ 
+        Parameters 
+        ---------- 
+        mask : `numpy.ndarray`, shape (m_nonlinear_ub,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Hessian matrices of the quadratic models of the nonlinear 
+            inequality functions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">.</span><span class="s1">hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">) </span><span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_cub</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)],</span>
+            <span class="s2">(-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">cub_hess_prod</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the right product of the Hessian matrices of the quadratic 
+        models of the nonlinear inequality functions with a given vector. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Vector with which the Hessian matrices of the quadratic models of 
+            the nonlinear inequality functions are multiplied from the right. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_ub,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Right products of the Hessian matrices of the quadratic models of 
+            the nonlinear inequality functions with `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+            <span class="s2">[</span>
+                <span class="s1">model</span><span class="s2">.</span><span class="s1">hess_prod</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+                <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_cub</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+            <span class="s2">],</span>
+            <span class="s2">(-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">cub_curv</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the curvature of the quadratic models of the nonlinear 
+        inequality functions along a given direction. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Direction along which the curvature of the quadratic models of the 
+            nonlinear inequality functions is evaluated. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_ub,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Curvature of the quadratic models of the nonlinear inequality 
+            functions along `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">.</span><span class="s1">curv</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+             <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_cub</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)]</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">ceq</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the quadratic models of the nonlinear equality functions at a 
+        given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the quadratic models of the nonlinear 
+            equality functions. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Values of the quadratic model of the nonlinear equality functions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">) </span><span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_ceq</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)]</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">ceq_grad</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the gradients of the quadratic models of the nonlinear 
+        equality functions at a given point. 
+ 
+        Parameters 
+        ---------- 
+        x : `numpy.ndarray`, shape (n,) 
+            Point at which to evaluate the gradients of the quadratic models of 
+            the nonlinear equality functions. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Gradients of the quadratic model of the nonlinear equality 
+            functions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `x` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">.</span><span class="s1">grad</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+             <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_ceq</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)],</span>
+            <span class="s2">(-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">ceq_hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the Hessian matrices of the quadratic models of the nonlinear 
+        equality functions. 
+ 
+        Parameters 
+        ---------- 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Hessian matrices of the quadratic models of the nonlinear equality 
+            functions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">.</span><span class="s1">hess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">) </span><span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_ceq</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)],</span>
+            <span class="s2">(-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">ceq_hess_prod</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the right product of the Hessian matrices of the quadratic 
+        models of the nonlinear equality functions with a given vector. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Vector with which the Hessian matrices of the quadratic models of 
+            the nonlinear equality functions are multiplied from the right. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Right products of the Hessian matrices of the quadratic models of 
+            the nonlinear equality functions with `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+            <span class="s2">[</span>
+                <span class="s1">model</span><span class="s2">.</span><span class="s1">hess_prod</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+                <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_ceq</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)</span>
+            <span class="s2">],</span>
+            <span class="s2">(-</span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">),</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">ceq_curv</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">v</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Evaluate the curvature of the quadratic models of the nonlinear 
+        equality functions along a given direction. 
+ 
+        Parameters 
+        ---------- 
+        v : `numpy.ndarray`, shape (n,) 
+            Direction along which the curvature of the quadratic models of the 
+            nonlinear equality functions is evaluated. 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to consider. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Curvature of the quadratic models of the nonlinear equality 
+            functions along `v`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s6">&quot;The shape of `v` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">mask </span><span class="s0">is None or </span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `mask` is not valid.&quot;</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">model</span><span class="s2">.</span><span class="s1">curv</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">)</span>
+             <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_ceq</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)]</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">reset_models</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Set the quadratic models of the objective function, nonlinear 
+        inequality constraints, and nonlinear equality constraints to the 
+        alternative quadratic models. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_fun </span><span class="s2">= </span><span class="s1">Quadratic</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_cub</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] = </span><span class="s1">Quadratic</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">],</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] = </span><span class="s1">Quadratic</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">],</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_interpolation_conditions</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">update_interpolation</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">k_new</span><span class="s2">, </span><span class="s1">x_new</span><span class="s2">, </span><span class="s1">fun_val</span><span class="s2">, </span><span class="s1">cub_val</span><span class="s2">, </span><span class="s1">ceq_val</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Update the interpolation set. 
+ 
+        This method updates the interpolation set by replacing the `knew`-th 
+        interpolation point with `xnew`. It also updates the function values 
+        and the quadratic models. 
+ 
+        Parameters 
+        ---------- 
+        k_new : int 
+            Index of the updated interpolation point. 
+        x_new : `numpy.ndarray`, shape (n,) 
+            New interpolation point. Its value is interpreted as relative to 
+            the origin, not the base point. 
+        fun_val : float 
+            Value of the objective function at `x_new`. 
+            Objective function value at `x_new`. 
+        cub_val : `numpy.ndarray`, shape (m_nonlinear_ub,) 
+            Values of the nonlinear inequality constraints at `x_new`. 
+        ceq_val : `numpy.ndarray`, shape (m_nonlinear_eq,) 
+            Values of the nonlinear equality constraints at `x_new`. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s5">0 </span><span class="s2">&lt;= </span><span class="s1">k_new </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">, </span><span class="s6">&quot;The index `k_new` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">x_new</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s1">\</span>
+                <span class="s6">&quot;The shape of `x_new` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">fun_val</span><span class="s2">, </span><span class="s1">float</span><span class="s2">), </span><span class="s1">\</span>
+                <span class="s6">&quot;The function value is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">cub_val</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `cub_val` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s1">ceq_val</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `ceq_val` is not valid.&quot;</span>
+
+        <span class="s4"># Compute the updates in the interpolation conditions.</span>
+        <span class="s1">fun_diff </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">)</span>
+        <span class="s1">cub_diff </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s1">ceq_diff </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s1">fun_diff</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">] = </span><span class="s1">fun_val </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">fun</span><span class="s2">(</span><span class="s1">x_new</span><span class="s2">)</span>
+        <span class="s1">cub_diff</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">, :] = </span><span class="s1">cub_val </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cub</span><span class="s2">(</span><span class="s1">x_new</span><span class="s2">)</span>
+        <span class="s1">ceq_diff</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">, :] = </span><span class="s1">ceq_val </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">ceq</span><span class="s2">(</span><span class="s1">x_new</span><span class="s2">)</span>
+
+        <span class="s4"># Update the function values.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">] = </span><span class="s1">fun_val</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">, :] = </span><span class="s1">cub_val</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">, :] = </span><span class="s1">ceq_val</span>
+
+        <span class="s4"># Update the interpolation set.</span>
+        <span class="s1">dir_old </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">copy</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[:, </span><span class="s1">k_new</span><span class="s2">])</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">[:, </span><span class="s1">k_new</span><span class="s2">] = </span><span class="s1">x_new </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base</span>
+
+        <span class="s4"># Update the quadratic models.</span>
+        <span class="s1">ill_conditioned </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">.</span><span class="s1">update</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+            <span class="s1">k_new</span><span class="s2">,</span>
+            <span class="s1">dir_old</span><span class="s2">,</span>
+            <span class="s1">fun_diff</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_ub</span><span class="s2">):</span>
+            <span class="s1">ill_conditioned </span><span class="s2">= </span><span class="s1">ill_conditioned </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cub</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">update</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">k_new</span><span class="s2">,</span>
+                <span class="s1">dir_old</span><span class="s2">,</span>
+                <span class="s1">cub_diff</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">m_nonlinear_eq</span><span class="s2">):</span>
+            <span class="s1">ill_conditioned </span><span class="s2">= </span><span class="s1">ill_conditioned </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">update</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">k_new</span><span class="s2">,</span>
+                <span class="s1">dir_old</span><span class="s2">,</span>
+                <span class="s1">ceq_diff</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_interpolation_conditions</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">ill_conditioned</span>
+
+    <span class="s0">def </span><span class="s1">determinants</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x_new</span><span class="s2">, </span><span class="s1">k_new</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Compute the normalized determinants of the new interpolation systems. 
+ 
+        Parameters 
+        ---------- 
+        x_new : `numpy.ndarray`, shape (n,) 
+            New interpolation point. Its value is interpreted as relative to 
+            the origin, not the base point. 
+        k_new : int, optional 
+            Index of the updated interpolation point. If `k_new` is not 
+            specified, all the possible determinants are computed. 
+ 
+        Returns 
+        ------- 
+        {float, `numpy.ndarray`, shape (npt,)} 
+            Determinant(s) of the new interpolation system. 
+ 
+        Raises 
+        ------ 
+        `numpy.linalg.LinAlgError` 
+            If the interpolation system is ill-defined. 
+ 
+        Notes 
+        ----- 
+        The determinants are normalized by the determinant of the current 
+        interpolation system. For stability reasons, the calculations are done 
+        using the formula (2.12) in [1]_. 
+ 
+        References 
+        ---------- 
+        .. [1] M. J. D. Powell. On updating the inverse of a KKT matrix. 
+           Technical Report DAMTP 2004/NA01, Department of Applied Mathematics 
+           and Theoretical Physics, University of Cambridge, Cambridge, UK, 
+           2004. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">x_new</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,), </span><span class="s1">\</span>
+                <span class="s6">&quot;The shape of `x_new` is not valid.&quot;</span>
+            <span class="s0">assert </span><span class="s2">(</span>
+                <span class="s1">k_new </span><span class="s0">is None or </span><span class="s5">0 </span><span class="s2">&lt;= </span><span class="s1">k_new </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span>
+            <span class="s2">), </span><span class="s6">&quot;The index `k_new` is not valid.&quot;</span>
+
+        <span class="s4"># Compute the values independent of k_new.</span>
+        <span class="s1">shift </span><span class="s2">= </span><span class="s1">x_new </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base</span>
+        <span class="s1">new_col </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">empty</span><span class="s2">((</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">))</span>
+        <span class="s1">new_col</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">, </span><span class="s5">0</span><span class="s2">] = (</span>
+                <span class="s5">0.5 </span><span class="s2">* (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt</span><span class="s2">.</span><span class="s1">T </span><span class="s2">@ </span><span class="s1">shift</span><span class="s2">) ** </span><span class="s5">2.0</span><span class="s2">)</span>
+        <span class="s1">new_col</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">, </span><span class="s5">0</span><span class="s2">] = </span><span class="s5">1.0</span>
+        <span class="s1">new_col</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">:, </span><span class="s5">0</span><span class="s2">] = </span><span class="s1">shift</span>
+        <span class="s1">inv_new_col </span><span class="s2">= </span><span class="s1">Quadratic</span><span class="s2">.</span><span class="s1">solve_systems</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">new_col</span><span class="s2">)[</span><span class="s5">0</span><span class="s2">]</span>
+        <span class="s1">beta </span><span class="s2">= </span><span class="s5">0.5 </span><span class="s2">* (</span><span class="s1">shift </span><span class="s2">@ </span><span class="s1">shift</span><span class="s2">) ** </span><span class="s5">2.0 </span><span class="s2">- </span><span class="s1">new_col</span><span class="s2">[:, </span><span class="s5">0</span><span class="s2">] @ </span><span class="s1">inv_new_col</span><span class="s2">[:, </span><span class="s5">0</span><span class="s2">]</span>
+
+        <span class="s4"># Compute the values that depend on k.</span>
+        <span class="s0">if </span><span class="s1">k_new </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">coord_vec </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">eye</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">)</span>
+            <span class="s1">alpha </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">diag</span><span class="s2">(</span>
+                <span class="s1">Quadratic</span><span class="s2">.</span><span class="s1">solve_systems</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                    <span class="s1">coord_vec</span><span class="s2">,</span>
+                <span class="s2">)[</span><span class="s5">0</span><span class="s2">]</span>
+            <span class="s2">)</span>
+            <span class="s1">tau </span><span class="s2">= </span><span class="s1">inv_new_col</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">, </span><span class="s5">0</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">coord_vec </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">eye</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">n </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">, -</span><span class="s1">k_new</span><span class="s2">)</span>
+            <span class="s1">alpha </span><span class="s2">= </span><span class="s1">Quadratic</span><span class="s2">.</span><span class="s1">solve_systems</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">,</span>
+                <span class="s1">coord_vec</span><span class="s2">,</span>
+            <span class="s2">)[</span>
+                <span class="s5">0</span>
+            <span class="s2">][</span><span class="s1">k_new</span><span class="s2">, </span><span class="s5">0</span><span class="s2">]</span>
+            <span class="s1">tau </span><span class="s2">= </span><span class="s1">inv_new_col</span><span class="s2">[</span><span class="s1">k_new</span><span class="s2">, </span><span class="s5">0</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s1">alpha </span><span class="s2">* </span><span class="s1">beta </span><span class="s2">+ </span><span class="s1">tau</span><span class="s2">**</span><span class="s5">2.0</span>
+
+    <span class="s0">def </span><span class="s1">shift_x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">new_x_base</span><span class="s2">, </span><span class="s1">options</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Shift the base point without changing the interpolation set. 
+ 
+        Parameters 
+        ---------- 
+        new_x_base : `numpy.ndarray`, shape (n,) 
+            New base point. 
+        options : dict 
+            Options of the solver. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_debug</span><span class="s2">:</span>
+            <span class="s0">assert </span><span class="s1">new_x_base</span><span class="s2">.</span><span class="s1">shape </span><span class="s2">== (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">,</span>
+            <span class="s2">), </span><span class="s6">&quot;The shape of `new_x_base` is not valid.&quot;</span>
+
+        <span class="s4"># Update the models.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_fun</span><span class="s2">.</span><span class="s1">shift_x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">new_x_base</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cub</span><span class="s2">:</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">shift_x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">new_x_base</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">model </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq</span><span class="s2">:</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">shift_x_base</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">, </span><span class="s1">new_x_base</span><span class="s2">)</span>
+
+        <span class="s4"># Update the base point and the interpolation points.</span>
+        <span class="s1">shift </span><span class="s2">= </span><span class="s1">new_x_base </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">x_base </span><span class="s2">+= </span><span class="s1">shift</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">xpt </span><span class="s2">-= </span><span class="s1">shift</span><span class="s2">[:, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">newaxis</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">options</span><span class="s2">[</span><span class="s1">Options</span><span class="s2">.</span><span class="s1">DEBUG</span><span class="s2">]:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_interpolation_conditions</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_get_cub</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Get the quadratic models of the nonlinear inequality constraints. 
+ 
+        Parameters 
+        ---------- 
+        mask : `numpy.ndarray`, shape (m_nonlinear_ub,), optional 
+            Mask of the quadratic models to return. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Quadratic models of the nonlinear inequality constraints. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cub </span><span class="s0">if </span><span class="s1">mask </span><span class="s0">is None else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_cub</span><span class="s2">[</span><span class="s1">mask</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">_get_ceq</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Get the quadratic models of the nonlinear equality constraints. 
+ 
+        Parameters 
+        ---------- 
+        mask : `numpy.ndarray`, shape (m_nonlinear_eq,), optional 
+            Mask of the quadratic models to return. 
+ 
+        Returns 
+        ------- 
+        `numpy.ndarray` 
+            Quadratic models of the nonlinear equality constraints. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq </span><span class="s0">if </span><span class="s1">mask </span><span class="s0">is None else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ceq</span><span class="s2">[</span><span class="s1">mask</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">_check_interpolation_conditions</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot; 
+        Check the interpolation conditions of all quadratic models. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">error_fun </span><span class="s2">= </span><span class="s5">0.0</span>
+        <span class="s1">error_cub </span><span class="s2">= </span><span class="s5">0.0</span>
+        <span class="s1">error_ceq </span><span class="s2">= </span><span class="s5">0.0</span>
+        <span class="s0">for </span><span class="s1">k </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">):</span>
+            <span class="s1">error_fun </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span>
+                <span class="s2">[</span>
+                    <span class="s1">error_fun</span><span class="s2">,</span>
+                    <span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span>
+                        <span class="s1">self</span><span class="s2">.</span><span class="s1">fun</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s1">k</span><span class="s2">)) - </span><span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">]</span>
+                    <span class="s2">),</span>
+                <span class="s2">]</span>
+            <span class="s2">)</span>
+            <span class="s1">error_cub </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span>
+                <span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">cub</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s1">k</span><span class="s2">)) - </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :]</span>
+                <span class="s2">),</span>
+                <span class="s1">initial</span><span class="s2">=</span><span class="s1">error_cub</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">error_ceq </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span>
+                <span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">ceq</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolation</span><span class="s2">.</span><span class="s1">point</span><span class="s2">(</span><span class="s1">k</span><span class="s2">)) - </span><span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">[</span><span class="s1">k</span><span class="s2">, :]</span>
+                <span class="s2">),</span>
+                <span class="s1">initial</span><span class="s2">=</span><span class="s1">error_ceq</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s1">tol </span><span class="s2">= </span><span class="s5">10.0 </span><span class="s2">* </span><span class="s1">np</span><span class="s2">.</span><span class="s1">sqrt</span><span class="s2">(</span><span class="s1">EPS</span><span class="s2">) * </span><span class="s1">max</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">n</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">npt</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">error_fun </span><span class="s2">&gt; </span><span class="s1">tol </span><span class="s2">* </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">fun_val</span><span class="s2">), </span><span class="s1">initial</span><span class="s2">=</span><span class="s5">1.0</span><span class="s2">):</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s6">&quot;The interpolation conditions for the objective function are &quot;</span>
+                <span class="s6">&quot;not satisfied.&quot;</span><span class="s2">,</span>
+                <span class="s1">RuntimeWarning</span><span class="s2">,</span>
+                <span class="s5">2</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">error_cub </span><span class="s2">&gt; </span><span class="s1">tol </span><span class="s2">* </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">cub_val</span><span class="s2">), </span><span class="s1">initial</span><span class="s2">=</span><span class="s5">1.0</span><span class="s2">):</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s6">&quot;The interpolation conditions for the inequality constraint &quot;</span>
+                <span class="s6">&quot;function are not satisfied.&quot;</span><span class="s2">,</span>
+                <span class="s1">RuntimeWarning</span><span class="s2">,</span>
+                <span class="s5">2</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">error_ceq </span><span class="s2">&gt; </span><span class="s1">tol </span><span class="s2">* </span><span class="s1">np</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">abs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">ceq_val</span><span class="s2">), </span><span class="s1">initial</span><span class="s2">=</span><span class="s5">1.0</span><span class="s2">):</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s6">&quot;The interpolation conditions for the equality constraint &quot;</span>
+                <span class="s6">&quot;function are not satisfied.&quot;</span><span class="s2">,</span>
+                <span class="s1">RuntimeWarning</span><span class="s2">,</span>
+                <span class="s5">2</span><span class="s2">,</span>
+            <span class="s2">)</span>
+</pre>
+</body>
+</html>

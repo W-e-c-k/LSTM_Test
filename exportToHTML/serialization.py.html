@@ -1,0 +1,597 @@
+<html>
+<head>
+<title>serialization.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #7a7e85;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+serialization.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Legacy serialization logic for Keras models.&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">contextlib</span>
+<span class="s2">import </span><span class="s1">inspect</span>
+<span class="s2">import </span><span class="s1">json</span>
+<span class="s2">import </span><span class="s1">threading</span>
+<span class="s2">import </span><span class="s1">weakref</span>
+
+<span class="s3"># isort: off</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s4">.</span><span class="s1">src</span><span class="s4">.</span><span class="s1">api_export </span><span class="s2">import </span><span class="s1">keras_export</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s4">.</span><span class="s1">src</span><span class="s4">.</span><span class="s1">saving </span><span class="s2">import </span><span class="s1">object_registration</span>
+
+<span class="s3"># Flag that determines whether to skip the NotImplementedError when calling</span>
+<span class="s3"># get_config in custom models and layers. This is only enabled when saving to</span>
+<span class="s3"># SavedModel, when the config isn't required.</span>
+<span class="s1">_SKIP_FAILED_SERIALIZATION </span><span class="s4">= </span><span class="s2">False</span>
+<span class="s3"># If a layer does not have a defined config, then the returned config will be a</span>
+<span class="s3"># dictionary with the below key.</span>
+<span class="s1">_LAYER_UNDEFINED_CONFIG_KEY </span><span class="s4">= </span><span class="s5">&quot;layer was saved without config&quot;</span>
+
+<span class="s3"># Store a unique, per-object ID for shared objects.</span>
+<span class="s3">#</span>
+<span class="s3"># We store a unique ID for each object so that we may, at loading time,</span>
+<span class="s3"># re-create the network properly.  Without this ID, we would have no way of</span>
+<span class="s3"># determining whether a config is a description of a new object that</span>
+<span class="s3"># should be created or is merely a reference to an already-created object.</span>
+<span class="s1">SHARED_OBJECT_KEY </span><span class="s4">= </span><span class="s5">&quot;shared_object_id&quot;</span>
+
+<span class="s1">SHARED_OBJECT_DISABLED </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">local</span><span class="s4">()</span>
+<span class="s1">SHARED_OBJECT_LOADING </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">local</span><span class="s4">()</span>
+<span class="s1">SHARED_OBJECT_SAVING </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">local</span><span class="s4">()</span>
+
+
+<span class="s3"># Attributes on the threadlocal variable must be set per-thread, thus we</span>
+<span class="s3"># cannot initialize these globally. Instead, we have accessor functions with</span>
+<span class="s3"># default values.</span>
+<span class="s2">def </span><span class="s1">_shared_object_disabled</span><span class="s4">():</span>
+    <span class="s0">&quot;&quot;&quot;Get whether shared object handling is disabled in a threadsafe manner.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">SHARED_OBJECT_DISABLED</span><span class="s4">, </span><span class="s5">&quot;disabled&quot;</span><span class="s4">, </span><span class="s2">False</span><span class="s4">)</span>
+
+
+<span class="s2">def </span><span class="s1">_shared_object_loading_scope</span><span class="s4">():</span>
+    <span class="s0">&quot;&quot;&quot;Get the current shared object saving scope in a threadsafe manner.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">SHARED_OBJECT_LOADING</span><span class="s4">, </span><span class="s5">&quot;scope&quot;</span><span class="s4">, </span><span class="s1">NoopLoadingScope</span><span class="s4">())</span>
+
+
+<span class="s2">def </span><span class="s1">_shared_object_saving_scope</span><span class="s4">():</span>
+    <span class="s0">&quot;&quot;&quot;Get the current shared object saving scope in a threadsafe manner.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">SHARED_OBJECT_SAVING</span><span class="s4">, </span><span class="s5">&quot;scope&quot;</span><span class="s4">, </span><span class="s2">None</span><span class="s4">)</span>
+
+
+<span class="s2">class </span><span class="s1">DisableSharedObjectScope</span><span class="s4">:</span>
+    <span class="s0">&quot;&quot;&quot;A context manager for disabling handling of shared objects. 
+ 
+    Disables shared object handling for both saving and loading. 
+ 
+    Created primarily for use with `clone_model`, which does extra surgery that 
+    is incompatible with shared objects. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__enter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s1">SHARED_OBJECT_DISABLED</span><span class="s4">.</span><span class="s1">disabled </span><span class="s4">= </span><span class="s2">True</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_orig_loading_scope </span><span class="s4">= </span><span class="s1">_shared_object_loading_scope</span><span class="s4">()</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_orig_saving_scope </span><span class="s4">= </span><span class="s1">_shared_object_saving_scope</span><span class="s4">()</span>
+
+    <span class="s2">def </span><span class="s1">__exit__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+        <span class="s1">SHARED_OBJECT_DISABLED</span><span class="s4">.</span><span class="s1">disabled </span><span class="s4">= </span><span class="s2">False</span>
+        <span class="s1">SHARED_OBJECT_LOADING</span><span class="s4">.</span><span class="s1">scope </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_orig_loading_scope</span>
+        <span class="s1">SHARED_OBJECT_SAVING</span><span class="s4">.</span><span class="s1">scope </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_orig_saving_scope</span>
+
+
+<span class="s2">class </span><span class="s1">NoopLoadingScope</span><span class="s4">:</span>
+    <span class="s0">&quot;&quot;&quot;The default shared object loading scope. It does nothing. 
+ 
+    Created to simplify serialization code that doesn't care about shared 
+    objects (e.g. when serializing a single object). 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">get</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">unused_object_id</span><span class="s4">):</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">def </span><span class="s1">set</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">object_id</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">):</span>
+        <span class="s2">pass</span>
+
+
+<span class="s2">class </span><span class="s1">SharedObjectLoadingScope</span><span class="s4">:</span>
+    <span class="s0">&quot;&quot;&quot;A context manager for keeping track of loaded objects. 
+ 
+    During the deserialization process, we may come across objects that are 
+    shared across multiple layers. In order to accurately restore the network 
+    structure to its original state, `SharedObjectLoadingScope` allows us to 
+    re-use shared objects rather than cloning them. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__enter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">if </span><span class="s1">_shared_object_disabled</span><span class="s4">():</span>
+            <span class="s2">return </span><span class="s1">NoopLoadingScope</span><span class="s4">()</span>
+
+        <span class="s2">global </span><span class="s1">SHARED_OBJECT_LOADING</span>
+        <span class="s1">SHARED_OBJECT_LOADING</span><span class="s4">.</span><span class="s1">scope </span><span class="s4">= </span><span class="s1">self</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_obj_ids_to_obj </span><span class="s4">= {}</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">get</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">object_id</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Given a shared object ID, returns a previously instantiated object. 
+ 
+        Args: 
+          object_id: shared object ID to use when attempting to find 
+            already-loaded object. 
+ 
+        Returns: 
+          The object, if we've seen this ID before. Else, `None`. 
+        &quot;&quot;&quot;</span>
+        <span class="s3"># Explicitly check for `None` internally to make external calling code a</span>
+        <span class="s3"># bit cleaner.</span>
+        <span class="s2">if </span><span class="s1">object_id </span><span class="s2">is None</span><span class="s4">:</span>
+            <span class="s2">return</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_obj_ids_to_obj</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">object_id</span><span class="s4">)</span>
+
+    <span class="s2">def </span><span class="s1">set</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">object_id</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Stores an instantiated object for future lookup and sharing.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">object_id </span><span class="s2">is None</span><span class="s4">:</span>
+            <span class="s2">return</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_obj_ids_to_obj</span><span class="s4">[</span><span class="s1">object_id</span><span class="s4">] = </span><span class="s1">obj</span>
+
+    <span class="s2">def </span><span class="s1">__exit__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+        <span class="s2">global </span><span class="s1">SHARED_OBJECT_LOADING</span>
+        <span class="s1">SHARED_OBJECT_LOADING</span><span class="s4">.</span><span class="s1">scope </span><span class="s4">= </span><span class="s1">NoopLoadingScope</span><span class="s4">()</span>
+
+
+<span class="s2">class </span><span class="s1">SharedObjectConfig</span><span class="s4">(</span><span class="s1">dict</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;A configuration container that keeps track of references. 
+ 
+    `SharedObjectConfig` will automatically attach a shared object ID to any 
+    configs which are referenced more than once, allowing for proper shared 
+    object reconstruction at load time. 
+ 
+    In most cases, it would be more proper to subclass something like 
+    `collections.UserDict` or `collections.Mapping` rather than `dict` directly. 
+    Unfortunately, python's json encoder does not support `Mapping`s. This is 
+    important functionality to retain, since we are dealing with serialization. 
+ 
+    We should be safe to subclass `dict` here, since we aren't actually 
+    overriding any core methods, only augmenting with a new one for reference 
+    counting. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">base_config</span><span class="s4">, </span><span class="s1">object_id</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">ref_count </span><span class="s4">= </span><span class="s6">1</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">object_id </span><span class="s4">= </span><span class="s1">object_id</span>
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">base_config</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">)</span>
+
+    <span class="s2">def </span><span class="s1">increment_ref_count</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3"># As soon as we've seen the object more than once, we want to attach the</span>
+        <span class="s3"># shared object ID. This allows us to only attach the shared object ID</span>
+        <span class="s3"># when it's strictly necessary, making backwards compatibility breakage</span>
+        <span class="s3"># less likely.</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">ref_count </span><span class="s4">== </span><span class="s6">1</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">[</span><span class="s1">SHARED_OBJECT_KEY</span><span class="s4">] = </span><span class="s1">self</span><span class="s4">.</span><span class="s1">object_id</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">ref_count </span><span class="s4">+= </span><span class="s6">1</span>
+
+
+<span class="s2">class </span><span class="s1">SharedObjectSavingScope</span><span class="s4">:</span>
+    <span class="s0">&quot;&quot;&quot;Keeps track of shared object configs when serializing.&quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__enter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">if </span><span class="s1">_shared_object_disabled</span><span class="s4">():</span>
+            <span class="s2">return None</span>
+
+        <span class="s2">global </span><span class="s1">SHARED_OBJECT_SAVING</span>
+
+        <span class="s3"># Serialization can happen at a number of layers for a number of</span>
+        <span class="s3"># reasons.  We may end up with a case where we're opening a saving scope</span>
+        <span class="s3"># within another saving scope. In that case, we'd like to use the</span>
+        <span class="s3"># outermost scope available and ignore inner scopes, since there is not</span>
+        <span class="s3"># (yet) a reasonable use case for having these nested and distinct.</span>
+        <span class="s2">if </span><span class="s1">_shared_object_saving_scope</span><span class="s4">() </span><span class="s2">is not None</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_passthrough </span><span class="s4">= </span><span class="s2">True</span>
+            <span class="s2">return </span><span class="s1">_shared_object_saving_scope</span><span class="s4">()</span>
+        <span class="s2">else</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_passthrough </span><span class="s4">= </span><span class="s2">False</span>
+
+        <span class="s1">SHARED_OBJECT_SAVING</span><span class="s4">.</span><span class="s1">scope </span><span class="s4">= </span><span class="s1">self</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_shared_objects_config </span><span class="s4">= </span><span class="s1">weakref</span><span class="s4">.</span><span class="s1">WeakKeyDictionary</span><span class="s4">()</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_next_id </span><span class="s4">= </span><span class="s6">0</span>
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">get_config</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Gets a `SharedObjectConfig` if one has already been seen for `obj`. 
+ 
+        Args: 
+          obj: The object for which to retrieve the `SharedObjectConfig`. 
+ 
+        Returns: 
+          The SharedObjectConfig for a given object, if already seen. Else, 
+            `None`. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">try</span><span class="s4">:</span>
+            <span class="s1">shared_object_config </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_shared_objects_config</span><span class="s4">[</span><span class="s1">obj</span><span class="s4">]</span>
+        <span class="s2">except </span><span class="s4">(</span><span class="s1">TypeError</span><span class="s4">, </span><span class="s1">KeyError</span><span class="s4">):</span>
+            <span class="s3"># If the object is unhashable (e.g. a subclass of</span>
+            <span class="s3"># `AbstractBaseClass` that has not overridden `__hash__`), a</span>
+            <span class="s3"># `TypeError` will be thrown.  We'll just continue on without shared</span>
+            <span class="s3"># object support.</span>
+            <span class="s2">return None</span>
+        <span class="s1">shared_object_config</span><span class="s4">.</span><span class="s1">increment_ref_count</span><span class="s4">()</span>
+        <span class="s2">return </span><span class="s1">shared_object_config</span>
+
+    <span class="s2">def </span><span class="s1">create_config</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">base_config</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Create a new SharedObjectConfig for a given object.&quot;&quot;&quot;</span>
+        <span class="s1">shared_object_config </span><span class="s4">= </span><span class="s1">SharedObjectConfig</span><span class="s4">(</span><span class="s1">base_config</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_next_id</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_next_id </span><span class="s4">+= </span><span class="s6">1</span>
+        <span class="s2">try</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_shared_objects_config</span><span class="s4">[</span><span class="s1">obj</span><span class="s4">] = </span><span class="s1">shared_object_config</span>
+        <span class="s2">except </span><span class="s1">TypeError</span><span class="s4">:</span>
+            <span class="s3"># If the object is unhashable (e.g. a subclass of</span>
+            <span class="s3"># `AbstractBaseClass` that has not overridden `__hash__`), a</span>
+            <span class="s3"># `TypeError` will be thrown.  We'll just continue on without shared</span>
+            <span class="s3"># object support.</span>
+            <span class="s2">pass</span>
+        <span class="s2">return </span><span class="s1">shared_object_config</span>
+
+    <span class="s2">def </span><span class="s1">__exit__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+        <span class="s2">if not </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s5">&quot;_passthrough&quot;</span><span class="s4">, </span><span class="s2">False</span><span class="s4">):</span>
+            <span class="s2">global </span><span class="s1">SHARED_OBJECT_SAVING</span>
+            <span class="s1">SHARED_OBJECT_SAVING</span><span class="s4">.</span><span class="s1">scope </span><span class="s4">= </span><span class="s2">None</span>
+
+
+<span class="s2">def </span><span class="s1">serialize_keras_class_and_config</span><span class="s4">(</span>
+    <span class="s1">cls_name</span><span class="s4">, </span><span class="s1">cls_config</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">=</span><span class="s2">None</span><span class="s4">, </span><span class="s1">shared_object_id</span><span class="s4">=</span><span class="s2">None</span>
+<span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Returns the serialization of the class with the given config.&quot;&quot;&quot;</span>
+    <span class="s1">base_config </span><span class="s4">= {</span><span class="s5">&quot;class_name&quot;</span><span class="s4">: </span><span class="s1">cls_name</span><span class="s4">, </span><span class="s5">&quot;config&quot;</span><span class="s4">: </span><span class="s1">cls_config</span><span class="s4">}</span>
+
+    <span class="s3"># We call `serialize_keras_class_and_config` for some branches of the load</span>
+    <span class="s3"># path. In that case, we may already have a shared object ID we'd like to</span>
+    <span class="s3"># retain.</span>
+    <span class="s2">if </span><span class="s1">shared_object_id </span><span class="s2">is not None</span><span class="s4">:</span>
+        <span class="s1">base_config</span><span class="s4">[</span><span class="s1">SHARED_OBJECT_KEY</span><span class="s4">] = </span><span class="s1">shared_object_id</span>
+
+    <span class="s3"># If we have an active `SharedObjectSavingScope`, check whether we've</span>
+    <span class="s3"># already serialized this config. If so, just use that config. This will</span>
+    <span class="s3"># store an extra ID field in the config, allowing us to re-create the shared</span>
+    <span class="s3"># object relationship at load time.</span>
+    <span class="s2">if </span><span class="s1">_shared_object_saving_scope</span><span class="s4">() </span><span class="s2">is not None and </span><span class="s1">obj </span><span class="s2">is not None</span><span class="s4">:</span>
+        <span class="s1">shared_object_config </span><span class="s4">= </span><span class="s1">_shared_object_saving_scope</span><span class="s4">().</span><span class="s1">get_config</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">)</span>
+        <span class="s2">if </span><span class="s1">shared_object_config </span><span class="s2">is None</span><span class="s4">:</span>
+            <span class="s2">return </span><span class="s1">_shared_object_saving_scope</span><span class="s4">().</span><span class="s1">create_config</span><span class="s4">(</span><span class="s1">base_config</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">)</span>
+        <span class="s2">return </span><span class="s1">shared_object_config</span>
+
+    <span class="s2">return </span><span class="s1">base_config</span>
+
+
+<span class="s4">@</span><span class="s1">contextlib</span><span class="s4">.</span><span class="s1">contextmanager</span>
+<span class="s2">def </span><span class="s1">skip_failed_serialization</span><span class="s4">():</span>
+    <span class="s2">global </span><span class="s1">_SKIP_FAILED_SERIALIZATION</span>
+    <span class="s1">prev </span><span class="s4">= </span><span class="s1">_SKIP_FAILED_SERIALIZATION</span>
+    <span class="s2">try</span><span class="s4">:</span>
+        <span class="s1">_SKIP_FAILED_SERIALIZATION </span><span class="s4">= </span><span class="s2">True</span>
+        <span class="s2">yield</span>
+    <span class="s2">finally</span><span class="s4">:</span>
+        <span class="s1">_SKIP_FAILED_SERIALIZATION </span><span class="s4">= </span><span class="s1">prev</span>
+
+
+<span class="s4">@</span><span class="s1">keras_export</span><span class="s4">(</span>
+    <span class="s4">[</span>
+        <span class="s5">&quot;keras.legacy.saving.serialize_keras_object&quot;</span><span class="s4">,</span>
+        <span class="s5">&quot;keras.utils.legacy.serialize_keras_object&quot;</span><span class="s4">,</span>
+    <span class="s4">]</span>
+<span class="s4">)</span>
+<span class="s2">def </span><span class="s1">serialize_keras_object</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Serialize a Keras object into a JSON-compatible representation. 
+ 
+    Calls to `serialize_keras_object` while underneath the 
+    `SharedObjectSavingScope` context manager will cause any objects re-used 
+    across multiple layers to be saved with a special shared object ID. This 
+    allows the network to be re-created properly during deserialization. 
+ 
+    Args: 
+      instance: The object to serialize. 
+ 
+    Returns: 
+      A dict-like, JSON-compatible representation of the object's config. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3"># _, instance = tf.__internal__.decorator.unwrap(instance)</span>
+    <span class="s1">instance </span><span class="s4">= </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">unwrap</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">)</span>
+    <span class="s2">if </span><span class="s1">instance </span><span class="s2">is None</span><span class="s4">:</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">, </span><span class="s5">&quot;get_config&quot;</span><span class="s4">):</span>
+        <span class="s1">name </span><span class="s4">= </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">get_registered_name</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">)</span>
+        <span class="s2">try</span><span class="s4">:</span>
+            <span class="s1">config </span><span class="s4">= </span><span class="s1">instance</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">()</span>
+        <span class="s2">except </span><span class="s1">NotImplementedError </span><span class="s2">as </span><span class="s1">e</span><span class="s4">:</span>
+            <span class="s2">if </span><span class="s1">_SKIP_FAILED_SERIALIZATION</span><span class="s4">:</span>
+                <span class="s2">return </span><span class="s1">serialize_keras_class_and_config</span><span class="s4">(</span>
+                    <span class="s1">name</span><span class="s4">, {</span><span class="s1">_LAYER_UNDEFINED_CONFIG_KEY</span><span class="s4">: </span><span class="s2">True</span><span class="s4">}</span>
+                <span class="s4">)</span>
+            <span class="s2">raise </span><span class="s1">e</span>
+        <span class="s1">serialization_config </span><span class="s4">= {}</span>
+        <span class="s2">for </span><span class="s1">key</span><span class="s4">, </span><span class="s1">item </span><span class="s2">in </span><span class="s1">config</span><span class="s4">.</span><span class="s1">items</span><span class="s4">():</span>
+            <span class="s2">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">item</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+                <span class="s1">serialization_config</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">item</span>
+                <span class="s2">continue</span>
+
+            <span class="s3"># Any object of a different type needs to be converted to string or</span>
+            <span class="s3"># dict for serialization (e.g. custom functions, custom classes)</span>
+            <span class="s2">try</span><span class="s4">:</span>
+                <span class="s1">serialized_item </span><span class="s4">= </span><span class="s1">serialize_keras_object</span><span class="s4">(</span><span class="s1">item</span><span class="s4">)</span>
+                <span class="s2">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">serialized_item</span><span class="s4">, </span><span class="s1">dict</span><span class="s4">) </span><span class="s2">and not </span><span class="s1">isinstance</span><span class="s4">(</span>
+                    <span class="s1">item</span><span class="s4">, </span><span class="s1">dict</span>
+                <span class="s4">):</span>
+                    <span class="s1">serialized_item</span><span class="s4">[</span><span class="s5">&quot;__passive_serialization__&quot;</span><span class="s4">] = </span><span class="s2">True</span>
+                <span class="s1">serialization_config</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">serialized_item</span>
+            <span class="s2">except </span><span class="s1">ValueError</span><span class="s4">:</span>
+                <span class="s1">serialization_config</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">item</span>
+
+        <span class="s1">name </span><span class="s4">= </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">get_registered_name</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">)</span>
+        <span class="s2">return </span><span class="s1">serialize_keras_class_and_config</span><span class="s4">(</span>
+            <span class="s1">name</span><span class="s4">, </span><span class="s1">serialization_config</span><span class="s4">, </span><span class="s1">instance</span>
+        <span class="s4">)</span>
+    <span class="s2">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">, </span><span class="s5">&quot;__name__&quot;</span><span class="s4">):</span>
+        <span class="s2">return </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">get_registered_name</span><span class="s4">(</span><span class="s1">instance</span><span class="s4">)</span>
+    <span class="s2">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+        <span class="s5">f&quot;Cannot serialize </span><span class="s2">{</span><span class="s1">instance</span><span class="s2">} </span><span class="s5">because it doesn't implement &quot;</span>
+        <span class="s5">&quot;`get_config()`.&quot;</span>
+    <span class="s4">)</span>
+
+
+<span class="s2">def </span><span class="s1">class_and_config_for_serialized_keras_object</span><span class="s4">(</span>
+    <span class="s1">config</span><span class="s4">,</span>
+    <span class="s1">module_objects</span><span class="s4">=</span><span class="s2">None</span><span class="s4">,</span>
+    <span class="s1">custom_objects</span><span class="s4">=</span><span class="s2">None</span><span class="s4">,</span>
+    <span class="s1">printable_module_name</span><span class="s4">=</span><span class="s5">&quot;object&quot;</span><span class="s4">,</span>
+<span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Returns the class name and config for a serialized keras object.&quot;&quot;&quot;</span>
+
+    <span class="s2">if </span><span class="s4">(</span>
+        <span class="s2">not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">config</span><span class="s4">, </span><span class="s1">dict</span><span class="s4">)</span>
+        <span class="s2">or </span><span class="s5">&quot;class_name&quot; </span><span class="s2">not in </span><span class="s1">config</span>
+        <span class="s2">or </span><span class="s5">&quot;config&quot; </span><span class="s2">not in </span><span class="s1">config</span>
+    <span class="s4">):</span>
+        <span class="s2">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">f&quot;Improper config format for </span><span class="s2">{</span><span class="s1">config</span><span class="s2">}</span><span class="s5">. &quot;</span>
+            <span class="s5">&quot;Expecting python dict contains `class_name` and `config` as keys&quot;</span>
+        <span class="s4">)</span>
+
+    <span class="s1">class_name </span><span class="s4">= </span><span class="s1">config</span><span class="s4">[</span><span class="s5">&quot;class_name&quot;</span><span class="s4">]</span>
+    <span class="s1">cls </span><span class="s4">= </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">get_registered_object</span><span class="s4">(</span>
+        <span class="s1">class_name</span><span class="s4">, </span><span class="s1">custom_objects</span><span class="s4">, </span><span class="s1">module_objects</span>
+    <span class="s4">)</span>
+    <span class="s2">if </span><span class="s1">cls </span><span class="s2">is None</span><span class="s4">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">f&quot;Unknown </span><span class="s2">{</span><span class="s1">printable_module_name</span><span class="s2">}</span><span class="s5">: '</span><span class="s2">{</span><span class="s1">class_name</span><span class="s2">}</span><span class="s5">'. &quot;</span>
+            <span class="s5">&quot;Please ensure you are using a `keras.utils.custom_object_scope` &quot;</span>
+            <span class="s5">&quot;and that this object is included in the scope. See &quot;</span>
+            <span class="s5">&quot;https://www.tensorflow.org/guide/keras/save_and_serialize&quot;</span>
+            <span class="s5">&quot;#registering_the_custom_object for details.&quot;</span>
+        <span class="s4">)</span>
+
+    <span class="s1">cls_config </span><span class="s4">= </span><span class="s1">config</span><span class="s4">[</span><span class="s5">&quot;config&quot;</span><span class="s4">]</span>
+    <span class="s3"># Check if `cls_config` is a list. If it is a list, return the class and the</span>
+    <span class="s3"># associated class configs for recursively deserialization. This case will</span>
+    <span class="s3"># happen on the old version of sequential model (e.g. `keras_version` ==</span>
+    <span class="s3"># &quot;2.0.6&quot;), which is serialized in a different structure, for example</span>
+    <span class="s3"># &quot;{'class_name': 'Sequential',</span>
+    <span class="s3">#   'config': [{'class_name': 'Embedding', 'config': ...}, {}, ...]}&quot;.</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">cls_config</span><span class="s4">, </span><span class="s1">list</span><span class="s4">):</span>
+        <span class="s2">return </span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">cls_config</span><span class="s4">)</span>
+
+    <span class="s1">deserialized_objects </span><span class="s4">= {}</span>
+    <span class="s2">for </span><span class="s1">key</span><span class="s4">, </span><span class="s1">item </span><span class="s2">in </span><span class="s1">cls_config</span><span class="s4">.</span><span class="s1">items</span><span class="s4">():</span>
+        <span class="s2">if </span><span class="s1">key </span><span class="s4">== </span><span class="s5">&quot;name&quot;</span><span class="s4">:</span>
+            <span class="s3"># Assume that the value of 'name' is a string that should not be</span>
+            <span class="s3"># deserialized as a function. This avoids the corner case where</span>
+            <span class="s3"># cls_config['name'] has an identical name to a custom function and</span>
+            <span class="s3"># gets converted into that function.</span>
+            <span class="s1">deserialized_objects</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">item</span>
+        <span class="s2">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">item</span><span class="s4">, </span><span class="s1">dict</span><span class="s4">) </span><span class="s2">and </span><span class="s5">&quot;__passive_serialization__&quot; </span><span class="s2">in </span><span class="s1">item</span><span class="s4">:</span>
+            <span class="s1">deserialized_objects</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">deserialize_keras_object</span><span class="s4">(</span>
+                <span class="s1">item</span><span class="s4">,</span>
+                <span class="s1">module_objects</span><span class="s4">=</span><span class="s1">module_objects</span><span class="s4">,</span>
+                <span class="s1">custom_objects</span><span class="s4">=</span><span class="s1">custom_objects</span><span class="s4">,</span>
+                <span class="s1">printable_module_name</span><span class="s4">=</span><span class="s5">&quot;config_item&quot;</span><span class="s4">,</span>
+            <span class="s4">)</span>
+        <span class="s3"># TODO(momernick): Should this also have 'module_objects'?</span>
+        <span class="s2">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">item</span><span class="s4">, </span><span class="s1">str</span><span class="s4">) </span><span class="s2">and </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isfunction</span><span class="s4">(</span>
+            <span class="s1">object_registration</span><span class="s4">.</span><span class="s1">get_registered_object</span><span class="s4">(</span><span class="s1">item</span><span class="s4">, </span><span class="s1">custom_objects</span><span class="s4">)</span>
+        <span class="s4">):</span>
+            <span class="s3"># Handle custom functions here. When saving functions, we only save</span>
+            <span class="s3"># the function's name as a string. If we find a matching string in</span>
+            <span class="s3"># the custom objects during deserialization, we convert the string</span>
+            <span class="s3"># back to the original function.</span>
+            <span class="s3"># Note that a potential issue is that a string field could have a</span>
+            <span class="s3"># naming conflict with a custom function name, but this should be a</span>
+            <span class="s3"># rare case.  This issue does not occur if a string field has a</span>
+            <span class="s3"># naming conflict with a custom object, since the config of an</span>
+            <span class="s3"># object will always be a dict.</span>
+            <span class="s1">deserialized_objects</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = (</span>
+                <span class="s1">object_registration</span><span class="s4">.</span><span class="s1">get_registered_object</span><span class="s4">(</span><span class="s1">item</span><span class="s4">, </span><span class="s1">custom_objects</span><span class="s4">)</span>
+            <span class="s4">)</span>
+    <span class="s2">for </span><span class="s1">key</span><span class="s4">, </span><span class="s1">item </span><span class="s2">in </span><span class="s1">deserialized_objects</span><span class="s4">.</span><span class="s1">items</span><span class="s4">():</span>
+        <span class="s1">cls_config</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">deserialized_objects</span><span class="s4">[</span><span class="s1">key</span><span class="s4">]</span>
+
+    <span class="s2">return </span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">cls_config</span><span class="s4">)</span>
+
+
+<span class="s4">@</span><span class="s1">keras_export</span><span class="s4">(</span>
+    <span class="s4">[</span>
+        <span class="s5">&quot;keras.legacy.saving.deserialize_keras_object&quot;</span><span class="s4">,</span>
+        <span class="s5">&quot;keras.utils.legacy.deserialize_keras_object&quot;</span><span class="s4">,</span>
+    <span class="s4">]</span>
+<span class="s4">)</span>
+<span class="s2">def </span><span class="s1">deserialize_keras_object</span><span class="s4">(</span>
+    <span class="s1">identifier</span><span class="s4">,</span>
+    <span class="s1">module_objects</span><span class="s4">=</span><span class="s2">None</span><span class="s4">,</span>
+    <span class="s1">custom_objects</span><span class="s4">=</span><span class="s2">None</span><span class="s4">,</span>
+    <span class="s1">printable_module_name</span><span class="s4">=</span><span class="s5">&quot;object&quot;</span><span class="s4">,</span>
+<span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Turns the serialized form of a Keras object back into an actual object. 
+ 
+    This function is for mid-level library implementers rather than end users. 
+ 
+    Importantly, this utility requires you to provide the dict of 
+    `module_objects` to use for looking up the object config; this is not 
+    populated by default. If you need a deserialization utility that has 
+    preexisting knowledge of built-in Keras objects, use e.g. 
+    `keras.layers.deserialize(config)`, `keras.metrics.deserialize(config)`, 
+    etc. 
+ 
+    Calling `deserialize_keras_object` while underneath the 
+    `SharedObjectLoadingScope` context manager will cause any already-seen 
+    shared objects to be returned as-is rather than creating a new object. 
+ 
+    Args: 
+      identifier: the serialized form of the object. 
+      module_objects: A dictionary of built-in objects to look the name up in. 
+        Generally, `module_objects` is provided by midlevel library 
+        implementers. 
+      custom_objects: A dictionary of custom objects to look the name up in. 
+        Generally, `custom_objects` is provided by the end user. 
+      printable_module_name: A human-readable string representing the type of 
+        the object. Printed in case of exception. 
+ 
+    Returns: 
+      The deserialized object. 
+ 
+    Example: 
+ 
+    A mid-level library implementer might want to implement a utility for 
+    retrieving an object from its config, as such: 
+ 
+    ```python 
+    def deserialize(config, custom_objects=None): 
+       return deserialize_keras_object( 
+         identifier, 
+         module_objects=globals(), 
+         custom_objects=custom_objects, 
+         name=&quot;MyObjectType&quot;, 
+       ) 
+    ``` 
+ 
+    This is how e.g. `keras.layers.deserialize()` is implemented. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">if </span><span class="s1">identifier </span><span class="s2">is None</span><span class="s4">:</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">identifier</span><span class="s4">, </span><span class="s1">dict</span><span class="s4">):</span>
+        <span class="s3"># In this case we are dealing with a Keras config dictionary.</span>
+        <span class="s1">config </span><span class="s4">= </span><span class="s1">identifier</span>
+        <span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">cls_config</span><span class="s4">) = </span><span class="s1">class_and_config_for_serialized_keras_object</span><span class="s4">(</span>
+            <span class="s1">config</span><span class="s4">, </span><span class="s1">module_objects</span><span class="s4">, </span><span class="s1">custom_objects</span><span class="s4">, </span><span class="s1">printable_module_name</span>
+        <span class="s4">)</span>
+
+        <span class="s3"># If this object has already been loaded (i.e. it's shared between</span>
+        <span class="s3"># multiple objects), return the already-loaded object.</span>
+        <span class="s1">shared_object_id </span><span class="s4">= </span><span class="s1">config</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">SHARED_OBJECT_KEY</span><span class="s4">)</span>
+        <span class="s1">shared_object </span><span class="s4">= </span><span class="s1">_shared_object_loading_scope</span><span class="s4">().</span><span class="s1">get</span><span class="s4">(</span><span class="s1">shared_object_id</span><span class="s4">)</span>
+        <span class="s2">if </span><span class="s1">shared_object </span><span class="s2">is not None</span><span class="s4">:</span>
+            <span class="s2">return </span><span class="s1">shared_object</span>
+
+        <span class="s2">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s5">&quot;from_config&quot;</span><span class="s4">):</span>
+            <span class="s1">arg_spec </span><span class="s4">= </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">getfullargspec</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">.</span><span class="s1">from_config</span><span class="s4">)</span>
+            <span class="s1">custom_objects </span><span class="s4">= </span><span class="s1">custom_objects </span><span class="s2">or </span><span class="s4">{}</span>
+
+            <span class="s3"># TODO(nkovela): Swap find and replace args during Keras 3.0 release</span>
+            <span class="s3"># Replace keras refs with keras</span>
+            <span class="s1">cls_config </span><span class="s4">= </span><span class="s1">_find_replace_nested_dict</span><span class="s4">(</span>
+                <span class="s1">cls_config</span><span class="s4">, </span><span class="s5">&quot;keras.&quot;</span><span class="s4">, </span><span class="s5">&quot;keras.&quot;</span>
+            <span class="s4">)</span>
+
+            <span class="s2">if </span><span class="s5">&quot;custom_objects&quot; </span><span class="s2">in </span><span class="s1">arg_spec</span><span class="s4">.</span><span class="s1">args</span><span class="s4">:</span>
+                <span class="s1">deserialized_obj </span><span class="s4">= </span><span class="s1">cls</span><span class="s4">.</span><span class="s1">from_config</span><span class="s4">(</span>
+                    <span class="s1">cls_config</span><span class="s4">,</span>
+                    <span class="s1">custom_objects</span><span class="s4">={</span>
+                        <span class="s4">**</span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">GLOBAL_CUSTOM_OBJECTS</span><span class="s4">,</span>
+                        <span class="s4">**</span><span class="s1">custom_objects</span><span class="s4">,</span>
+                    <span class="s4">},</span>
+                <span class="s4">)</span>
+            <span class="s2">else</span><span class="s4">:</span>
+                <span class="s2">with </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">CustomObjectScope</span><span class="s4">(</span><span class="s1">custom_objects</span><span class="s4">):</span>
+                    <span class="s1">deserialized_obj </span><span class="s4">= </span><span class="s1">cls</span><span class="s4">.</span><span class="s1">from_config</span><span class="s4">(</span><span class="s1">cls_config</span><span class="s4">)</span>
+        <span class="s2">else</span><span class="s4">:</span>
+            <span class="s3"># Then `cls` may be a function returning a class.</span>
+            <span class="s3"># in this case by convention `config` holds</span>
+            <span class="s3"># the kwargs of the function.</span>
+            <span class="s1">custom_objects </span><span class="s4">= </span><span class="s1">custom_objects </span><span class="s2">or </span><span class="s4">{}</span>
+            <span class="s2">with </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">CustomObjectScope</span><span class="s4">(</span><span class="s1">custom_objects</span><span class="s4">):</span>
+                <span class="s1">deserialized_obj </span><span class="s4">= </span><span class="s1">cls</span><span class="s4">(**</span><span class="s1">cls_config</span><span class="s4">)</span>
+
+        <span class="s3"># Add object to shared objects, in case we find it referenced again.</span>
+        <span class="s1">_shared_object_loading_scope</span><span class="s4">().</span><span class="s1">set</span><span class="s4">(</span><span class="s1">shared_object_id</span><span class="s4">, </span><span class="s1">deserialized_obj</span><span class="s4">)</span>
+
+        <span class="s2">return </span><span class="s1">deserialized_obj</span>
+
+    <span class="s2">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">identifier</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+        <span class="s1">object_name </span><span class="s4">= </span><span class="s1">identifier</span>
+        <span class="s2">if </span><span class="s1">custom_objects </span><span class="s2">and </span><span class="s1">object_name </span><span class="s2">in </span><span class="s1">custom_objects</span><span class="s4">:</span>
+            <span class="s1">obj </span><span class="s4">= </span><span class="s1">custom_objects</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">object_name</span><span class="s4">)</span>
+        <span class="s2">elif </span><span class="s4">(</span>
+            <span class="s1">object_name</span>
+            <span class="s2">in </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">_THREAD_LOCAL_CUSTOM_OBJECTS</span><span class="s4">.</span><span class="s1">__dict__</span>
+        <span class="s4">):</span>
+            <span class="s1">obj </span><span class="s4">= </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">_THREAD_LOCAL_CUSTOM_OBJECTS</span><span class="s4">.</span><span class="s1">__dict__</span><span class="s4">[</span>
+                <span class="s1">object_name</span>
+            <span class="s4">]</span>
+        <span class="s2">elif </span><span class="s1">object_name </span><span class="s2">in </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">_GLOBAL_CUSTOM_OBJECTS</span><span class="s4">:</span>
+            <span class="s1">obj </span><span class="s4">= </span><span class="s1">object_registration</span><span class="s4">.</span><span class="s1">_GLOBAL_CUSTOM_OBJECTS</span><span class="s4">[</span><span class="s1">object_name</span><span class="s4">]</span>
+        <span class="s2">else</span><span class="s4">:</span>
+            <span class="s1">obj </span><span class="s4">= </span><span class="s1">module_objects</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">object_name</span><span class="s4">)</span>
+            <span class="s2">if </span><span class="s1">obj </span><span class="s2">is None</span><span class="s4">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                    <span class="s5">f&quot;Unknown </span><span class="s2">{</span><span class="s1">printable_module_name</span><span class="s2">}</span><span class="s5">: '</span><span class="s2">{</span><span class="s1">object_name</span><span class="s2">}</span><span class="s5">'. &quot;</span>
+                    <span class="s5">&quot;Please ensure you are using a &quot;</span>
+                    <span class="s5">&quot;`keras.utils.custom_object_scope` &quot;</span>
+                    <span class="s5">&quot;and that this object is included in the scope. See &quot;</span>
+                    <span class="s5">&quot;https://www.tensorflow.org/guide/keras/save_and_serialize&quot;</span>
+                    <span class="s5">&quot;#registering_the_custom_object for details.&quot;</span>
+                <span class="s4">)</span>
+
+        <span class="s3"># Classes passed by name are instantiated with no args, functions are</span>
+        <span class="s3"># returned as-is.</span>
+        <span class="s2">if </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">):</span>
+            <span class="s2">return </span><span class="s1">obj</span><span class="s4">()</span>
+        <span class="s2">return </span><span class="s1">obj</span>
+    <span class="s2">elif </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isfunction</span><span class="s4">(</span><span class="s1">identifier</span><span class="s4">):</span>
+        <span class="s3"># If a function has already been deserialized, return as is.</span>
+        <span class="s2">return </span><span class="s1">identifier</span>
+    <span class="s2">else</span><span class="s4">:</span>
+        <span class="s2">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">&quot;Could not interpret serialized &quot;</span>
+            <span class="s5">f&quot;</span><span class="s2">{</span><span class="s1">printable_module_name</span><span class="s2">}</span><span class="s5">: </span><span class="s2">{</span><span class="s1">identifier</span><span class="s2">}</span><span class="s5">&quot;</span>
+        <span class="s4">)</span>
+
+
+<span class="s2">def </span><span class="s1">validate_config</span><span class="s4">(</span><span class="s1">config</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Determines whether config appears to be a valid layer config.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s4">(</span>
+        <span class="s1">isinstance</span><span class="s4">(</span><span class="s1">config</span><span class="s4">, </span><span class="s1">dict</span><span class="s4">) </span><span class="s2">and </span><span class="s1">_LAYER_UNDEFINED_CONFIG_KEY </span><span class="s2">not in </span><span class="s1">config</span>
+    <span class="s4">)</span>
+
+
+<span class="s2">def </span><span class="s1">is_default</span><span class="s4">(</span><span class="s1">method</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Check if a method is decorated with the `default` wrapper.&quot;&quot;&quot;</span>
+    <span class="s2">return </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">method</span><span class="s4">, </span><span class="s5">&quot;_is_default&quot;</span><span class="s4">, </span><span class="s2">False</span><span class="s4">)</span>
+
+
+<span class="s2">def </span><span class="s1">_find_replace_nested_dict</span><span class="s4">(</span><span class="s1">config</span><span class="s4">, </span><span class="s1">find</span><span class="s4">, </span><span class="s1">replace</span><span class="s4">):</span>
+    <span class="s1">dict_str </span><span class="s4">= </span><span class="s1">json</span><span class="s4">.</span><span class="s1">dumps</span><span class="s4">(</span><span class="s1">config</span><span class="s4">)</span>
+    <span class="s1">dict_str </span><span class="s4">= </span><span class="s1">dict_str</span><span class="s4">.</span><span class="s1">replace</span><span class="s4">(</span><span class="s1">find</span><span class="s4">, </span><span class="s1">replace</span><span class="s4">)</span>
+    <span class="s1">config </span><span class="s4">= </span><span class="s1">json</span><span class="s4">.</span><span class="s1">loads</span><span class="s4">(</span><span class="s1">dict_str</span><span class="s4">)</span>
+    <span class="s2">return </span><span class="s1">config</span>
+</pre>
+</body>
+</html>

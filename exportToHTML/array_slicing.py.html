@@ -1,0 +1,533 @@
+<html>
+<head>
+<title>array_slicing.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #7a7e85;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+array_slicing.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">collections</span>
+<span class="s0">import </span><span class="s1">math</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters </span><span class="s0">import </span><span class="s1">data_adapter_utils</span>
+
+<span class="s0">try</span><span class="s2">:</span>
+    <span class="s0">import </span><span class="s1">pandas</span>
+<span class="s0">except </span><span class="s1">ImportError</span><span class="s2">:</span>
+    <span class="s1">pandas </span><span class="s2">= </span><span class="s0">None</span>
+
+
+<span class="s3"># Leave jax, tf, and torch arrays off this list. Instead we will use</span>
+<span class="s3"># `__array__` to detect these types. Doing so allows us to avoid importing a</span>
+<span class="s3"># backend framework we are not currently using just to do type-checking.</span>
+<span class="s1">ARRAY_TYPES </span><span class="s2">= (</span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">,)</span>
+<span class="s0">if </span><span class="s1">pandas</span><span class="s2">:</span>
+    <span class="s1">ARRAY_TYPES </span><span class="s2">= </span><span class="s1">ARRAY_TYPES </span><span class="s2">+ (</span><span class="s1">pandas</span><span class="s2">.</span><span class="s1">Series</span><span class="s2">, </span><span class="s1">pandas</span><span class="s2">.</span><span class="s1">DataFrame</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">Sliceable</span><span class="s2">:</span>
+    <span class="s4">&quot;&quot;&quot;`Sliceable` wrapping a tensor. 
+ 
+    A `Sliceable` implements the subscript operator to slice or index against 
+    the first dimension of the array. It also has conversion methods for each 
+    one of the backends. 
+ 
+    Args: 
+        array: the native array or tensor to wrap. 
+ 
+    Attributes: 
+        shape: the shape of the full dense native array. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">array</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">array </span><span class="s2">= </span><span class="s1">array</span>
+
+    <span class="s0">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Select elements in the 0th dimension. 
+ 
+        Args: 
+            indices: the indices to select. Only needs to support one dimension, 
+                the 0th dimension. Should support a `slice` or a list, tuple, 
+                `np.array` or 1D tensor. 
+        Returns: A slice of `self.array`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">cast</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Cast a tensor to a different dtype. 
+ 
+        Only called on a full array as provided by the user. 
+ 
+        Args: 
+            x: the tensor to cast. 
+        Returns: the cast tensor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">.</span><span class="s1">astype</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Convert a tensor to a NumPy array. 
+ 
+        Only called after slicing using `__getitem__`. 
+ 
+        Args: 
+            x: the tensor to convert. 
+        Returns: the converted tensor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_tf_dataset_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Convert a tensor to something compatible with `tf.data.Dataset`. 
+ 
+        This can be a NumPy array, `tf.Tensor` or any other type of tensor that 
+        `tf.data.Dataset.from_tensors` can consume. 
+        Only called on a full array as provided by the user. 
+ 
+        Args: 
+            x: the tensor to convert. 
+        Returns: converted version tensor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_jax_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Convert a tensor to something that the JAX backend can consume. 
+ 
+        This can be a `JAX` array, `JAXSparse` or a NumPy array. 
+        Only called after slicing using `__getitem__`. 
+        Used to convert sparse tensors and densify ragged tensors. 
+ 
+        Args: 
+            x: the tensor to convert. 
+        Returns: the converted tensor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Convert a tensor to something that the Torch backend can consume. 
+ 
+        This can be a Torch tensor, NumPy array or any other type of tensor that 
+        `keras.backend.torch.core.convert_to_tensor()` can consume. 
+        Only called after slicing using `__getitem__`. 
+        Used to densify sparse tensors and ragged tensors. 
+ 
+        Args: 
+            x: the tensor to convert. 
+        Returns: the converted tensor. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+
+<span class="s0">class </span><span class="s1">NumpySliceable</span><span class="s2">(</span><span class="s1">Sliceable</span><span class="s2">):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">TensorflowSliceable</span><span class="s2">(</span><span class="s1">Sliceable</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">slice</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">gather</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">cast</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorflow</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">cast</span>
+
+        <span class="s0">return </span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorflow</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">convert_to_numpy</span>
+
+        <span class="s0">return </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">TensorflowRaggedSliceable</span><span class="s2">(</span><span class="s1">TensorflowSliceable</span><span class="s2">):</span>
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_jax_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">.</span><span class="s1">to_tensor</span><span class="s2">()</span>
+
+
+<span class="s0">class </span><span class="s1">TensorflowSparseSliceable</span><span class="s2">(</span><span class="s1">TensorflowSliceable</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">array</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">to_tensorflow_sparse_wrapper</span><span class="s2">(</span><span class="s1">array</span><span class="s2">))</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">.</span><span class="s1">shape</span>
+
+    <span class="s0">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">slice_tensorflow_sparse_wrapper</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_tf_dataset_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">to_tensorflow_sparse_wrapper</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_jax_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">tf_sparse_to_jax_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorflow </span><span class="s0">import </span><span class="s1">sparse </span><span class="s0">as </span><span class="s1">tf_sparse</span>
+
+        <span class="s0">return </span><span class="s1">tf_sparse</span><span class="s2">.</span><span class="s1">sparse_to_dense</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">JaxSparseSliceable</span><span class="s2">(</span><span class="s1">Sliceable</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">, ...]</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">jax</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">convert_to_numpy</span>
+
+        <span class="s0">return </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_tf_dataset_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">array</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">to_tensorflow_sparse_wrapper</span><span class="s2">(</span>
+            <span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">jax_sparse_to_tf_sparse</span><span class="s2">(</span><span class="s1">array</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">.</span><span class="s1">todense</span><span class="s2">()</span>
+
+
+<span class="s0">class </span><span class="s1">TorchSliceable</span><span class="s2">(</span><span class="s1">Sliceable</span><span class="s2">):</span>
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">cast</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">torch</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">cast</span>
+
+        <span class="s0">return </span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">torch</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">convert_to_numpy</span>
+
+        <span class="s0">return </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">PandasSliceable</span><span class="s2">(</span><span class="s1">Sliceable</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">.</span><span class="s1">iloc</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">.</span><span class="s1">to_numpy</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_tf_dataset_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_jax_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">PandasDataFrameSliceable</span><span class="s2">(</span><span class="s1">PandasSliceable</span><span class="s2">):</span>
+    <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">PandasSeriesSliceable</span><span class="s2">(</span><span class="s1">PandasSliceable</span><span class="s2">):</span>
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">to_numpy</span><span class="s2">(), </span><span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">ScipySparseSliceable</span><span class="s2">(</span><span class="s1">Sliceable</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">array</span><span class="s2">):</span>
+        <span class="s3"># The COO representation is not indexable / sliceable and does not lend</span>
+        <span class="s3"># itself to it. Use the CSR representation instead, which is sliceable.</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">array</span><span class="s2">.</span><span class="s1">tocsr</span><span class="s2">())</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">.</span><span class="s1">todense</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_tf_dataset_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">to_tensorflow_sparse_wrapper</span><span class="s2">(</span>
+            <span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">scipy_sparse_to_tf_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_jax_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">scipy_sparse_to_jax_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">.</span><span class="s1">todense</span><span class="s2">()</span>
+
+
+<span class="s3"># `tf.SparseTensor` does not support indexing or `tf.gather`. The COO</span>
+<span class="s3"># representation it uses does not lend itself to indexing. We add some</span>
+<span class="s3"># intermediary tensors to ease the indexing and slicing. We put both indices and</span>
+<span class="s3"># values in `RaggedTensor`s where each row corresponds to a row in the sparse</span>
+<span class="s3"># tensor. This is because the number of values per row is not fixed.</span>
+<span class="s3"># `RaggedTensor`s do support indexing and `tf.gather`, although on CPU only.</span>
+<span class="s3"># We then reconstruct a `SparseTensor` from extracted rows. In theory, there is</span>
+<span class="s3"># no duplication of data for the indices and values, only the addition of row</span>
+<span class="s3"># splits for the ragged representation.</span>
+<span class="s3"># `TensorflowSparseWrapper` is a named tuple which combines the original</span>
+<span class="s3"># `SparseTensor` (used for the shape) and the ragged representations of indices</span>
+<span class="s3"># and values for indexing / slicing. We use a named tuple and not a `Sliceable`</span>
+<span class="s3"># to be able to ingest it in `tf.data.Dataset.from_tensors()` and map it.</span>
+
+<span class="s1">TensorflowSparseWrapper </span><span class="s2">= </span><span class="s1">collections</span><span class="s2">.</span><span class="s1">namedtuple</span><span class="s2">(</span>
+    <span class="s6">&quot;TensorflowSparseWrapper&quot;</span><span class="s2">, [</span><span class="s6">&quot;sparse&quot;</span><span class="s2">, </span><span class="s6">&quot;ragged_indices&quot;</span><span class="s2">, </span><span class="s6">&quot;ragged_values&quot;</span><span class="s2">]</span>
+<span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">to_tensorflow_sparse_wrapper</span><span class="s2">(</span><span class="s1">sparse</span><span class="s2">):</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+    <span class="s1">row_ids </span><span class="s2">= </span><span class="s1">sparse</span><span class="s2">.</span><span class="s1">indices</span><span class="s2">[:, </span><span class="s5">0</span><span class="s2">]</span>
+    <span class="s1">row_splits </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">experimental</span><span class="s2">.</span><span class="s1">RowPartition</span><span class="s2">.</span><span class="s1">from_value_rowids</span><span class="s2">(</span>
+        <span class="s1">row_ids</span>
+    <span class="s2">).</span><span class="s1">row_splits</span><span class="s2">()</span>
+
+    <span class="s1">ragged_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span>
+        <span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">.</span><span class="s1">from_row_splits</span><span class="s2">(</span><span class="s1">sparse</span><span class="s2">.</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">row_splits</span><span class="s2">), </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">int64</span>
+    <span class="s2">)</span>
+    <span class="s1">ragged_values </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">.</span><span class="s1">from_row_splits</span><span class="s2">(</span><span class="s1">sparse</span><span class="s2">.</span><span class="s1">values</span><span class="s2">, </span><span class="s1">row_splits</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">TensorflowSparseWrapper</span><span class="s2">(</span><span class="s1">sparse</span><span class="s2">, </span><span class="s1">ragged_indices</span><span class="s2">, </span><span class="s1">ragged_values</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">slice_tensorflow_sparse_wrapper</span><span class="s2">(</span><span class="s1">sparse_wrapper</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">slice</span><span class="s2">):</span>
+        <span class="s1">sparse_indices </span><span class="s2">= </span><span class="s1">sparse_wrapper</span><span class="s2">.</span><span class="s1">ragged_indices</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+        <span class="s1">sparse_values </span><span class="s2">= </span><span class="s1">sparse_wrapper</span><span class="s2">.</span><span class="s1">ragged_values</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+        <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">indices</span><span class="s2">.</span><span class="s1">stop </span><span class="s2">- </span><span class="s1">indices</span><span class="s2">.</span><span class="s1">start</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">sparse_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">gather</span><span class="s2">(</span><span class="s1">sparse_wrapper</span><span class="s2">.</span><span class="s1">ragged_indices</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">)</span>
+        <span class="s1">sparse_values </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">gather</span><span class="s2">(</span><span class="s1">sparse_wrapper</span><span class="s2">.</span><span class="s1">ragged_values</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+            <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">indices</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+            <span class="s0">if </span><span class="s1">batch_dim </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)[</span><span class="s5">0</span><span class="s2">]</span>
+
+    <span class="s1">row_ids </span><span class="s2">= </span><span class="s1">sparse_indices</span><span class="s2">.</span><span class="s1">value_rowids</span><span class="s2">()</span>
+    <span class="s1">sparse_indices </span><span class="s2">= </span><span class="s1">sparse_indices</span><span class="s2">.</span><span class="s1">flat_values</span><span class="s2">[:, </span><span class="s5">1</span><span class="s2">:]  </span><span class="s3"># remove first value</span>
+    <span class="s1">sparse_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">(</span>
+        <span class="s2">[</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">row_ids</span><span class="s2">, -</span><span class="s5">1</span><span class="s2">), </span><span class="s1">sparse_indices</span><span class="s2">], </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">1</span>
+    <span class="s2">)</span>
+
+    <span class="s1">sparse_values </span><span class="s2">= </span><span class="s1">sparse_values</span><span class="s2">.</span><span class="s1">flat_values</span>
+    <span class="s1">sparse_shape </span><span class="s2">= (</span><span class="s1">batch_dim</span><span class="s2">,) + </span><span class="s1">tuple</span><span class="s2">(</span>
+        <span class="s1">sparse_wrapper</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">as_list</span><span class="s2">()[</span><span class="s5">1</span><span class="s2">:]</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">SparseTensor</span><span class="s2">(</span><span class="s1">sparse_indices</span><span class="s2">, </span><span class="s1">sparse_values</span><span class="s2">, </span><span class="s1">sparse_shape</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">can_slice_array</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+    <span class="s0">return </span><span class="s2">(</span>
+        <span class="s1">x </span><span class="s0">is None</span>
+        <span class="s0">or </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">ARRAY_TYPES</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_tensorflow_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_jax_array</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_torch_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_scipy_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s6">&quot;__array__&quot;</span><span class="s2">)</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">convert_to_sliceable</span><span class="s2">(</span><span class="s1">arrays</span><span class="s2">, </span><span class="s1">target_backend</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Convert a structure of arrays into `Sliceable` instances 
+ 
+    Args: 
+        arrays: the arrays to convert. 
+        target_backend: the target backend for the output: 
+            - `None` indicates that `arrays` will be wrapped into `Sliceable`s 
+              as-is without using a different representation. This is used by 
+              `train_validation_split()`. 
+            - `tensorflow` indicates that 
+              `Sliceable.convert_to_tf_dataset_compatible` will be called. The 
+              returned structure therefore contains arrays, not `Sliceable`s. 
+            - `numpy`, `jax` or `torch` indices that the arrays will eventually 
+              be converted to this backend type after slicing. In this case, 
+              the intermediary `Sliceable`s may use a different representation 
+              from the input `arrays` for better performance. 
+    Returns: the same structure with `Sliceable` instances or arrays. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">convert_single_array</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">x </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">x</span>
+
+        <span class="s3"># Step 1. Determine which Sliceable class to use.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">NumpySliceable</span>
+        <span class="s0">elif </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_tensorflow_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_tensorflow_ragged</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+                <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">TensorflowRaggedSliceable</span>
+            <span class="s0">elif </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_tensorflow_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+                <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">TensorflowSparseSliceable</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">TensorflowSliceable</span>
+        <span class="s0">elif </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_jax_array</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_jax_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+                <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">JaxSparseSliceable</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">asarray</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+                <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">NumpySliceable</span>
+        <span class="s0">elif </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_torch_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">TorchSliceable</span>
+        <span class="s0">elif </span><span class="s1">pandas </span><span class="s0">is not None and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">pandas</span><span class="s2">.</span><span class="s1">DataFrame</span><span class="s2">):</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">PandasDataFrameSliceable</span>
+        <span class="s0">elif </span><span class="s1">pandas </span><span class="s0">is not None and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">pandas</span><span class="s2">.</span><span class="s1">Series</span><span class="s2">):</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">PandasSeriesSliceable</span>
+        <span class="s0">elif </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">is_scipy_sparse</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">ScipySparseSliceable</span>
+        <span class="s0">elif </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s6">&quot;__array__&quot;</span><span class="s2">):</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">asarray</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">NumpySliceable</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s6">&quot;Expected a NumPy array, tf.Tensor, tf.RaggedTensor, &quot;</span>
+                <span class="s6">&quot;tf.SparseTensor, jax.np.ndarray, &quot;</span>
+                <span class="s6">&quot;jax.experimental.sparse.JAXSparse, torch.Tensor, &quot;</span>
+                <span class="s6">&quot;Pandas Dataframe, or Pandas Series. Received invalid input: &quot;</span>
+                <span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">x</span><span class="s0">} </span><span class="s6">(of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span><span class="s0">}</span><span class="s6">)&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s3"># Step 2. Normalize floats to floatx.</span>
+        <span class="s0">def </span><span class="s1">is_non_floatx_float</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s2">(</span>
+                <span class="s0">not </span><span class="s1">dtype </span><span class="s2">== </span><span class="s1">object</span>
+                <span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_float_dtype</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">)</span>
+                <span class="s0">and not </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">) == </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+            <span class="s2">)</span>
+
+        <span class="s1">cast_dtype </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">pandas </span><span class="s0">is not None and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">pandas</span><span class="s2">.</span><span class="s1">DataFrame</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">any</span><span class="s2">(</span><span class="s1">is_non_floatx_float</span><span class="s2">(</span><span class="s1">d</span><span class="s2">) </span><span class="s0">for </span><span class="s1">d </span><span class="s0">in </span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtypes</span><span class="s2">.</span><span class="s1">values</span><span class="s2">):</span>
+                <span class="s1">cast_dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">is_non_floatx_float</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">):</span>
+                <span class="s1">cast_dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s1">cast_dtype </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable_class</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">cast_dtype</span><span class="s2">)</span>
+
+        <span class="s3"># Step 3. Apply target backend specific logic and optimizations.</span>
+        <span class="s0">if </span><span class="s1">target_backend </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">sliceable_class</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">target_backend </span><span class="s2">== </span><span class="s6">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">sliceable_class</span><span class="s2">.</span><span class="s1">convert_to_tf_dataset_compatible</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+        <span class="s3"># With dense arrays and JAX as output, it is faster to use NumPy as an</span>
+        <span class="s3"># intermediary representation, so wrap input array in a NumPy array,</span>
+        <span class="s3"># which should not use extra memory.</span>
+        <span class="s3"># See https://github.com/google/jax/issues/1276 for an explanation of</span>
+        <span class="s3"># why slicing a NumPy array is faster than slicing a JAX array.</span>
+        <span class="s0">if </span><span class="s1">target_backend </span><span class="s2">== </span><span class="s6">&quot;jax&quot; </span><span class="s0">and </span><span class="s1">sliceable_class </span><span class="s0">in </span><span class="s2">(</span>
+            <span class="s1">TensorflowSliceable</span><span class="s2">,</span>
+            <span class="s1">TorchSliceable</span><span class="s2">,</span>
+        <span class="s2">):</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">asarray</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s1">sliceable_class </span><span class="s2">= </span><span class="s1">NumpySliceable</span>
+
+        <span class="s0">return </span><span class="s1">sliceable_class</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">convert_single_array</span><span class="s2">, </span><span class="s1">arrays</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">train_validation_split</span><span class="s2">(</span><span class="s1">arrays</span><span class="s2">, </span><span class="s1">validation_split</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Split arrays into train and validation subsets in deterministic order. 
+ 
+    The last part of data will become validation data. 
+ 
+    Args: 
+        arrays: Tensors to split. Allowed inputs are arbitrarily nested 
+            structures of Tensors and NumPy arrays. 
+        validation_split: Float between 0 and 1. The proportion of the dataset 
+            to include in the validation split. The rest of the dataset will be 
+            included in the training split. 
+ 
+    Returns: 
+        `(train_arrays, validation_arrays)` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">flat_arrays </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">arrays</span><span class="s2">)</span>
+    <span class="s1">unsplitable </span><span class="s2">= [</span><span class="s1">type</span><span class="s2">(</span><span class="s1">t</span><span class="s2">) </span><span class="s0">for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">flat_arrays </span><span class="s0">if not </span><span class="s1">can_slice_array</span><span class="s2">(</span><span class="s1">t</span><span class="s2">)]</span>
+    <span class="s0">if </span><span class="s1">unsplitable</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s6">&quot;Argument `validation_split` is only supported &quot;</span>
+            <span class="s6">&quot;for tensors or NumPy arrays.&quot;</span>
+            <span class="s6">f&quot;Found incompatible type in the input: </span><span class="s0">{</span><span class="s1">unsplitable</span><span class="s0">}</span><span class="s6">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">all</span><span class="s2">(</span><span class="s1">t </span><span class="s0">is None for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">flat_arrays</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">arrays</span><span class="s2">, </span><span class="s1">arrays</span>
+
+    <span class="s1">first_non_none </span><span class="s2">= </span><span class="s0">None</span>
+    <span class="s0">for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">flat_arrays</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">t </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">first_non_none </span><span class="s2">= </span><span class="s1">t</span>
+            <span class="s0">break</span>
+
+    <span class="s3"># Assumes all arrays have the same batch shape or are `None`.</span>
+    <span class="s1">batch_dim </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">first_non_none</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">])</span>
+    <span class="s1">split_at </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">math</span><span class="s2">.</span><span class="s1">floor</span><span class="s2">(</span><span class="s1">batch_dim </span><span class="s2">* (</span><span class="s5">1.0 </span><span class="s2">- </span><span class="s1">validation_split</span><span class="s2">)))</span>
+
+    <span class="s0">if </span><span class="s1">split_at </span><span class="s2">== </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">split_at </span><span class="s2">== </span><span class="s1">batch_dim</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s6">f&quot;Training data contains </span><span class="s0">{</span><span class="s1">batch_dim</span><span class="s0">} </span><span class="s6">samples, which is not &quot;</span>
+            <span class="s6">&quot;sufficient to split it into a validation and training set as &quot;</span>
+            <span class="s6">f&quot;specified by `validation_split=</span><span class="s0">{</span><span class="s1">validation_split</span><span class="s0">}</span><span class="s6">`. Either &quot;</span>
+            <span class="s6">&quot;provide more data, or a different value for the &quot;</span>
+            <span class="s6">&quot;`validation_split` argument.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_split</span><span class="s2">(</span><span class="s1">t</span><span class="s2">, </span><span class="s1">start</span><span class="s2">, </span><span class="s1">end</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">t </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">t</span>
+        <span class="s0">return </span><span class="s1">t</span><span class="s2">[</span><span class="s1">start</span><span class="s2">:</span><span class="s1">end</span><span class="s2">]</span>
+
+    <span class="s1">sliceables </span><span class="s2">= </span><span class="s1">convert_to_sliceable</span><span class="s2">(</span><span class="s1">arrays</span><span class="s2">)</span>
+    <span class="s1">train_arrays </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+        <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">_split</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">start</span><span class="s2">=</span><span class="s5">0</span><span class="s2">, </span><span class="s1">end</span><span class="s2">=</span><span class="s1">split_at</span><span class="s2">), </span><span class="s1">sliceables</span>
+    <span class="s2">)</span>
+    <span class="s1">val_arrays </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+        <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">_split</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">start</span><span class="s2">=</span><span class="s1">split_at</span><span class="s2">, </span><span class="s1">end</span><span class="s2">=</span><span class="s1">batch_dim</span><span class="s2">), </span><span class="s1">sliceables</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">train_arrays</span><span class="s2">, </span><span class="s1">val_arrays</span>
+</pre>
+</body>
+</html>

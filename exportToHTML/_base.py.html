@@ -1,0 +1,328 @@
+<html>
+<head>
+<title>_base.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #7a7e85;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_base.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Base class for ensemble-based estimators.&quot;&quot;&quot;</span>
+
+<span class="s2"># Authors: Gilles Louppe</span>
+<span class="s2"># License: BSD 3 clause</span>
+
+<span class="s3">from </span><span class="s1">abc </span><span class="s3">import </span><span class="s1">ABCMeta</span><span class="s4">, </span><span class="s1">abstractmethod</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">List</span>
+
+<span class="s3">import </span><span class="s1">numpy </span><span class="s3">as </span><span class="s1">np</span>
+<span class="s3">from </span><span class="s1">joblib </span><span class="s3">import </span><span class="s1">effective_n_jobs</span>
+
+<span class="s3">from </span><span class="s4">..</span><span class="s1">base </span><span class="s3">import </span><span class="s1">BaseEstimator</span><span class="s4">, </span><span class="s1">MetaEstimatorMixin</span><span class="s4">, </span><span class="s1">clone</span><span class="s4">, </span><span class="s1">is_classifier</span><span class="s4">, </span><span class="s1">is_regressor</span>
+<span class="s3">from </span><span class="s4">..</span><span class="s1">utils </span><span class="s3">import </span><span class="s1">Bunch</span><span class="s4">, </span><span class="s1">check_random_state</span>
+<span class="s3">from </span><span class="s4">..</span><span class="s1">utils</span><span class="s4">.</span><span class="s1">_tags </span><span class="s3">import </span><span class="s1">_safe_tags</span>
+<span class="s3">from </span><span class="s4">..</span><span class="s1">utils</span><span class="s4">.</span><span class="s1">_user_interface </span><span class="s3">import </span><span class="s1">_print_elapsed_time</span>
+<span class="s3">from </span><span class="s4">..</span><span class="s1">utils</span><span class="s4">.</span><span class="s1">metadata_routing </span><span class="s3">import </span><span class="s1">_routing_enabled</span>
+<span class="s3">from </span><span class="s4">..</span><span class="s1">utils</span><span class="s4">.</span><span class="s1">metaestimators </span><span class="s3">import </span><span class="s1">_BaseComposition</span>
+
+
+<span class="s3">def </span><span class="s1">_fit_single_estimator</span><span class="s4">(</span>
+    <span class="s1">estimator</span><span class="s4">, </span><span class="s1">X</span><span class="s4">, </span><span class="s1">y</span><span class="s4">, </span><span class="s1">fit_params</span><span class="s4">, </span><span class="s1">message_clsname</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">message</span><span class="s4">=</span><span class="s3">None</span>
+<span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Private function used to fit an estimator within a job.&quot;&quot;&quot;</span>
+    <span class="s2"># TODO(SLEP6): remove if condition for unrouted sample_weight when metadata</span>
+    <span class="s2"># routing can't be disabled.</span>
+    <span class="s3">if not </span><span class="s1">_routing_enabled</span><span class="s4">() </span><span class="s3">and </span><span class="s5">&quot;sample_weight&quot; </span><span class="s3">in </span><span class="s1">fit_params</span><span class="s4">:</span>
+        <span class="s3">try</span><span class="s4">:</span>
+            <span class="s3">with </span><span class="s1">_print_elapsed_time</span><span class="s4">(</span><span class="s1">message_clsname</span><span class="s4">, </span><span class="s1">message</span><span class="s4">):</span>
+                <span class="s1">estimator</span><span class="s4">.</span><span class="s1">fit</span><span class="s4">(</span><span class="s1">X</span><span class="s4">, </span><span class="s1">y</span><span class="s4">, </span><span class="s1">sample_weight</span><span class="s4">=</span><span class="s1">fit_params</span><span class="s4">[</span><span class="s5">&quot;sample_weight&quot;</span><span class="s4">])</span>
+        <span class="s3">except </span><span class="s1">TypeError </span><span class="s3">as </span><span class="s1">exc</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s5">&quot;unexpected keyword argument 'sample_weight'&quot; </span><span class="s3">in </span><span class="s1">str</span><span class="s4">(</span><span class="s1">exc</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span>
+                    <span class="s5">&quot;Underlying estimator {} does not support sample weights.&quot;</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span>
+                        <span class="s1">estimator</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">.</span><span class="s1">__name__</span>
+                    <span class="s4">)</span>
+                <span class="s4">) </span><span class="s3">from </span><span class="s1">exc</span>
+            <span class="s3">raise</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">_print_elapsed_time</span><span class="s4">(</span><span class="s1">message_clsname</span><span class="s4">, </span><span class="s1">message</span><span class="s4">):</span>
+            <span class="s1">estimator</span><span class="s4">.</span><span class="s1">fit</span><span class="s4">(</span><span class="s1">X</span><span class="s4">, </span><span class="s1">y</span><span class="s4">, **</span><span class="s1">fit_params</span><span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">estimator</span>
+
+
+<span class="s3">def </span><span class="s1">_set_random_states</span><span class="s4">(</span><span class="s1">estimator</span><span class="s4">, </span><span class="s1">random_state</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Set fixed random_state parameters for an estimator. 
+ 
+    Finds all parameters ending ``random_state`` and sets them to integers 
+    derived from ``random_state``. 
+ 
+    Parameters 
+    ---------- 
+    estimator : estimator supporting get/set_params 
+        Estimator with potential randomness managed by random_state 
+        parameters. 
+ 
+    random_state : int, RandomState instance or None, default=None 
+        Pseudo-random number generator to control the generation of the random 
+        integers. Pass an int for reproducible output across multiple function 
+        calls. 
+        See :term:`Glossary &lt;random_state&gt;`. 
+ 
+    Notes 
+    ----- 
+    This does not necessarily set *all* ``random_state`` attributes that 
+    control an estimator's randomness, only those accessible through 
+    ``estimator.get_params()``.  ``random_state``s not controlled include 
+    those belonging to: 
+ 
+        * cross-validation splitters 
+        * ``scipy.stats`` rvs 
+    &quot;&quot;&quot;</span>
+    <span class="s1">random_state </span><span class="s4">= </span><span class="s1">check_random_state</span><span class="s4">(</span><span class="s1">random_state</span><span class="s4">)</span>
+    <span class="s1">to_set </span><span class="s4">= {}</span>
+    <span class="s3">for </span><span class="s1">key </span><span class="s3">in </span><span class="s1">sorted</span><span class="s4">(</span><span class="s1">estimator</span><span class="s4">.</span><span class="s1">get_params</span><span class="s4">(</span><span class="s1">deep</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)):</span>
+        <span class="s3">if </span><span class="s1">key </span><span class="s4">== </span><span class="s5">&quot;random_state&quot; </span><span class="s3">or </span><span class="s1">key</span><span class="s4">.</span><span class="s1">endswith</span><span class="s4">(</span><span class="s5">&quot;__random_state&quot;</span><span class="s4">):</span>
+            <span class="s1">to_set</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = </span><span class="s1">random_state</span><span class="s4">.</span><span class="s1">randint</span><span class="s4">(</span><span class="s1">np</span><span class="s4">.</span><span class="s1">iinfo</span><span class="s4">(</span><span class="s1">np</span><span class="s4">.</span><span class="s1">int32</span><span class="s4">).</span><span class="s1">max</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">to_set</span><span class="s4">:</span>
+        <span class="s1">estimator</span><span class="s4">.</span><span class="s1">set_params</span><span class="s4">(**</span><span class="s1">to_set</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">BaseEnsemble</span><span class="s4">(</span><span class="s1">MetaEstimatorMixin</span><span class="s4">, </span><span class="s1">BaseEstimator</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Base class for all ensemble classes. 
+ 
+    Warning: This class should not be used directly. Use derived classes 
+    instead. 
+ 
+    Parameters 
+    ---------- 
+    estimator : object 
+        The base estimator from which the ensemble is built. 
+ 
+    n_estimators : int, default=10 
+        The number of estimators in the ensemble. 
+ 
+    estimator_params : list of str, default=tuple() 
+        The list of attributes to use as parameters when instantiating a 
+        new base estimator. If none are given, default parameters are used. 
+ 
+    Attributes 
+    ---------- 
+    estimator_ : estimator 
+        The base estimator from which the ensemble is grown. 
+ 
+    estimators_ : list of estimators 
+        The collection of fitted base estimators. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2"># overwrite _required_parameters from MetaEstimatorMixin</span>
+    <span class="s1">_required_parameters</span><span class="s4">: </span><span class="s1">List</span><span class="s4">[</span><span class="s1">str</span><span class="s4">] = []</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span>
+        <span class="s1">self</span><span class="s4">,</span>
+        <span class="s1">estimator</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+        <span class="s4">*,</span>
+        <span class="s1">n_estimators</span><span class="s4">=</span><span class="s6">10</span><span class="s4">,</span>
+        <span class="s1">estimator_params</span><span class="s4">=</span><span class="s1">tuple</span><span class="s4">(),</span>
+    <span class="s4">):</span>
+        <span class="s2"># Set parameters</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">estimator </span><span class="s4">= </span><span class="s1">estimator</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">n_estimators </span><span class="s4">= </span><span class="s1">n_estimators</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">estimator_params </span><span class="s4">= </span><span class="s1">estimator_params</span>
+
+        <span class="s2"># Don't instantiate estimators now! Parameters of estimator might</span>
+        <span class="s2"># still change. Eg., when grid-searching with the nested object syntax.</span>
+        <span class="s2"># self.estimators_ needs to be filled by the derived classes in fit.</span>
+
+    <span class="s3">def </span><span class="s1">_validate_estimator</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">default</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Check the base estimator. 
+ 
+        Sets the `estimator_` attributes. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimator </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">estimator_ </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimator</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">estimator_ </span><span class="s4">= </span><span class="s1">default</span>
+
+    <span class="s3">def </span><span class="s1">_make_estimator</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">append</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">random_state</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Make and configure a copy of the `estimator_` attribute. 
+ 
+        Warning: This method should be used to properly instantiate new 
+        sub-estimators. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">estimator </span><span class="s4">= </span><span class="s1">clone</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimator_</span><span class="s4">)</span>
+        <span class="s1">estimator</span><span class="s4">.</span><span class="s1">set_params</span><span class="s4">(**{</span><span class="s1">p</span><span class="s4">: </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">p</span><span class="s4">) </span><span class="s3">for </span><span class="s1">p </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimator_params</span><span class="s4">})</span>
+
+        <span class="s3">if </span><span class="s1">random_state </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">_set_random_states</span><span class="s4">(</span><span class="s1">estimator</span><span class="s4">, </span><span class="s1">random_state</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">append</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">estimators_</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">estimator</span><span class="s4">)</span>
+
+        <span class="s3">return </span><span class="s1">estimator</span>
+
+    <span class="s3">def </span><span class="s1">__len__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Return the number of estimators in the ensemble.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators_</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">index</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Return the index'th estimator in the ensemble.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators_</span><span class="s4">[</span><span class="s1">index</span><span class="s4">]</span>
+
+    <span class="s3">def </span><span class="s1">__iter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Return iterator over estimators in the ensemble.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">iter</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators_</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_partition_estimators</span><span class="s4">(</span><span class="s1">n_estimators</span><span class="s4">, </span><span class="s1">n_jobs</span><span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Private function used to partition estimators between jobs.&quot;&quot;&quot;</span>
+    <span class="s2"># Compute the number of jobs</span>
+    <span class="s1">n_jobs </span><span class="s4">= </span><span class="s1">min</span><span class="s4">(</span><span class="s1">effective_n_jobs</span><span class="s4">(</span><span class="s1">n_jobs</span><span class="s4">), </span><span class="s1">n_estimators</span><span class="s4">)</span>
+
+    <span class="s2"># Partition estimators between jobs</span>
+    <span class="s1">n_estimators_per_job </span><span class="s4">= </span><span class="s1">np</span><span class="s4">.</span><span class="s1">full</span><span class="s4">(</span><span class="s1">n_jobs</span><span class="s4">, </span><span class="s1">n_estimators </span><span class="s4">// </span><span class="s1">n_jobs</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">int</span><span class="s4">)</span>
+    <span class="s1">n_estimators_per_job</span><span class="s4">[: </span><span class="s1">n_estimators </span><span class="s4">% </span><span class="s1">n_jobs</span><span class="s4">] += </span><span class="s6">1</span>
+    <span class="s1">starts </span><span class="s4">= </span><span class="s1">np</span><span class="s4">.</span><span class="s1">cumsum</span><span class="s4">(</span><span class="s1">n_estimators_per_job</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">n_jobs</span><span class="s4">, </span><span class="s1">n_estimators_per_job</span><span class="s4">.</span><span class="s1">tolist</span><span class="s4">(), [</span><span class="s6">0</span><span class="s4">] + </span><span class="s1">starts</span><span class="s4">.</span><span class="s1">tolist</span><span class="s4">()</span>
+
+
+<span class="s3">class </span><span class="s1">_BaseHeterogeneousEnsemble</span><span class="s4">(</span>
+    <span class="s1">MetaEstimatorMixin</span><span class="s4">, </span><span class="s1">_BaseComposition</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span>
+<span class="s4">):</span>
+    <span class="s0">&quot;&quot;&quot;Base class for heterogeneous ensemble of learners. 
+ 
+    Parameters 
+    ---------- 
+    estimators : list of (str, estimator) tuples 
+        The ensemble of estimators to use in the ensemble. Each element of the 
+        list is defined as a tuple of string (i.e. name of the estimator) and 
+        an estimator instance. An estimator can be set to `'drop'` using 
+        `set_params`. 
+ 
+    Attributes 
+    ---------- 
+    estimators_ : list of estimators 
+        The elements of the estimators parameter, having been fitted on the 
+        training data. If an estimator has been set to `'drop'`, it will not 
+        appear in `estimators_`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">_required_parameters </span><span class="s4">= [</span><span class="s5">&quot;estimators&quot;</span><span class="s4">]</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">named_estimators</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot;Dictionary to access any fitted sub-estimators by name. 
+ 
+        Returns 
+        ------- 
+        :class:`~sklearn.utils.Bunch` 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">Bunch</span><span class="s4">(**</span><span class="s1">dict</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators</span><span class="s4">))</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">estimators</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">estimators </span><span class="s4">= </span><span class="s1">estimators</span>
+
+    <span class="s3">def </span><span class="s1">_validate_estimators</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators</span><span class="s4">) == </span><span class="s6">0</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                <span class="s5">&quot;Invalid 'estimators' attribute, 'estimators' should be a &quot;</span>
+                <span class="s5">&quot;non-empty list of (string, estimator) tuples.&quot;</span>
+            <span class="s4">)</span>
+        <span class="s1">names</span><span class="s4">, </span><span class="s1">estimators </span><span class="s4">= </span><span class="s1">zip</span><span class="s4">(*</span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators</span><span class="s4">)</span>
+        <span class="s2"># defined by MetaEstimatorMixin</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_validate_names</span><span class="s4">(</span><span class="s1">names</span><span class="s4">)</span>
+
+        <span class="s1">has_estimator </span><span class="s4">= </span><span class="s1">any</span><span class="s4">(</span><span class="s1">est </span><span class="s4">!= </span><span class="s5">&quot;drop&quot; </span><span class="s3">for </span><span class="s1">est </span><span class="s3">in </span><span class="s1">estimators</span><span class="s4">)</span>
+        <span class="s3">if not </span><span class="s1">has_estimator</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                <span class="s5">&quot;All estimators are dropped. At least one is required &quot;</span>
+                <span class="s5">&quot;to be an estimator.&quot;</span>
+            <span class="s4">)</span>
+
+        <span class="s1">is_estimator_type </span><span class="s4">= </span><span class="s1">is_classifier </span><span class="s3">if </span><span class="s1">is_classifier</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s3">else </span><span class="s1">is_regressor</span>
+
+        <span class="s3">for </span><span class="s1">est </span><span class="s3">in </span><span class="s1">estimators</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">est </span><span class="s4">!= </span><span class="s5">&quot;drop&quot; </span><span class="s3">and not </span><span class="s1">is_estimator_type</span><span class="s4">(</span><span class="s1">est</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                    <span class="s5">&quot;The estimator {} should be a {}.&quot;</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span>
+                        <span class="s1">est</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">.</span><span class="s1">__name__</span><span class="s4">, </span><span class="s1">is_estimator_type</span><span class="s4">.</span><span class="s1">__name__</span><span class="s4">[</span><span class="s6">3</span><span class="s4">:]</span>
+                    <span class="s4">)</span>
+                <span class="s4">)</span>
+
+        <span class="s3">return </span><span class="s1">names</span><span class="s4">, </span><span class="s1">estimators</span>
+
+    <span class="s3">def </span><span class="s1">set_params</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, **</span><span class="s1">params</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Set the parameters of an estimator from the ensemble. 
+ 
+        Valid parameter keys can be listed with `get_params()`. Note that you 
+        can directly set the parameters of the estimators contained in 
+        `estimators`. 
+ 
+        Parameters 
+        ---------- 
+        **params : keyword arguments 
+            Specific parameters using e.g. 
+            `set_params(parameter_name=new_value)`. In addition, to setting the 
+            parameters of the estimator, the individual estimator of the 
+            estimators can also be set, or can be removed by setting them to 
+            'drop'. 
+ 
+        Returns 
+        ------- 
+        self : object 
+            Estimator instance. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">_set_params</span><span class="s4">(</span><span class="s5">&quot;estimators&quot;</span><span class="s4">, **</span><span class="s1">params</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">get_params</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">deep</span><span class="s4">=</span><span class="s3">True</span><span class="s4">):</span>
+        <span class="s0">&quot;&quot;&quot; 
+        Get the parameters of an estimator from the ensemble. 
+ 
+        Returns the parameters given in the constructor as well as the 
+        estimators contained within the `estimators` parameter. 
+ 
+        Parameters 
+        ---------- 
+        deep : bool, default=True 
+            Setting it to True gets the various estimators and the parameters 
+            of the estimators as well. 
+ 
+        Returns 
+        ------- 
+        params : dict 
+            Parameter and estimator names mapped to their values or parameter 
+            names mapped to their values. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">super</span><span class="s4">().</span><span class="s1">_get_params</span><span class="s4">(</span><span class="s5">&quot;estimators&quot;</span><span class="s4">, </span><span class="s1">deep</span><span class="s4">=</span><span class="s1">deep</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">_more_tags</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">try</span><span class="s4">:</span>
+            <span class="s1">allow_nan </span><span class="s4">= </span><span class="s1">all</span><span class="s4">(</span>
+                <span class="s1">_safe_tags</span><span class="s4">(</span><span class="s1">est</span><span class="s4">[</span><span class="s6">1</span><span class="s4">])[</span><span class="s5">&quot;allow_nan&quot;</span><span class="s4">] </span><span class="s3">if </span><span class="s1">est</span><span class="s4">[</span><span class="s6">1</span><span class="s4">] != </span><span class="s5">&quot;drop&quot; </span><span class="s3">else True</span>
+                <span class="s3">for </span><span class="s1">est </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">estimators</span>
+            <span class="s4">)</span>
+        <span class="s3">except </span><span class="s1">Exception</span><span class="s4">:</span>
+            <span class="s2"># If `estimators` does not comply with our API (list of tuples) then it will</span>
+            <span class="s2"># fail. In this case, we assume that `allow_nan` is False but the parameter</span>
+            <span class="s2"># validation will raise an error during `fit`.</span>
+            <span class="s1">allow_nan </span><span class="s4">= </span><span class="s3">False</span>
+        <span class="s3">return </span><span class="s4">{</span><span class="s5">&quot;preserves_dtype&quot;</span><span class="s4">: [], </span><span class="s5">&quot;allow_nan&quot;</span><span class="s4">: </span><span class="s1">allow_nan</span><span class="s4">}</span>
+</pre>
+</body>
+</html>

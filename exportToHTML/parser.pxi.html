@@ -1,0 +1,2017 @@
+<html>
+<head>
+<title>parser.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parser.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># Parsers for XML and HTML</span>
+
+<span class="s0">from lxml.includes cimport xmlparser</span>
+<span class="s0">from lxml.includes cimport htmlparser</span>
+
+
+<span class="s0">class ParseError(LxmlSyntaxError):</span>
+    <span class="s0">&quot;&quot;&quot;Syntax error while parsing an XML document.</span>
+
+    <span class="s0">For compatibility with ElementTree 1.3 and later.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, message, code, line, column, filename=None):</span>
+        <span class="s0">super(_ParseError, self).__init__(message)</span>
+        <span class="s0">self.lineno, self.offset = (line, column - 1)</span>
+        <span class="s0">self.code = code</span>
+        <span class="s0">self.filename = filename</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def position(self):</span>
+        <span class="s0">return self.lineno, self.offset + 1</span>
+
+    <span class="s0">@position.setter</span>
+    <span class="s0">def position(self, new_pos):</span>
+        <span class="s0">self.lineno, column = new_pos</span>
+        <span class="s0">self.offset = column - 1</span>
+
+<span class="s0">cdef object _ParseError = ParseError</span>
+
+
+<span class="s0">class XMLSyntaxError(ParseError):</span>
+    <span class="s0">&quot;&quot;&quot;Syntax error while parsing an XML document.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class ParserError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;Internal lxml parser error.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ParserDictionaryContext:</span>
+    <span class="s0"># Global parser context to share the string dictionary.</span>
+    <span class="s0">#</span>
+    <span class="s0"># This class is a delegate singleton!</span>
+    <span class="s0">#</span>
+    <span class="s0"># It creates _ParserDictionaryContext objects for each thread to keep thread state,</span>
+    <span class="s0"># but those must never be used directly.  Always stick to using the static</span>
+    <span class="s0"># __GLOBAL_PARSER_CONTEXT as defined below the class.</span>
+    <span class="s0">#</span>
+
+    <span class="s0">cdef tree.xmlDict* _c_dict</span>
+    <span class="s0">cdef _BaseParser _default_parser</span>
+    <span class="s0">cdef list _implied_parser_contexts</span>
+
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._c_dict = NULL</span>
+        <span class="s0">self._implied_parser_contexts = []</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if self._c_dict is not NULL:</span>
+            <span class="s0">xmlparser.xmlDictFree(self._c_dict)</span>
+
+    <span class="s0">cdef int initMainParserContext(self) except -1:</span>
+        <span class="s0">&quot;&quot;&quot;Put the global context into the thread dictionary of the main</span>
+        <span class="s0">thread.  To be called once and only in the main thread.&quot;&quot;&quot;</span>
+        <span class="s0">thread_dict = python.PyThreadState_GetDict()</span>
+        <span class="s0">if thread_dict is not NULL:</span>
+            <span class="s0">(&lt;dict&gt;thread_dict)[&quot;_ParserDictionaryContext&quot;] = self</span>
+
+    <span class="s0">cdef _ParserDictionaryContext _findThreadParserContext(self):</span>
+        <span class="s0">&quot;Find (or create) the _ParserDictionaryContext object for the current thread&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">thread_dict = python.PyThreadState_GetDict()</span>
+        <span class="s0">if thread_dict is NULL:</span>
+            <span class="s0">return self</span>
+        <span class="s0">d = &lt;dict&gt;thread_dict</span>
+        <span class="s0">result = python.PyDict_GetItem(d, &quot;_ParserDictionaryContext&quot;)</span>
+        <span class="s0">if result is not NULL:</span>
+            <span class="s0">return &lt;object&gt;result</span>
+        <span class="s0">context = &lt;_ParserDictionaryContext&gt;_ParserDictionaryContext.__new__(_ParserDictionaryContext)</span>
+        <span class="s0">d[&quot;_ParserDictionaryContext&quot;] = context</span>
+        <span class="s0">return context</span>
+
+    <span class="s0">cdef int setDefaultParser(self, _BaseParser parser) except -1:</span>
+        <span class="s0">&quot;Set the default parser for the current thread&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">context = self._findThreadParserContext()</span>
+        <span class="s0">context._default_parser = parser</span>
+
+    <span class="s0">cdef _BaseParser getDefaultParser(self):</span>
+        <span class="s0">&quot;Return (or create) the default parser of the current thread&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">context = self._findThreadParserContext()</span>
+        <span class="s0">if context._default_parser is None:</span>
+            <span class="s0">if self._default_parser is None:</span>
+                <span class="s0">self._default_parser = __DEFAULT_XML_PARSER._copy()</span>
+            <span class="s0">if context is not self:</span>
+                <span class="s0">context._default_parser = self._default_parser._copy()</span>
+        <span class="s0">return context._default_parser</span>
+
+    <span class="s0">cdef tree.xmlDict* _getThreadDict(self, tree.xmlDict* default):</span>
+        <span class="s0">&quot;Return the thread-local dict or create a new one if necessary.&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">context = self._findThreadParserContext()</span>
+        <span class="s0">if context._c_dict is NULL:</span>
+            <span class="s0"># thread dict not yet set up =&gt; use default or create a new one</span>
+            <span class="s0">if default is not NULL:</span>
+                <span class="s0">context._c_dict = default</span>
+                <span class="s0">xmlparser.xmlDictReference(default)</span>
+                <span class="s0">return default</span>
+            <span class="s0">if self._c_dict is NULL:</span>
+                <span class="s0">self._c_dict = xmlparser.xmlDictCreate()</span>
+            <span class="s0">if context is not self:</span>
+                <span class="s0">context._c_dict = xmlparser.xmlDictCreateSub(self._c_dict)</span>
+        <span class="s0">return context._c_dict</span>
+
+    <span class="s0">cdef int initThreadDictRef(self, tree.xmlDict** c_dict_ref) except -1:</span>
+        <span class="s0">c_dict = c_dict_ref[0]</span>
+        <span class="s0">c_thread_dict = self._getThreadDict(c_dict)</span>
+        <span class="s0">if c_dict is c_thread_dict:</span>
+            <span class="s0">return 0</span>
+        <span class="s0">if c_dict is not NULL:</span>
+            <span class="s0">xmlparser.xmlDictFree(c_dict)</span>
+        <span class="s0">c_dict_ref[0] = c_thread_dict</span>
+        <span class="s0">xmlparser.xmlDictReference(c_thread_dict)</span>
+
+    <span class="s0">cdef int initParserDict(self, xmlparser.xmlParserCtxt* pctxt) except -1:</span>
+        <span class="s0">&quot;Assure we always use the same string dictionary.&quot;</span>
+        <span class="s0">self.initThreadDictRef(&amp;pctxt.dict)</span>
+        <span class="s0">pctxt.dictNames = 1</span>
+
+    <span class="s0">cdef int initXPathParserDict(self, xpath.xmlXPathContext* pctxt) except -1:</span>
+        <span class="s0">&quot;Assure we always use the same string dictionary.&quot;</span>
+        <span class="s0">self.initThreadDictRef(&amp;pctxt.dict)</span>
+
+    <span class="s0">cdef int initDocDict(self, xmlDoc* result) except -1:</span>
+        <span class="s0">&quot;Store dict of last object parsed if no shared dict yet&quot;</span>
+        <span class="s0"># XXX We also free the result dict here if there already was one.</span>
+        <span class="s0"># This case should only occur for new documents with empty dicts,</span>
+        <span class="s0"># otherwise we'd free data that's in use =&gt; segfault</span>
+        <span class="s0">self.initThreadDictRef(&amp;result.dict)</span>
+
+    <span class="s0">cdef _ParserContext findImpliedContext(self):</span>
+        <span class="s0">&quot;&quot;&quot;Return any current implied xml parser context for the current</span>
+        <span class="s0">thread.  This is used when the resolver functions are called</span>
+        <span class="s0">with an xmlParserCtxt that was generated from within libxml2</span>
+        <span class="s0">(i.e. without a _ParserContext) - which happens when parsing</span>
+        <span class="s0">schema and xinclude external references.&quot;&quot;&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">cdef _ParserContext implied_context</span>
+
+        <span class="s0"># see if we have a current implied parser</span>
+        <span class="s0">context = self._findThreadParserContext()</span>
+        <span class="s0">if context._implied_parser_contexts:</span>
+            <span class="s0">implied_context = context._implied_parser_contexts[-1]</span>
+            <span class="s0">return implied_context</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">cdef int pushImpliedContextFromParser(self, _BaseParser parser) except -1:</span>
+        <span class="s0">&quot;Push a new implied context object taken from the parser.&quot;</span>
+        <span class="s0">if parser is not None:</span>
+            <span class="s0">self.pushImpliedContext(parser._getParserContext())</span>
+        <span class="s0">else:</span>
+            <span class="s0">self.pushImpliedContext(None)</span>
+
+    <span class="s0">cdef int pushImpliedContext(self, _ParserContext parser_context) except -1:</span>
+        <span class="s0">&quot;Push a new implied context object.&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">context = self._findThreadParserContext()</span>
+        <span class="s0">context._implied_parser_contexts.append(parser_context)</span>
+
+    <span class="s0">cdef int popImpliedContext(self) except -1:</span>
+        <span class="s0">&quot;Pop the current implied context object.&quot;</span>
+        <span class="s0">cdef _ParserDictionaryContext context</span>
+        <span class="s0">context = self._findThreadParserContext()</span>
+        <span class="s0">context._implied_parser_contexts.pop()</span>
+
+<span class="s0">cdef _ParserDictionaryContext __GLOBAL_PARSER_CONTEXT = _ParserDictionaryContext()</span>
+<span class="s0">__GLOBAL_PARSER_CONTEXT.initMainParserContext()</span>
+
+<span class="s0">############################################################</span>
+<span class="s0">## support for Python unicode I/O</span>
+<span class="s0">############################################################</span>
+
+<span class="s0"># name of Python Py_UNICODE encoding as known to libxml2</span>
+<span class="s0">cdef const_char* _PY_UNICODE_ENCODING = NULL</span>
+
+<span class="s0">cdef int _setupPythonUnicode() except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Sets _PY_UNICODE_ENCODING to the internal encoding name of Python unicode</span>
+    <span class="s0">strings if libxml2 supports reading native Python unicode.  This depends</span>
+    <span class="s0">on iconv and the local Python installation, so we simply check if we find</span>
+    <span class="s0">a matching encoding handler.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef tree.xmlCharEncodingHandler* enchandler</span>
+    <span class="s0">cdef Py_ssize_t l</span>
+    <span class="s0">cdef const_char* enc</span>
+    <span class="s0">cdef Py_UNICODE *uchars = [c'&lt;', c't', c'e', c's', c't', c'/', c'&gt;']</span>
+    <span class="s0">cdef const_xmlChar* buffer = &lt;const_xmlChar*&gt;uchars</span>
+    <span class="s0"># apparently, libxml2 can't detect UTF-16 on some systems</span>
+    <span class="s0">if (buffer[0] == c'&lt;' and buffer[1] == c'\0' and</span>
+            <span class="s0">buffer[2] == c't' and buffer[3] == c'\0'):</span>
+        <span class="s0">enc = &quot;UTF-16LE&quot;</span>
+    <span class="s0">elif (buffer[0] == c'\0' and buffer[1] == c'&lt;' and</span>
+            <span class="s0">buffer[2] == c'\0' and buffer[3] == c't'):</span>
+        <span class="s0">enc = &quot;UTF-16BE&quot;</span>
+    <span class="s0">else:</span>
+        <span class="s0"># let libxml2 give it a try</span>
+        <span class="s0">enc = _findEncodingName(buffer, sizeof(Py_UNICODE) * 7)</span>
+        <span class="s0">if enc is NULL:</span>
+            <span class="s0"># not my fault, it's YOUR broken system :)</span>
+            <span class="s0">return 0</span>
+    <span class="s0">enchandler = tree.xmlFindCharEncodingHandler(enc)</span>
+    <span class="s0">if enchandler is not NULL:</span>
+        <span class="s0">global _PY_UNICODE_ENCODING</span>
+        <span class="s0">tree.xmlCharEncCloseFunc(enchandler)</span>
+        <span class="s0">_PY_UNICODE_ENCODING = enc</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef const_char* _findEncodingName(const_xmlChar* buffer, int size):</span>
+    <span class="s0">&quot;Work around bug in libxml2: find iconv name of encoding on our own.&quot;</span>
+    <span class="s0">cdef tree.xmlCharEncoding enc</span>
+    <span class="s0">enc = tree.xmlDetectCharEncoding(buffer, size)</span>
+    <span class="s0">if enc == tree.XML_CHAR_ENCODING_UTF16LE:</span>
+        <span class="s0">if size &gt;= 4 and (buffer[0] == &lt;const_xmlChar&gt; b'\xFF' and</span>
+                          <span class="s0">buffer[1] == &lt;const_xmlChar&gt; b'\xFE' and</span>
+                          <span class="s0">buffer[2] == 0 and buffer[3] == 0):</span>
+            <span class="s0">return &quot;UTF-32LE&quot;  # according to BOM</span>
+        <span class="s0">else:</span>
+            <span class="s0">return &quot;UTF-16LE&quot;</span>
+    <span class="s0">elif enc == tree.XML_CHAR_ENCODING_UTF16BE:</span>
+        <span class="s0">return &quot;UTF-16BE&quot;</span>
+    <span class="s0">elif enc == tree.XML_CHAR_ENCODING_UCS4LE:</span>
+        <span class="s0">return &quot;UCS-4LE&quot;</span>
+    <span class="s0">elif enc == tree.XML_CHAR_ENCODING_UCS4BE:</span>
+        <span class="s0">return &quot;UCS-4BE&quot;</span>
+    <span class="s0">elif enc == tree.XML_CHAR_ENCODING_NONE:</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0"># returns a constant char*, no need to free it</span>
+        <span class="s0">return tree.xmlGetCharEncodingName(enc)</span>
+
+<span class="s0"># Python 3.12 removed support for &quot;Py_UNICODE&quot;.</span>
+<span class="s0">if python.PY_VERSION_HEX &lt; 0x030C0000:</span>
+    <span class="s0">_setupPythonUnicode()</span>
+
+
+<span class="s0">cdef unicode _find_PyUCS4EncodingName():</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Find a suitable encoding for Py_UCS4 PyUnicode strings in libxml2.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">ustring = &quot;&lt;xml&gt;\U0001F92A&lt;/xml&gt;&quot;</span>
+    <span class="s0">cdef const xmlChar* buffer = &lt;const xmlChar*&gt; python.PyUnicode_DATA(ustring)</span>
+    <span class="s0">cdef Py_ssize_t py_buffer_len = python.PyUnicode_GET_LENGTH(ustring)</span>
+
+    <span class="s0">encoding_name = ''</span>
+    <span class="s0">cdef tree.xmlCharEncoding enc = tree.xmlDetectCharEncoding(buffer, py_buffer_len)</span>
+    <span class="s0">enchandler = tree.xmlGetCharEncodingHandler(enc)</span>
+    <span class="s0">if enchandler is not NULL:</span>
+        <span class="s0">try:</span>
+            <span class="s0">if enchandler.name:</span>
+                <span class="s0">encoding_name = enchandler.name.decode('UTF-8')</span>
+        <span class="s0">finally:</span>
+            <span class="s0">tree.xmlCharEncCloseFunc(enchandler)</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_name = tree.xmlGetCharEncodingName(enc)</span>
+        <span class="s0">if c_name:</span>
+            <span class="s0">encoding_name = c_name.decode('UTF-8')</span>
+
+
+    <span class="s0">if encoding_name and not encoding_name.endswith('LE') and not encoding_name.endswith('BE'):</span>
+        <span class="s0">encoding_name += 'BE' if python.PY_BIG_ENDIAN else 'LE'</span>
+    <span class="s0">return encoding_name or None</span>
+
+<span class="s0">_pyucs4_encoding_name = _find_PyUCS4EncodingName()</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## support for file-like objects</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _FileReaderContext:</span>
+    <span class="s0">cdef object _filelike</span>
+    <span class="s0">cdef object _encoding</span>
+    <span class="s0">cdef object _url</span>
+    <span class="s0">cdef object _bytes</span>
+    <span class="s0">cdef _ExceptionContext _exc_context</span>
+    <span class="s0">cdef Py_ssize_t _bytes_read</span>
+    <span class="s0">cdef char* _c_url</span>
+    <span class="s0">cdef bint _close_file_after_read</span>
+
+    <span class="s0">def __cinit__(self, filelike, exc_context not None, url, encoding=None, bint close_file=False):</span>
+        <span class="s0">self._exc_context = exc_context</span>
+        <span class="s0">self._filelike = filelike</span>
+        <span class="s0">self._close_file_after_read = close_file</span>
+        <span class="s0">self._encoding = encoding</span>
+        <span class="s0">if url is None:</span>
+            <span class="s0">self._c_url = NULL</span>
+        <span class="s0">else:</span>
+            <span class="s0">url = _encodeFilename(url)</span>
+            <span class="s0">self._c_url = _cstr(url)</span>
+        <span class="s0">self._url = url</span>
+        <span class="s0">self._bytes  = b''</span>
+        <span class="s0">self._bytes_read = 0</span>
+
+    <span class="s0">cdef _close_file(self):</span>
+        <span class="s0">if self._filelike is None or not self._close_file_after_read:</span>
+            <span class="s0">return</span>
+        <span class="s0">try:</span>
+            <span class="s0">close = self._filelike.close</span>
+        <span class="s0">except AttributeError:</span>
+            <span class="s0">close = None</span>
+        <span class="s0">finally:</span>
+            <span class="s0">self._filelike = None</span>
+        <span class="s0">if close is not None:</span>
+            <span class="s0">close()</span>
+
+    <span class="s0">cdef xmlparser.xmlParserInputBuffer* _createParserInputBuffer(self) noexcept:</span>
+        <span class="s0">cdef xmlparser.xmlParserInputBuffer* c_buffer = xmlparser.xmlAllocParserInputBuffer(0)</span>
+        <span class="s0">if c_buffer:</span>
+            <span class="s0">c_buffer.readcallback  = _readFilelikeParser</span>
+            <span class="s0">c_buffer.context = &lt;python.PyObject*&gt; self</span>
+        <span class="s0">return c_buffer</span>
+
+    <span class="s0">cdef xmlparser.xmlParserInput* _createParserInput(</span>
+            <span class="s0">self, xmlparser.xmlParserCtxt* ctxt) noexcept:</span>
+        <span class="s0">cdef xmlparser.xmlParserInputBuffer* c_buffer = self._createParserInputBuffer()</span>
+        <span class="s0">if not c_buffer:</span>
+            <span class="s0">return NULL</span>
+        <span class="s0">return xmlparser.xmlNewIOInputStream(ctxt, c_buffer, 0)</span>
+
+    <span class="s0">cdef tree.xmlDtd* _readDtd(self) noexcept:</span>
+        <span class="s0">cdef xmlparser.xmlParserInputBuffer* c_buffer = self._createParserInputBuffer()</span>
+        <span class="s0">if not c_buffer:</span>
+            <span class="s0">return NULL</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">return xmlparser.xmlIOParseDTD(NULL, c_buffer, 0)</span>
+
+    <span class="s0">cdef xmlDoc* _readDoc(self, xmlparser.xmlParserCtxt* ctxt, int options) noexcept:</span>
+        <span class="s0">cdef xmlDoc* result</span>
+        <span class="s0">cdef void* c_callback_context = &lt;python.PyObject*&gt; self</span>
+        <span class="s0">cdef char* c_encoding = _cstr(self._encoding) if self._encoding is not None else NULL</span>
+
+        <span class="s0">orig_options = ctxt.options</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">if ctxt.html:</span>
+                <span class="s0">result = htmlparser.htmlCtxtReadIO(</span>
+                        <span class="s0">ctxt, _readFilelikeParser, NULL, c_callback_context,</span>
+                        <span class="s0">self._c_url, c_encoding, options)</span>
+                <span class="s0">if result is not NULL:</span>
+                    <span class="s0">if _fixHtmlDictNames(ctxt.dict, result) &lt; 0:</span>
+                        <span class="s0">tree.xmlFreeDoc(result)</span>
+                        <span class="s0">result = NULL</span>
+            <span class="s0">else:</span>
+                <span class="s0">result = xmlparser.xmlCtxtReadIO(</span>
+                    <span class="s0">ctxt, _readFilelikeParser, NULL, c_callback_context,</span>
+                    <span class="s0">self._c_url, c_encoding, options)</span>
+        <span class="s0">ctxt.options = orig_options # work around libxml2 problem</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">self._close_file()</span>
+        <span class="s0">except:</span>
+            <span class="s0">self._exc_context._store_raised()</span>
+        <span class="s0">finally:</span>
+            <span class="s0">return result  # swallow any exceptions</span>
+
+    <span class="s0">cdef int copyToBuffer(self, char* c_buffer, int c_requested) noexcept:</span>
+        <span class="s0">cdef int c_byte_count = 0</span>
+        <span class="s0">cdef char* c_start</span>
+        <span class="s0">cdef Py_ssize_t byte_count, remaining</span>
+        <span class="s0">if self._bytes_read &lt; 0:</span>
+            <span class="s0">return 0</span>
+        <span class="s0">try:</span>
+            <span class="s0">byte_count = python.PyBytes_GET_SIZE(self._bytes)</span>
+            <span class="s0">remaining  = byte_count - self._bytes_read</span>
+            <span class="s0">while c_requested &gt; remaining:</span>
+                <span class="s0">c_start = _cstr(self._bytes) + self._bytes_read</span>
+                <span class="s0">cstring_h.memcpy(c_buffer, c_start, remaining)</span>
+                <span class="s0">c_byte_count += remaining</span>
+                <span class="s0">c_buffer += remaining</span>
+                <span class="s0">c_requested -= remaining</span>
+
+                <span class="s0">self._bytes = self._filelike.read(c_requested)</span>
+                <span class="s0">if not isinstance(self._bytes, bytes):</span>
+                    <span class="s0">if isinstance(self._bytes, unicode):</span>
+                        <span class="s0">if self._encoding is None:</span>
+                            <span class="s0">self._bytes = (&lt;unicode&gt;self._bytes).encode('utf8')</span>
+                        <span class="s0">else:</span>
+                            <span class="s0">self._bytes = python.PyUnicode_AsEncodedString(</span>
+                                <span class="s0">self._bytes, _cstr(self._encoding), NULL)</span>
+                    <span class="s0">else:</span>
+                        <span class="s0">self._close_file()</span>
+                        <span class="s0">raise TypeError, \</span>
+                            <span class="s0">&quot;reading from file-like objects must return byte strings or unicode strings&quot;</span>
+
+                <span class="s0">remaining = python.PyBytes_GET_SIZE(self._bytes)</span>
+                <span class="s0">if remaining == 0:</span>
+                    <span class="s0">self._bytes_read = -1</span>
+                    <span class="s0">self._close_file()</span>
+                    <span class="s0">return c_byte_count</span>
+                <span class="s0">self._bytes_read = 0</span>
+
+            <span class="s0">if c_requested &gt; 0:</span>
+                <span class="s0">c_start = _cstr(self._bytes) + self._bytes_read</span>
+                <span class="s0">cstring_h.memcpy(c_buffer, c_start, c_requested)</span>
+                <span class="s0">c_byte_count += c_requested</span>
+                <span class="s0">self._bytes_read += c_requested</span>
+        <span class="s0">except:</span>
+            <span class="s0">c_byte_count = -1</span>
+            <span class="s0">self._exc_context._store_raised()</span>
+            <span class="s0">try:</span>
+                <span class="s0">self._close_file()</span>
+            <span class="s0">except:</span>
+                <span class="s0">self._exc_context._store_raised()</span>
+        <span class="s0">finally:</span>
+            <span class="s0">return c_byte_count  # swallow any exceptions</span>
+
+<span class="s0">cdef int _readFilelikeParser(void* ctxt, char* c_buffer, int c_size) noexcept with gil:</span>
+    <span class="s0">return (&lt;_FileReaderContext&gt;ctxt).copyToBuffer(c_buffer, c_size)</span>
+
+<span class="s0">cdef int _readFileParser(void* ctxt, char* c_buffer, int c_size) noexcept nogil:</span>
+    <span class="s0">return stdio.fread(c_buffer, 1,  c_size, &lt;stdio.FILE*&gt;ctxt)</span>
+
+<span class="s0">############################################################</span>
+<span class="s0">## support for custom document loaders</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef xmlparser.xmlParserInput* _local_resolver(const_char* c_url, const_char* c_pubid,</span>
+                                               <span class="s0">xmlparser.xmlParserCtxt* c_context) noexcept with gil:</span>
+    <span class="s0">cdef _ResolverContext context</span>
+    <span class="s0">cdef xmlparser.xmlParserInput* c_input</span>
+    <span class="s0">cdef _InputDocument doc_ref</span>
+    <span class="s0">cdef _FileReaderContext file_context</span>
+    <span class="s0"># if there is no _ParserContext associated with the xmlParserCtxt</span>
+    <span class="s0"># passed, check to see if the thread state object has an implied</span>
+    <span class="s0"># context.</span>
+    <span class="s0">if c_context._private is not NULL:</span>
+        <span class="s0">context = &lt;_ResolverContext&gt;c_context._private</span>
+    <span class="s0">else:</span>
+        <span class="s0">context = __GLOBAL_PARSER_CONTEXT.findImpliedContext()</span>
+
+    <span class="s0">if context is None:</span>
+        <span class="s0">if __DEFAULT_ENTITY_LOADER is NULL:</span>
+            <span class="s0">return NULL</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0"># free the GIL as we might do serious I/O here (e.g. HTTP)</span>
+            <span class="s0">c_input = __DEFAULT_ENTITY_LOADER(c_url, c_pubid, c_context)</span>
+        <span class="s0">return c_input</span>
+
+    <span class="s0">try:</span>
+        <span class="s0">if c_url is NULL:</span>
+            <span class="s0">url = None</span>
+        <span class="s0">else:</span>
+            <span class="s0"># parsing a related document (DTD etc.) =&gt; UTF-8 encoded URL?</span>
+            <span class="s0">url = _decodeFilename(&lt;const_xmlChar*&gt;c_url)</span>
+        <span class="s0">if c_pubid is NULL:</span>
+            <span class="s0">pubid = None</span>
+        <span class="s0">else:</span>
+            <span class="s0">pubid = funicode(&lt;const_xmlChar*&gt;c_pubid) # always UTF-8</span>
+
+        <span class="s0">doc_ref = context._resolvers.resolve(url, pubid, context)</span>
+    <span class="s0">except:</span>
+        <span class="s0">context._store_raised()</span>
+        <span class="s0">return NULL</span>
+
+    <span class="s0">if doc_ref is not None:</span>
+        <span class="s0">if doc_ref._type == PARSER_DATA_STRING:</span>
+            <span class="s0">data = doc_ref._data_bytes</span>
+            <span class="s0">filename = doc_ref._filename</span>
+            <span class="s0">if not filename:</span>
+                <span class="s0">filename = None</span>
+            <span class="s0">elif not isinstance(filename, bytes):</span>
+                <span class="s0"># most likely a text URL</span>
+                <span class="s0">filename = filename.encode('utf8')</span>
+                <span class="s0">if not isinstance(filename, bytes):</span>
+                    <span class="s0">filename = None</span>
+
+            <span class="s0">c_input = xmlparser.xmlNewInputStream(c_context)</span>
+            <span class="s0">if c_input is not NULL:</span>
+                <span class="s0">if filename is not None:</span>
+                    <span class="s0">c_input.filename = &lt;char *&gt;tree.xmlStrdup(_xcstr(filename))</span>
+                <span class="s0">c_input.base = _xcstr(data)</span>
+                <span class="s0">c_input.length = python.PyBytes_GET_SIZE(data)</span>
+                <span class="s0">c_input.cur = c_input.base</span>
+                <span class="s0">c_input.end = c_input.base + c_input.length</span>
+        <span class="s0">elif doc_ref._type == PARSER_DATA_FILENAME:</span>
+            <span class="s0">data = None</span>
+            <span class="s0">c_filename = _cstr(doc_ref._filename)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0"># free the GIL as we might do serious I/O here</span>
+                <span class="s0">c_input = xmlparser.xmlNewInputFromFile(</span>
+                    <span class="s0">c_context, c_filename)</span>
+        <span class="s0">elif doc_ref._type == PARSER_DATA_FILE:</span>
+            <span class="s0">file_context = _FileReaderContext(doc_ref._file, context, url,</span>
+                                              <span class="s0">None, doc_ref._close_file)</span>
+            <span class="s0">c_input = file_context._createParserInput(c_context)</span>
+            <span class="s0">data = file_context</span>
+        <span class="s0">else:</span>
+            <span class="s0">data = None</span>
+            <span class="s0">c_input = NULL</span>
+
+        <span class="s0">if data is not None:</span>
+            <span class="s0">context._storage.add(data)</span>
+        <span class="s0">if c_input is not NULL:</span>
+            <span class="s0">return c_input</span>
+
+    <span class="s0">if __DEFAULT_ENTITY_LOADER is NULL:</span>
+        <span class="s0">return NULL</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0"># free the GIL as we might do serious I/O here (e.g. HTTP)</span>
+        <span class="s0">c_input = __DEFAULT_ENTITY_LOADER(c_url, c_pubid, c_context)</span>
+    <span class="s0">return c_input</span>
+
+<span class="s0">cdef xmlparser.xmlExternalEntityLoader __DEFAULT_ENTITY_LOADER</span>
+<span class="s0">__DEFAULT_ENTITY_LOADER = xmlparser.xmlGetExternalEntityLoader()</span>
+
+
+<span class="s0">cdef xmlparser.xmlExternalEntityLoader _register_document_loader() noexcept nogil:</span>
+    <span class="s0">cdef xmlparser.xmlExternalEntityLoader old = xmlparser.xmlGetExternalEntityLoader()</span>
+    <span class="s0">xmlparser.xmlSetExternalEntityLoader(&lt;xmlparser.xmlExternalEntityLoader&gt;_local_resolver)</span>
+    <span class="s0">return old</span>
+
+<span class="s0">cdef void _reset_document_loader(xmlparser.xmlExternalEntityLoader old) noexcept nogil:</span>
+    <span class="s0">xmlparser.xmlSetExternalEntityLoader(old)</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## Parsers</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">@cython.no_gc_clear  # May have to call &quot;self._validator.disconnect()&quot; on dealloc.</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ParserContext(_ResolverContext):</span>
+    <span class="s0">cdef _ErrorLog _error_log</span>
+    <span class="s0">cdef _ParserSchemaValidationContext _validator</span>
+    <span class="s0">cdef xmlparser.xmlParserCtxt* _c_ctxt</span>
+    <span class="s0">cdef xmlparser.xmlExternalEntityLoader _orig_loader</span>
+    <span class="s0">cdef python.PyThread_type_lock _lock</span>
+    <span class="s0">cdef _Document _doc</span>
+    <span class="s0">cdef bint _collect_ids</span>
+
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._c_ctxt = NULL</span>
+        <span class="s0">self._collect_ids = True</span>
+        <span class="s0">if not config.ENABLE_THREADING:</span>
+            <span class="s0">self._lock = NULL</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._lock = python.PyThread_allocate_lock()</span>
+        <span class="s0">self._error_log = _ErrorLog()</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if config.ENABLE_THREADING and self._lock is not NULL:</span>
+            <span class="s0">python.PyThread_free_lock(self._lock)</span>
+            <span class="s0">self._lock = NULL</span>
+        <span class="s0">if self._c_ctxt is not NULL:</span>
+            <span class="s0">if &lt;void*&gt;self._validator is not NULL and self._validator is not None:</span>
+                <span class="s0"># If the parser was not closed correctly (e.g. interrupted iterparse()),</span>
+                <span class="s0"># and the schema validator wasn't freed and cleaned up yet, the libxml2 SAX</span>
+                <span class="s0"># validator plug might still be in place, which will make xmlFreeParserCtxt()</span>
+                <span class="s0"># crash when trying to xmlFree() a static SAX handler.</span>
+                <span class="s0"># Thus, make sure we disconnect the handler interceptor here at the latest.</span>
+                <span class="s0">self._validator.disconnect()</span>
+            <span class="s0">xmlparser.xmlFreeParserCtxt(self._c_ctxt)</span>
+
+    <span class="s0">cdef _ParserContext _copy(self):</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">context = self.__class__()</span>
+        <span class="s0">context._collect_ids = self._collect_ids</span>
+        <span class="s0">context._validator = self._validator.copy()</span>
+        <span class="s0">_initParserContext(context, self._resolvers._copy(), NULL)</span>
+        <span class="s0">return context</span>
+
+    <span class="s0">cdef void _initParserContext(self, xmlparser.xmlParserCtxt* c_ctxt) noexcept:</span>
+        <span class="s0">self._c_ctxt = c_ctxt</span>
+        <span class="s0">c_ctxt._private = &lt;void*&gt;self</span>
+
+    <span class="s0">cdef void _resetParserContext(self) noexcept:</span>
+        <span class="s0">if self._c_ctxt is not NULL:</span>
+            <span class="s0">if self._c_ctxt.html:</span>
+                <span class="s0">htmlparser.htmlCtxtReset(self._c_ctxt)</span>
+                <span class="s0">self._c_ctxt.disableSAX = 0 # work around bug in libxml2</span>
+            <span class="s0">else:</span>
+                <span class="s0">xmlparser.xmlClearParserCtxt(self._c_ctxt)</span>
+                <span class="s0"># work around bug in libxml2 [2.9.10 .. 2.9.14]:</span>
+                <span class="s0"># https://gitlab.gnome.org/GNOME/libxml2/-/issues/378</span>
+                <span class="s0">self._c_ctxt.nsNr = 0</span>
+
+    <span class="s0">cdef int prepare(self, bint set_document_loader=True) except -1:</span>
+        <span class="s0">cdef int result</span>
+        <span class="s0">if config.ENABLE_THREADING and self._lock is not NULL:</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">result = python.PyThread_acquire_lock(</span>
+                    <span class="s0">self._lock, python.WAIT_LOCK)</span>
+            <span class="s0">if result == 0:</span>
+                <span class="s0">raise ParserError, &quot;parser locking failed&quot;</span>
+        <span class="s0">self._error_log.clear()</span>
+        <span class="s0">self._doc = None</span>
+        <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+        <span class="s0">self._c_ctxt.sax.serror = &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveParserError</span>
+        <span class="s0">self._orig_loader = _register_document_loader() if set_document_loader else NULL</span>
+        <span class="s0">if self._validator is not None:</span>
+            <span class="s0">self._validator.connect(self._c_ctxt, self._error_log)</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef int cleanup(self) except -1:</span>
+        <span class="s0">if self._orig_loader is not NULL:</span>
+            <span class="s0">_reset_document_loader(self._orig_loader)</span>
+        <span class="s0">try:</span>
+            <span class="s0">if self._validator is not None:</span>
+                <span class="s0">self._validator.disconnect()</span>
+            <span class="s0">self._resetParserContext()</span>
+            <span class="s0">self.clear()</span>
+            <span class="s0">self._doc = None</span>
+            <span class="s0">self._c_ctxt.sax.serror = NULL</span>
+        <span class="s0">finally:</span>
+            <span class="s0">if config.ENABLE_THREADING and self._lock is not NULL:</span>
+                <span class="s0">python.PyThread_release_lock(self._lock)</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef object _handleParseResult(self, _BaseParser parser,</span>
+                                   <span class="s0">xmlDoc* result, filename):</span>
+        <span class="s0">c_doc = self._handleParseResultDoc(parser, result, filename)</span>
+        <span class="s0">if self._doc is not None and self._doc._c_doc is c_doc:</span>
+            <span class="s0">return self._doc</span>
+        <span class="s0">else:</span>
+            <span class="s0">return _documentFactory(c_doc, parser)</span>
+
+    <span class="s0">cdef xmlDoc* _handleParseResultDoc(self, _BaseParser parser,</span>
+                                       <span class="s0">xmlDoc* result, filename) except NULL:</span>
+        <span class="s0">recover = parser._parse_options &amp; xmlparser.XML_PARSE_RECOVER</span>
+        <span class="s0">return _handleParseResult(self, self._c_ctxt, result,</span>
+                                  <span class="s0">filename, recover,</span>
+                                  <span class="s0">free_doc=self._doc is None)</span>
+
+<span class="s0">cdef _initParserContext(_ParserContext context,</span>
+                        <span class="s0">_ResolverRegistry resolvers,</span>
+                        <span class="s0">xmlparser.xmlParserCtxt* c_ctxt):</span>
+    <span class="s0">_initResolverContext(context, resolvers)</span>
+    <span class="s0">if c_ctxt is not NULL:</span>
+        <span class="s0">context._initParserContext(c_ctxt)</span>
+
+<span class="s0">cdef void _forwardParserError(xmlparser.xmlParserCtxt* _parser_context, const xmlerror.xmlError* error) noexcept with gil:</span>
+    <span class="s0">(&lt;_ParserContext&gt;_parser_context._private)._error_log._receive(error)</span>
+
+<span class="s0">cdef void _receiveParserError(void* c_context, const xmlerror.xmlError* error) noexcept nogil:</span>
+    <span class="s0">if __DEBUG:</span>
+        <span class="s0">if c_context is NULL or (&lt;xmlparser.xmlParserCtxt*&gt;c_context)._private is NULL:</span>
+            <span class="s0">_forwardError(NULL, error)</span>
+        <span class="s0">else:</span>
+            <span class="s0">_forwardParserError(&lt;xmlparser.xmlParserCtxt*&gt;c_context, error)</span>
+
+<span class="s0">cdef int _raiseParseError(xmlparser.xmlParserCtxt* ctxt, filename,</span>
+                          <span class="s0">_ErrorLog error_log) except -1:</span>
+    <span class="s0">if filename is not None and \</span>
+           <span class="s0">ctxt.lastError.domain == xmlerror.XML_FROM_IO:</span>
+        <span class="s0">if isinstance(filename, bytes):</span>
+            <span class="s0">filename = _decodeFilenameWithLength(</span>
+                <span class="s0">&lt;bytes&gt;filename, len(&lt;bytes&gt;filename))</span>
+        <span class="s0">if ctxt.lastError.message is not NULL:</span>
+            <span class="s0">try:</span>
+                <span class="s0">message = ctxt.lastError.message.decode('utf-8')</span>
+            <span class="s0">except UnicodeDecodeError:</span>
+                <span class="s0"># the filename may be in there =&gt; play it safe</span>
+                <span class="s0">message = ctxt.lastError.message.decode('iso8859-1')</span>
+            <span class="s0">message = f&quot;Error reading file '{filename}': {message.strip()}&quot;</span>
+        <span class="s0">else:</span>
+            <span class="s0">message = f&quot;Error reading '{filename}'&quot;</span>
+        <span class="s0">raise IOError, message</span>
+    <span class="s0">elif error_log:</span>
+        <span class="s0">raise error_log._buildParseException(</span>
+            <span class="s0">XMLSyntaxError, &quot;Document is not well formed&quot;)</span>
+    <span class="s0">elif ctxt.lastError.message is not NULL:</span>
+        <span class="s0">message = ctxt.lastError.message.strip()</span>
+        <span class="s0">code = ctxt.lastError.code</span>
+        <span class="s0">line = ctxt.lastError.line</span>
+        <span class="s0">column = ctxt.lastError.int2</span>
+        <span class="s0">if ctxt.lastError.line &gt; 0:</span>
+            <span class="s0">message = f&quot;line {line}: {message}&quot;</span>
+        <span class="s0">raise XMLSyntaxError(message, code, line, column, filename)</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise XMLSyntaxError(None, xmlerror.XML_ERR_INTERNAL_ERROR, 0, 0,</span>
+                             <span class="s0">filename)</span>
+
+<span class="s0">cdef xmlDoc* _handleParseResult(_ParserContext context,</span>
+                                <span class="s0">xmlparser.xmlParserCtxt* c_ctxt,</span>
+                                <span class="s0">xmlDoc* result, filename,</span>
+                                <span class="s0">bint recover, bint free_doc) except NULL:</span>
+    <span class="s0">cdef bint well_formed</span>
+    <span class="s0">if result is not NULL:</span>
+        <span class="s0">__GLOBAL_PARSER_CONTEXT.initDocDict(result)</span>
+
+    <span class="s0">if c_ctxt.myDoc is not NULL:</span>
+        <span class="s0">if c_ctxt.myDoc is not result:</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.initDocDict(c_ctxt.myDoc)</span>
+            <span class="s0">tree.xmlFreeDoc(c_ctxt.myDoc)</span>
+        <span class="s0">c_ctxt.myDoc = NULL</span>
+
+    <span class="s0">if result is not NULL:</span>
+        <span class="s0">if (context._validator is not None and</span>
+                <span class="s0">not context._validator.isvalid()):</span>
+            <span class="s0">well_formed = 0  # actually not 'valid', but anyway ...</span>
+        <span class="s0">elif (not c_ctxt.wellFormed and not c_ctxt.html and</span>
+                <span class="s0">c_ctxt.charset == tree.XML_CHAR_ENCODING_8859_1 and</span>
+                <span class="s0">[1 for error in context._error_log</span>
+                 <span class="s0">if error.type == ErrorTypes.ERR_INVALID_CHAR]):</span>
+            <span class="s0"># An encoding error occurred and libxml2 switched from UTF-8</span>
+            <span class="s0"># input to (undecoded) Latin-1, at some arbitrary point in the</span>
+            <span class="s0"># document.  Better raise an error than allowing for a broken</span>
+            <span class="s0"># tree with mixed encodings. This is fixed in libxml2 2.12.</span>
+            <span class="s0">well_formed = 0</span>
+        <span class="s0">elif recover or (c_ctxt.wellFormed and</span>
+                         <span class="s0">c_ctxt.lastError.level &lt; xmlerror.XML_ERR_ERROR):</span>
+            <span class="s0">well_formed = 1</span>
+        <span class="s0">elif not c_ctxt.replaceEntities and not c_ctxt.validate \</span>
+                 <span class="s0">and context is not None:</span>
+            <span class="s0"># in this mode, we ignore errors about undefined entities</span>
+            <span class="s0">for error in context._error_log.filter_from_errors():</span>
+                <span class="s0">if error.type != ErrorTypes.WAR_UNDECLARED_ENTITY and \</span>
+                       <span class="s0">error.type != ErrorTypes.ERR_UNDECLARED_ENTITY:</span>
+                    <span class="s0">well_formed = 0</span>
+                    <span class="s0">break</span>
+            <span class="s0">else:</span>
+                <span class="s0">well_formed = 1</span>
+        <span class="s0">else:</span>
+            <span class="s0">well_formed = 0</span>
+
+        <span class="s0">if not well_formed:</span>
+            <span class="s0">if free_doc:</span>
+                <span class="s0">tree.xmlFreeDoc(result)</span>
+            <span class="s0">result = NULL</span>
+
+    <span class="s0">if context is not None and context._has_raised():</span>
+        <span class="s0">if result is not NULL:</span>
+            <span class="s0">if free_doc:</span>
+                <span class="s0">tree.xmlFreeDoc(result)</span>
+            <span class="s0">result = NULL</span>
+        <span class="s0">context._raise_if_stored()</span>
+
+    <span class="s0">if result is NULL:</span>
+        <span class="s0">if context is not None:</span>
+            <span class="s0">_raiseParseError(c_ctxt, filename, context._error_log)</span>
+        <span class="s0">else:</span>
+            <span class="s0">_raiseParseError(c_ctxt, filename, None)</span>
+    <span class="s0">else:</span>
+        <span class="s0">if result.URL is NULL and filename is not None:</span>
+            <span class="s0">result.URL = tree.xmlStrdup(_xcstr(filename))</span>
+        <span class="s0">if result.encoding is NULL:</span>
+            <span class="s0">result.encoding = tree.xmlStrdup(&lt;unsigned char*&gt;&quot;UTF-8&quot;)</span>
+
+    <span class="s0">if context._validator is not None and \</span>
+           <span class="s0">context._validator._add_default_attributes:</span>
+        <span class="s0"># we currently need to do this here as libxml2 does not</span>
+        <span class="s0"># support inserting default attributes during parse-time</span>
+        <span class="s0"># validation</span>
+        <span class="s0">context._validator.inject_default_attributes(result)</span>
+
+    <span class="s0">return result</span>
+
+<span class="s0">cdef int _fixHtmlDictNames(tree.xmlDict* c_dict, xmlDoc* c_doc) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">if c_doc is NULL:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">c_node = c_doc.children</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_ELEMENT_FROM(&lt;xmlNode*&gt;c_doc, c_node, 1)</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">if _fixHtmlDictNodeNames(c_dict, c_node) &lt; 0:</span>
+            <span class="s0">return -1</span>
+    <span class="s0">tree.END_FOR_EACH_ELEMENT_FROM(c_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _fixHtmlDictSubtreeNames(tree.xmlDict* c_dict, xmlDoc* c_doc,</span>
+                                  <span class="s0">xmlNode* c_start_node) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Move names to the dict, iterating in document order, starting at</span>
+    <span class="s0">c_start_node. This is used in incremental parsing after each chunk.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">if not c_doc:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">if not c_start_node:</span>
+        <span class="s0">return _fixHtmlDictNames(c_dict, c_doc)</span>
+    <span class="s0">c_node = c_start_node</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_ELEMENT_FROM(&lt;xmlNode*&gt;c_doc, c_node, 1)</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">if _fixHtmlDictNodeNames(c_dict, c_node) &lt; 0:</span>
+            <span class="s0">return -1</span>
+    <span class="s0">tree.END_FOR_EACH_ELEMENT_FROM(c_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef inline int _fixHtmlDictNodeNames(tree.xmlDict* c_dict,</span>
+                                      <span class="s0">xmlNode* c_node) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_attr</span>
+    <span class="s0">c_name = tree.xmlDictLookup(c_dict, c_node.name, -1)</span>
+    <span class="s0">if c_name is NULL:</span>
+        <span class="s0">return -1</span>
+    <span class="s0">if c_name is not c_node.name:</span>
+        <span class="s0">tree.xmlFree(&lt;char*&gt;c_node.name)</span>
+        <span class="s0">c_node.name = c_name</span>
+    <span class="s0">c_attr = &lt;xmlNode*&gt;c_node.properties</span>
+    <span class="s0">while c_attr is not NULL:</span>
+        <span class="s0">c_name = tree.xmlDictLookup(c_dict, c_attr.name, -1)</span>
+        <span class="s0">if c_name is NULL:</span>
+            <span class="s0">return -1</span>
+        <span class="s0">if c_name is not c_attr.name:</span>
+            <span class="s0">tree.xmlFree(&lt;char*&gt;c_attr.name)</span>
+            <span class="s0">c_attr.name = c_name</span>
+        <span class="s0">c_attr = c_attr.next</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _BaseParser:</span>
+    <span class="s0">cdef ElementClassLookup _class_lookup</span>
+    <span class="s0">cdef _ResolverRegistry _resolvers</span>
+    <span class="s0">cdef _ParserContext _parser_context</span>
+    <span class="s0">cdef _ParserContext _push_parser_context</span>
+    <span class="s0">cdef int _parse_options</span>
+    <span class="s0">cdef bint _for_html</span>
+    <span class="s0">cdef bint _remove_comments</span>
+    <span class="s0">cdef bint _remove_pis</span>
+    <span class="s0">cdef bint _strip_cdata</span>
+    <span class="s0">cdef bint _collect_ids</span>
+    <span class="s0">cdef bint _resolve_external_entities</span>
+    <span class="s0">cdef XMLSchema _schema</span>
+    <span class="s0">cdef bytes _filename</span>
+    <span class="s0">cdef readonly object target</span>
+    <span class="s0">cdef object _default_encoding</span>
+    <span class="s0">cdef tuple _events_to_collect  # (event_types, tag)</span>
+
+    <span class="s0">def __init__(self, int parse_options, bint for_html, XMLSchema schema,</span>
+                 <span class="s0">remove_comments, remove_pis, strip_cdata, collect_ids,</span>
+                 <span class="s0">target, encoding, bint resolve_external_entities=True):</span>
+        <span class="s0">cdef tree.xmlCharEncodingHandler* enchandler</span>
+        <span class="s0">cdef int c_encoding</span>
+        <span class="s0">if not isinstance(self, (XMLParser, HTMLParser)):</span>
+            <span class="s0">raise TypeError, &quot;This class cannot be instantiated&quot;</span>
+
+        <span class="s0">self._parse_options = parse_options</span>
+        <span class="s0">self.target = target</span>
+        <span class="s0">self._for_html = for_html</span>
+        <span class="s0">self._remove_comments = remove_comments</span>
+        <span class="s0">self._remove_pis = remove_pis</span>
+        <span class="s0">self._strip_cdata = strip_cdata</span>
+        <span class="s0">self._collect_ids = collect_ids</span>
+        <span class="s0">self._resolve_external_entities = resolve_external_entities</span>
+        <span class="s0">self._schema = schema</span>
+
+        <span class="s0">self._resolvers = _ResolverRegistry()</span>
+
+        <span class="s0">if encoding is None:</span>
+            <span class="s0">self._default_encoding = None</span>
+        <span class="s0">else:</span>
+            <span class="s0">encoding = _utf8(encoding)</span>
+            <span class="s0">enchandler = tree.xmlFindCharEncodingHandler(_cstr(encoding))</span>
+            <span class="s0">if enchandler is NULL:</span>
+                <span class="s0">raise LookupError, f&quot;unknown encoding: '{encoding}'&quot;</span>
+            <span class="s0">tree.xmlCharEncCloseFunc(enchandler)</span>
+            <span class="s0">self._default_encoding = encoding</span>
+
+    <span class="s0">cdef _setBaseURL(self, base_url):</span>
+        <span class="s0">self._filename = _encodeFilename(base_url)</span>
+
+    <span class="s0">cdef _collectEvents(self, event_types, tag):</span>
+        <span class="s0">if event_types is None:</span>
+            <span class="s0">event_types = ()</span>
+        <span class="s0">else:</span>
+            <span class="s0">event_types = tuple(set(event_types))</span>
+            <span class="s0">_buildParseEventFilter(event_types)  # purely for validation</span>
+        <span class="s0">self._events_to_collect = (event_types, tag)</span>
+
+    <span class="s0">cdef _ParserContext _getParserContext(self):</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">if self._parser_context is None:</span>
+            <span class="s0">self._parser_context = self._createContext(self.target, None)</span>
+            <span class="s0">self._parser_context._collect_ids = self._collect_ids</span>
+            <span class="s0">if self._schema is not None:</span>
+                <span class="s0">self._parser_context._validator = \</span>
+                    <span class="s0">self._schema._newSaxValidator(</span>
+                        <span class="s0">self._parse_options &amp; xmlparser.XML_PARSE_DTDATTR)</span>
+            <span class="s0">pctxt = self._newParserCtxt()</span>
+            <span class="s0">_initParserContext(self._parser_context, self._resolvers, pctxt)</span>
+            <span class="s0">self._configureSaxContext(pctxt)</span>
+        <span class="s0">return self._parser_context</span>
+
+    <span class="s0">cdef _ParserContext _getPushParserContext(self):</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">if self._push_parser_context is None:</span>
+            <span class="s0">self._push_parser_context = self._createContext(</span>
+                <span class="s0">self.target, self._events_to_collect)</span>
+            <span class="s0">self._push_parser_context._collect_ids = self._collect_ids</span>
+            <span class="s0">if self._schema is not None:</span>
+                <span class="s0">self._push_parser_context._validator = \</span>
+                    <span class="s0">self._schema._newSaxValidator(</span>
+                        <span class="s0">self._parse_options &amp; xmlparser.XML_PARSE_DTDATTR)</span>
+            <span class="s0">pctxt = self._newPushParserCtxt()</span>
+            <span class="s0">_initParserContext(</span>
+                <span class="s0">self._push_parser_context, self._resolvers, pctxt)</span>
+            <span class="s0">self._configureSaxContext(pctxt)</span>
+        <span class="s0">return self._push_parser_context</span>
+
+    <span class="s0">cdef _ParserContext _createContext(self, target, events_to_collect):</span>
+        <span class="s0">cdef _SaxParserContext sax_context</span>
+        <span class="s0">if target is not None:</span>
+            <span class="s0">sax_context = _TargetParserContext(self)</span>
+            <span class="s0">(&lt;_TargetParserContext&gt;sax_context)._setTarget(target)</span>
+        <span class="s0">elif events_to_collect:</span>
+            <span class="s0">sax_context = _SaxParserContext(self)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># nothing special to configure</span>
+            <span class="s0">return _ParserContext()</span>
+        <span class="s0">if events_to_collect:</span>
+            <span class="s0">events, tag = events_to_collect</span>
+            <span class="s0">sax_context._setEventFilter(events, tag)</span>
+        <span class="s0">return sax_context</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef int _configureSaxContext(self, xmlparser.xmlParserCtxt* pctxt) except -1:</span>
+        <span class="s0">if self._remove_comments:</span>
+            <span class="s0">pctxt.sax.comment = NULL</span>
+        <span class="s0">if self._remove_pis:</span>
+            <span class="s0">pctxt.sax.processingInstruction = NULL</span>
+        <span class="s0">if self._strip_cdata:</span>
+            <span class="s0"># hard switch-off for CDATA nodes =&gt; makes them plain text</span>
+            <span class="s0">pctxt.sax.cdataBlock = NULL</span>
+        <span class="s0">if not self._resolve_external_entities:</span>
+            <span class="s0">pctxt.sax.getEntity = _getInternalEntityOnly</span>
+
+    <span class="s0">cdef int _registerHtmlErrorHandler(self, xmlparser.xmlParserCtxt* c_ctxt) except -1:</span>
+        <span class="s0">cdef xmlparser.xmlSAXHandler* sax = c_ctxt.sax</span>
+        <span class="s0">if sax is not NULL and sax.initialized and sax.initialized != xmlparser.XML_SAX2_MAGIC:</span>
+            <span class="s0"># need to extend SAX1 context to SAX2 to get proper error reports</span>
+            <span class="s0">if &lt;xmlparser.xmlSAXHandlerV1*&gt;sax is &amp;htmlparser.htmlDefaultSAXHandler:</span>
+                <span class="s0">sax = &lt;xmlparser.xmlSAXHandler*&gt; tree.xmlMalloc(sizeof(xmlparser.xmlSAXHandler))</span>
+                <span class="s0">if sax is NULL:</span>
+                    <span class="s0">raise MemoryError()</span>
+                <span class="s0">cstring_h.memcpy(sax, &amp;htmlparser.htmlDefaultSAXHandler,</span>
+                                 <span class="s0">sizeof(htmlparser.htmlDefaultSAXHandler))</span>
+                <span class="s0">c_ctxt.sax = sax</span>
+            <span class="s0">sax.initialized = xmlparser.XML_SAX2_MAGIC</span>
+            <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+            <span class="s0">sax.serror = &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveParserError</span>
+            <span class="s0">sax.startElementNs = NULL</span>
+            <span class="s0">sax.endElementNs = NULL</span>
+            <span class="s0">sax._private = NULL</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">cdef xmlparser.xmlParserCtxt* _newParserCtxt(self) except NULL:</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* c_ctxt</span>
+        <span class="s0">if self._for_html:</span>
+            <span class="s0">c_ctxt = htmlparser.htmlCreateMemoryParserCtxt('dummy', 5)</span>
+            <span class="s0">if c_ctxt is not NULL:</span>
+                <span class="s0">self._registerHtmlErrorHandler(c_ctxt)</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_ctxt = xmlparser.xmlNewParserCtxt()</span>
+        <span class="s0">if c_ctxt is NULL:</span>
+            <span class="s0">raise MemoryError</span>
+        <span class="s0">c_ctxt.sax.startDocument = _initSaxDocument</span>
+        <span class="s0">return c_ctxt</span>
+
+    <span class="s0">cdef xmlparser.xmlParserCtxt* _newPushParserCtxt(self) except NULL:</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* c_ctxt</span>
+        <span class="s0">cdef char* c_filename = _cstr(self._filename) if self._filename is not None else NULL</span>
+        <span class="s0">if self._for_html:</span>
+            <span class="s0">c_ctxt = htmlparser.htmlCreatePushParserCtxt(</span>
+                <span class="s0">NULL, NULL, NULL, 0, c_filename, tree.XML_CHAR_ENCODING_NONE)</span>
+            <span class="s0">if c_ctxt is not NULL:</span>
+                <span class="s0">self._registerHtmlErrorHandler(c_ctxt)</span>
+                <span class="s0">htmlparser.htmlCtxtUseOptions(c_ctxt, self._parse_options)</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_ctxt = xmlparser.xmlCreatePushParserCtxt(</span>
+                <span class="s0">NULL, NULL, NULL, 0, c_filename)</span>
+            <span class="s0">if c_ctxt is not NULL:</span>
+                <span class="s0">xmlparser.xmlCtxtUseOptions(c_ctxt, self._parse_options)</span>
+        <span class="s0">if c_ctxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">c_ctxt.sax.startDocument = _initSaxDocument</span>
+        <span class="s0">return c_ctxt</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def error_log(self):</span>
+        <span class="s0">&quot;&quot;&quot;The error log of the last parser run.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">context = self._getParserContext()</span>
+        <span class="s0">return context._error_log.copy()</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def resolvers(self):</span>
+        <span class="s0">&quot;&quot;&quot;The custom resolver registry of this parser.&quot;&quot;&quot;</span>
+        <span class="s0">return self._resolvers</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def version(self):</span>
+        <span class="s0">&quot;&quot;&quot;The version of the underlying XML parser.&quot;&quot;&quot;</span>
+        <span class="s0">return &quot;libxml2 %d.%d.%d&quot; % LIBXML_VERSION</span>
+
+    <span class="s0">def set_element_class_lookup(self, ElementClassLookup lookup = None):</span>
+        <span class="s0">&quot;&quot;&quot;set_element_class_lookup(self, lookup = None)</span>
+
+        <span class="s0">Set a lookup scheme for element classes generated from this parser.</span>
+
+        <span class="s0">Reset it by passing None or nothing.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._class_lookup = lookup</span>
+
+    <span class="s0">cdef _BaseParser _copy(self):</span>
+        <span class="s0">&quot;Create a new parser with the same configuration.&quot;</span>
+        <span class="s0">cdef _BaseParser parser</span>
+        <span class="s0">parser = self.__class__()</span>
+        <span class="s0">parser._parse_options = self._parse_options</span>
+        <span class="s0">parser._for_html = self._for_html</span>
+        <span class="s0">parser._remove_comments = self._remove_comments</span>
+        <span class="s0">parser._remove_pis = self._remove_pis</span>
+        <span class="s0">parser._strip_cdata = self._strip_cdata</span>
+        <span class="s0">parser._filename = self._filename</span>
+        <span class="s0">parser._resolvers = self._resolvers</span>
+        <span class="s0">parser.target = self.target</span>
+        <span class="s0">parser._class_lookup  = self._class_lookup</span>
+        <span class="s0">parser._default_encoding = self._default_encoding</span>
+        <span class="s0">parser._schema = self._schema</span>
+        <span class="s0">parser._events_to_collect = self._events_to_collect</span>
+        <span class="s0">return parser</span>
+
+    <span class="s0">def copy(self):</span>
+        <span class="s0">&quot;&quot;&quot;copy(self)</span>
+
+        <span class="s0">Create a new parser with the same configuration.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._copy()</span>
+
+    <span class="s0">def makeelement(self, _tag, attrib=None, nsmap=None, **_extra):</span>
+        <span class="s0">&quot;&quot;&quot;makeelement(self, _tag, attrib=None, nsmap=None, **_extra)</span>
+
+        <span class="s0">Creates a new element associated with this parser.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return _makeElement(_tag, NULL, None, self, None, None,</span>
+                            <span class="s0">attrib, nsmap, _extra)</span>
+
+    <span class="s0"># internal parser methods</span>
+
+    <span class="s0">cdef xmlDoc* _parseUnicodeDoc(self, utext, char* c_filename) except NULL:</span>
+        <span class="s0">&quot;&quot;&quot;Parse unicode document, share dictionary if possible.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">cdef xmlDoc* result</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">cdef Py_ssize_t py_buffer_len</span>
+        <span class="s0">cdef int buffer_len, c_kind</span>
+        <span class="s0">cdef const_char* c_text</span>
+        <span class="s0">cdef const_char* c_encoding = _PY_UNICODE_ENCODING</span>
+        <span class="s0">if python.PyUnicode_IS_READY(utext):</span>
+            <span class="s0"># PEP-393 string</span>
+            <span class="s0">c_text = &lt;const_char*&gt;python.PyUnicode_DATA(utext)</span>
+            <span class="s0">py_buffer_len = python.PyUnicode_GET_LENGTH(utext)</span>
+            <span class="s0">c_kind = python.PyUnicode_KIND(utext)</span>
+            <span class="s0">if c_kind == 1:</span>
+                <span class="s0">if python.PyUnicode_MAX_CHAR_VALUE(utext) &lt;= 127:</span>
+                    <span class="s0">c_encoding = 'UTF-8'</span>
+                <span class="s0">else:</span>
+                    <span class="s0">c_encoding = 'ISO-8859-1'</span>
+            <span class="s0">elif c_kind == 2:</span>
+                <span class="s0">py_buffer_len *= 2</span>
+                <span class="s0">if python.PY_BIG_ENDIAN:</span>
+                    <span class="s0">c_encoding = 'UTF-16BE'  # actually UCS-2</span>
+                <span class="s0">else:</span>
+                    <span class="s0">c_encoding = 'UTF-16LE'  # actually UCS-2</span>
+            <span class="s0">elif c_kind == 4:</span>
+                <span class="s0">py_buffer_len *= 4</span>
+                <span class="s0">if python.PY_BIG_ENDIAN:</span>
+                    <span class="s0">c_encoding = 'UTF-32BE'  # actually UCS-4</span>
+                <span class="s0">else:</span>
+                    <span class="s0">c_encoding = 'UTF-32LE'  # actually UCS-4</span>
+            <span class="s0">else:</span>
+                <span class="s0">assert False, f&quot;Illegal Unicode kind {c_kind}&quot;</span>
+        <span class="s0">else:</span>
+            <span class="s0"># old Py_UNICODE string</span>
+            <span class="s0">py_buffer_len = python.PyUnicode_GET_DATA_SIZE(utext)</span>
+            <span class="s0">c_text = python.PyUnicode_AS_DATA(utext)</span>
+        <span class="s0">assert 0 &lt;= py_buffer_len &lt;= limits.INT_MAX</span>
+        <span class="s0">buffer_len = py_buffer_len</span>
+
+        <span class="s0">context = self._getParserContext()</span>
+        <span class="s0">context.prepare()</span>
+        <span class="s0">try:</span>
+            <span class="s0">pctxt = context._c_ctxt</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.initParserDict(pctxt)</span>
+            <span class="s0">orig_options = pctxt.options</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">if self._for_html:</span>
+                    <span class="s0">result = htmlparser.htmlCtxtReadMemory(</span>
+                        <span class="s0">pctxt, c_text, buffer_len, c_filename, c_encoding,</span>
+                        <span class="s0">self._parse_options)</span>
+                    <span class="s0">if result is not NULL:</span>
+                        <span class="s0">if _fixHtmlDictNames(pctxt.dict, result) &lt; 0:</span>
+                            <span class="s0">tree.xmlFreeDoc(result)</span>
+                            <span class="s0">result = NULL</span>
+                <span class="s0">else:</span>
+                    <span class="s0">result = xmlparser.xmlCtxtReadMemory(</span>
+                        <span class="s0">pctxt, c_text, buffer_len, c_filename, c_encoding,</span>
+                        <span class="s0">self._parse_options)</span>
+            <span class="s0">pctxt.options = orig_options # work around libxml2 problem</span>
+
+            <span class="s0">return context._handleParseResultDoc(self, result, None)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">context.cleanup()</span>
+
+    <span class="s0">cdef xmlDoc* _parseDoc(self, char* c_text, int c_len,</span>
+                           <span class="s0">char* c_filename) except NULL:</span>
+        <span class="s0">&quot;&quot;&quot;Parse document, share dictionary if possible.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">cdef xmlDoc* result</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">cdef char* c_encoding</span>
+        <span class="s0">cdef tree.xmlCharEncoding enc</span>
+        <span class="s0">context = self._getParserContext()</span>
+        <span class="s0">context.prepare()</span>
+        <span class="s0">try:</span>
+            <span class="s0">pctxt = context._c_ctxt</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.initParserDict(pctxt)</span>
+
+            <span class="s0">if self._default_encoding is None:</span>
+                <span class="s0">c_encoding = NULL</span>
+                <span class="s0"># libxml2 (at least 2.9.3) does not recognise UTF-32 BOMs</span>
+                <span class="s0"># NOTE: limit to problematic cases because it changes character offsets</span>
+                <span class="s0">if c_len &gt;= 4 and (c_text[0] == b'\xFF' and c_text[1] == b'\xFE' and</span>
+                                   <span class="s0">c_text[2] == 0 and c_text[3] == 0):</span>
+                    <span class="s0">c_encoding = &quot;UTF-32LE&quot;</span>
+                    <span class="s0">c_text += 4</span>
+                    <span class="s0">c_len -= 4</span>
+                <span class="s0">elif c_len &gt;= 4 and (c_text[0] == 0 and c_text[1] == 0 and</span>
+                                     <span class="s0">c_text[2] == b'\xFE' and c_text[3] == b'\xFF'):</span>
+                    <span class="s0">c_encoding = &quot;UTF-32BE&quot;</span>
+                    <span class="s0">c_text += 4</span>
+                    <span class="s0">c_len -= 4</span>
+                <span class="s0">else:</span>
+                    <span class="s0"># no BOM =&gt; try to determine encoding</span>
+                    <span class="s0">enc = tree.xmlDetectCharEncoding(&lt;const_xmlChar*&gt;c_text, c_len)</span>
+                    <span class="s0">if enc == tree.XML_CHAR_ENCODING_UCS4LE:</span>
+                        <span class="s0">c_encoding = 'UTF-32LE'</span>
+                    <span class="s0">elif enc == tree.XML_CHAR_ENCODING_UCS4BE:</span>
+                        <span class="s0">c_encoding = 'UTF-32BE'</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_encoding = _cstr(self._default_encoding)</span>
+
+            <span class="s0">orig_options = pctxt.options</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">if self._for_html:</span>
+                    <span class="s0">result = htmlparser.htmlCtxtReadMemory(</span>
+                        <span class="s0">pctxt, c_text, c_len, c_filename,</span>
+                        <span class="s0">c_encoding, self._parse_options)</span>
+                    <span class="s0">if result is not NULL:</span>
+                        <span class="s0">if _fixHtmlDictNames(pctxt.dict, result) &lt; 0:</span>
+                            <span class="s0">tree.xmlFreeDoc(result)</span>
+                            <span class="s0">result = NULL</span>
+                <span class="s0">else:</span>
+                    <span class="s0">result = xmlparser.xmlCtxtReadMemory(</span>
+                        <span class="s0">pctxt, c_text, c_len, c_filename,</span>
+                        <span class="s0">c_encoding, self._parse_options)</span>
+            <span class="s0">pctxt.options = orig_options # work around libxml2 problem</span>
+
+            <span class="s0">return context._handleParseResultDoc(self, result, None)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">context.cleanup()</span>
+
+    <span class="s0">cdef xmlDoc* _parseDocFromFile(self, char* c_filename) except NULL:</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">cdef xmlDoc* result</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">cdef char* c_encoding</span>
+        <span class="s0">result = NULL</span>
+
+        <span class="s0">context = self._getParserContext()</span>
+        <span class="s0">context.prepare()</span>
+        <span class="s0">try:</span>
+            <span class="s0">pctxt = context._c_ctxt</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.initParserDict(pctxt)</span>
+
+            <span class="s0">if self._default_encoding is None:</span>
+                <span class="s0">c_encoding = NULL</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_encoding = _cstr(self._default_encoding)</span>
+
+            <span class="s0">orig_options = pctxt.options</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">if self._for_html:</span>
+                    <span class="s0">result = htmlparser.htmlCtxtReadFile(</span>
+                        <span class="s0">pctxt, c_filename, c_encoding, self._parse_options)</span>
+                    <span class="s0">if result is not NULL:</span>
+                        <span class="s0">if _fixHtmlDictNames(pctxt.dict, result) &lt; 0:</span>
+                            <span class="s0">tree.xmlFreeDoc(result)</span>
+                            <span class="s0">result = NULL</span>
+                <span class="s0">else:</span>
+                    <span class="s0">result = xmlparser.xmlCtxtReadFile(</span>
+                        <span class="s0">pctxt, c_filename, c_encoding, self._parse_options)</span>
+            <span class="s0">pctxt.options = orig_options # work around libxml2 problem</span>
+
+            <span class="s0">return context._handleParseResultDoc(self, result, c_filename)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">context.cleanup()</span>
+
+    <span class="s0">cdef xmlDoc* _parseDocFromFilelike(self, filelike, filename,</span>
+                                       <span class="s0">encoding) except NULL:</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">cdef _FileReaderContext file_context</span>
+        <span class="s0">cdef xmlDoc* result</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">cdef char* c_filename</span>
+        <span class="s0">if not filename:</span>
+            <span class="s0">filename = None</span>
+
+        <span class="s0">context = self._getParserContext()</span>
+        <span class="s0">context.prepare()</span>
+        <span class="s0">try:</span>
+            <span class="s0">pctxt = context._c_ctxt</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.initParserDict(pctxt)</span>
+            <span class="s0">file_context = _FileReaderContext(</span>
+                <span class="s0">filelike, context, filename,</span>
+                <span class="s0">encoding or self._default_encoding)</span>
+            <span class="s0">result = file_context._readDoc(pctxt, self._parse_options)</span>
+
+            <span class="s0">return context._handleParseResultDoc(</span>
+                <span class="s0">self, result, filename)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">context.cleanup()</span>
+
+
+<span class="s0">cdef tree.xmlEntity* _getInternalEntityOnly(void* ctxt, const_xmlChar* name) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Callback function to intercept the entity resolution when external entity loading is disabled.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef tree.xmlEntity* entity = xmlparser.xmlSAX2GetEntity(ctxt, name)</span>
+    <span class="s0">if not entity:</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">if entity.etype not in (</span>
+            <span class="s0">tree.xmlEntityType.XML_EXTERNAL_GENERAL_PARSED_ENTITY,</span>
+            <span class="s0">tree.xmlEntityType.XML_EXTERNAL_GENERAL_UNPARSED_ENTITY,</span>
+            <span class="s0">tree.xmlEntityType.XML_EXTERNAL_PARAMETER_ENTITY):</span>
+        <span class="s0">return entity</span>
+
+    <span class="s0"># Reject all external entities and fail the parsing instead. There is currently</span>
+    <span class="s0"># no way in libxml2 to just prevent the entity resolution in this case.</span>
+    <span class="s0">cdef xmlerror.xmlError c_error</span>
+    <span class="s0">cdef xmlerror.xmlStructuredErrorFunc err_func</span>
+    <span class="s0">cdef xmlparser.xmlParserInput* parser_input</span>
+    <span class="s0">cdef void* err_context</span>
+
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt *&gt; ctxt</span>
+    <span class="s0">err_func = xmlerror.xmlStructuredError</span>
+    <span class="s0">if err_func:</span>
+        <span class="s0">parser_input = c_ctxt.input</span>
+        <span class="s0"># Copied from xmlVErrParser() in libxml2: get current input from stack.</span>
+        <span class="s0">if parser_input and parser_input.filename is NULL and c_ctxt.inputNr &gt; 1:</span>
+            <span class="s0">parser_input = c_ctxt.inputTab[c_ctxt.inputNr - 2]</span>
+
+        <span class="s0">c_error = xmlerror.xmlError(</span>
+            <span class="s0">domain=xmlerror.xmlErrorDomain.XML_FROM_PARSER,</span>
+            <span class="s0">code=xmlerror.xmlParserErrors.XML_ERR_EXT_ENTITY_STANDALONE,</span>
+            <span class="s0">level=xmlerror.xmlErrorLevel.XML_ERR_FATAL,</span>
+            <span class="s0">message=b&quot;External entity resolution is disabled for security reasons &quot;</span>
+                    <span class="s0">b&quot;when resolving '&amp;%s;'. Use 'XMLParser(resolve_entities=True)' &quot;</span>
+                    <span class="s0">b&quot;if you consider it safe to enable it.&quot;,</span>
+            <span class="s0">file=parser_input.filename,</span>
+            <span class="s0">node=entity,</span>
+            <span class="s0">str1=&lt;char*&gt; name,</span>
+            <span class="s0">str2=NULL,</span>
+            <span class="s0">str3=NULL,</span>
+            <span class="s0">line=parser_input.line if parser_input else 0,</span>
+            <span class="s0">int1=0,</span>
+            <span class="s0">int2=parser_input.col if parser_input else 0,</span>
+        <span class="s0">)</span>
+        <span class="s0">err_context = xmlerror.xmlStructuredErrorContext</span>
+        <span class="s0">err_func(err_context, &amp;c_error)</span>
+
+    <span class="s0">c_ctxt.wellFormed = 0</span>
+    <span class="s0"># The entity was looked up and does not need to be freed.</span>
+    <span class="s0">return NULL</span>
+
+
+<span class="s0">cdef void _initSaxDocument(void* ctxt) noexcept with gil:</span>
+    <span class="s0">xmlparser.xmlSAX2StartDocument(ctxt)</span>
+    <span class="s0">c_ctxt = &lt;xmlparser.xmlParserCtxt*&gt;ctxt</span>
+    <span class="s0">c_doc = c_ctxt.myDoc</span>
+
+    <span class="s0"># set up document dict</span>
+    <span class="s0">if c_doc and c_ctxt.dict and not c_doc.dict:</span>
+        <span class="s0"># I have no idea why libxml2 disables this - we need it</span>
+        <span class="s0">c_ctxt.dictNames = 1</span>
+        <span class="s0">c_doc.dict = c_ctxt.dict</span>
+        <span class="s0">xmlparser.xmlDictReference(c_ctxt.dict)</span>
+
+    <span class="s0"># set up XML ID hash table</span>
+    <span class="s0">if c_ctxt._private:</span>
+        <span class="s0">context = &lt;_ParserContext&gt;c_ctxt._private</span>
+        <span class="s0">if context._collect_ids:</span>
+            <span class="s0"># keep the global parser dict from filling up with XML IDs</span>
+            <span class="s0">if c_doc and not c_doc.ids:</span>
+                <span class="s0"># memory errors are not fatal here</span>
+                <span class="s0">c_dict = xmlparser.xmlDictCreate()</span>
+                <span class="s0">if c_dict:</span>
+                    <span class="s0">c_doc.ids = tree.xmlHashCreateDict(0, c_dict)</span>
+                    <span class="s0">xmlparser.xmlDictFree(c_dict)</span>
+                <span class="s0">else:</span>
+                    <span class="s0">c_doc.ids = tree.xmlHashCreate(0)</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_ctxt.loadsubset |= xmlparser.XML_SKIP_IDS</span>
+            <span class="s0">if c_doc and c_doc.ids and not tree.xmlHashSize(c_doc.ids):</span>
+                <span class="s0"># already initialised but empty =&gt; clear</span>
+                <span class="s0">tree.xmlHashFree(c_doc.ids, NULL)</span>
+                <span class="s0">c_doc.ids = NULL</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## ET feed parser</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef class _FeedParser(_BaseParser):</span>
+    <span class="s0">cdef bint _feed_parser_running</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def feed_error_log(self):</span>
+        <span class="s0">&quot;&quot;&quot;The error log of the last (or current) run of the feed parser.</span>
+
+        <span class="s0">Note that this is local to the feed parser and thus is</span>
+        <span class="s0">different from what the ``error_log`` property returns.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._getPushParserContext()._error_log.copy()</span>
+
+    <span class="s0">cpdef feed(self, data):</span>
+        <span class="s0">&quot;&quot;&quot;feed(self, data)</span>
+
+        <span class="s0">Feeds data to the parser.  The argument should be an 8-bit string</span>
+        <span class="s0">buffer containing encoded data, although Unicode is supported as long</span>
+        <span class="s0">as both string types are not mixed.</span>
+
+        <span class="s0">This is the main entry point to the consumer interface of a</span>
+        <span class="s0">parser.  The parser will parse as much of the XML stream as it</span>
+        <span class="s0">can on each call.  To finish parsing or to reset the parser,</span>
+        <span class="s0">call the ``close()`` method.  Both methods may raise</span>
+        <span class="s0">ParseError if errors occur in the input data.  If an error is</span>
+        <span class="s0">raised, there is no longer a need to call ``close()``.</span>
+
+        <span class="s0">The feed parser interface is independent of the normal parser</span>
+        <span class="s0">usage.  You can use the same parser as a feed parser and in</span>
+        <span class="s0">the ``parse()`` function concurrently.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _ParserContext context</span>
+        <span class="s0">cdef bytes bstring</span>
+        <span class="s0">cdef xmlparser.xmlParserCtxt* pctxt</span>
+        <span class="s0">cdef Py_ssize_t py_buffer_len, ustart</span>
+        <span class="s0">cdef const_char* char_data</span>
+        <span class="s0">cdef const_char* c_encoding</span>
+        <span class="s0">cdef int buffer_len</span>
+        <span class="s0">cdef int error</span>
+        <span class="s0">cdef bint recover = self._parse_options &amp; xmlparser.XML_PARSE_RECOVER</span>
+
+        <span class="s0">if isinstance(data, bytes):</span>
+            <span class="s0">if self._default_encoding is None:</span>
+                <span class="s0">c_encoding = NULL</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_encoding = self._default_encoding</span>
+            <span class="s0">char_data = _cstr(data)</span>
+            <span class="s0">py_buffer_len = python.PyBytes_GET_SIZE(data)</span>
+            <span class="s0">ustart = 0</span>
+        <span class="s0">elif isinstance(data, unicode):</span>
+            <span class="s0">c_encoding = b&quot;UTF-8&quot;</span>
+            <span class="s0">char_data = NULL</span>
+            <span class="s0">py_buffer_len = len(&lt;unicode&gt; data)</span>
+            <span class="s0">ustart = 0</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError, &quot;Parsing requires string data&quot;</span>
+
+        <span class="s0">context = self._getPushParserContext()</span>
+        <span class="s0">pctxt = context._c_ctxt</span>
+        <span class="s0">error = 0</span>
+        <span class="s0">if not self._feed_parser_running:</span>
+            <span class="s0">context.prepare(set_document_loader=False)</span>
+            <span class="s0">self._feed_parser_running = 1</span>
+            <span class="s0">c_filename = (_cstr(self._filename)</span>
+                          <span class="s0">if self._filename is not None else NULL)</span>
+
+            <span class="s0"># We have to give *mlCtxtResetPush() enough input to figure</span>
+            <span class="s0"># out the character encoding (at least four bytes),</span>
+            <span class="s0"># however if we give it all we got, we'll have nothing for</span>
+            <span class="s0"># *mlParseChunk() and things go wrong.</span>
+            <span class="s0">buffer_len = 0</span>
+            <span class="s0">if char_data is not NULL:</span>
+                <span class="s0">buffer_len = 4 if py_buffer_len &gt; 4 else &lt;int&gt;py_buffer_len</span>
+            <span class="s0">orig_loader = _register_document_loader()</span>
+            <span class="s0">if self._for_html:</span>
+                <span class="s0">error = _htmlCtxtResetPush(</span>
+                    <span class="s0">pctxt, char_data, buffer_len, c_filename, c_encoding,</span>
+                    <span class="s0">self._parse_options)</span>
+            <span class="s0">else:</span>
+                <span class="s0">xmlparser.xmlCtxtUseOptions(pctxt, self._parse_options)</span>
+                <span class="s0">error = xmlparser.xmlCtxtResetPush(</span>
+                    <span class="s0">pctxt, char_data, buffer_len, c_filename, c_encoding)</span>
+            <span class="s0">_reset_document_loader(orig_loader)</span>
+            <span class="s0">py_buffer_len -= buffer_len</span>
+            <span class="s0">char_data += buffer_len</span>
+            <span class="s0">if error:</span>
+                <span class="s0">raise MemoryError()</span>
+            <span class="s0">__GLOBAL_PARSER_CONTEXT.initParserDict(pctxt)</span>
+
+        <span class="s0">#print pctxt.charset, 'NONE' if c_encoding is NULL else c_encoding</span>
+
+        <span class="s0">fixup_error = 0</span>
+        <span class="s0">while py_buffer_len &gt; 0 and (error == 0 or recover):</span>
+            <span class="s0">if char_data is NULL:</span>
+                <span class="s0"># Unicode parsing by converting chunks to UTF-8</span>
+                <span class="s0">buffer_len = 2**19  # len(bytes) &lt;= 4 * (2**19) == 2 MiB</span>
+                <span class="s0">bstring = (&lt;unicode&gt; data)[ustart : ustart+buffer_len].encode('UTF-8')</span>
+                <span class="s0">ustart += buffer_len</span>
+                <span class="s0">py_buffer_len -= buffer_len  # may end up &lt; 0</span>
+                <span class="s0">error, fixup_error = _parse_data_chunk(pctxt, &lt;const char*&gt; bstring, &lt;int&gt; len(bstring))</span>
+            <span class="s0">else:</span>
+                <span class="s0"># Direct byte string parsing.</span>
+                <span class="s0">buffer_len = &lt;int&gt;py_buffer_len if py_buffer_len &lt;= limits.INT_MAX else limits.INT_MAX</span>
+                <span class="s0">error, fixup_error = _parse_data_chunk(pctxt, char_data, buffer_len)</span>
+                <span class="s0">py_buffer_len -= buffer_len</span>
+                <span class="s0">char_data += buffer_len</span>
+
+            <span class="s0">if fixup_error:</span>
+                <span class="s0">context.store_exception(MemoryError())</span>
+
+            <span class="s0">if context._has_raised():</span>
+                <span class="s0"># propagate Python exceptions immediately</span>
+                <span class="s0">recover = 0</span>
+                <span class="s0">error = 1</span>
+                <span class="s0">break</span>
+
+            <span class="s0">if error and not pctxt.replaceEntities and not pctxt.validate:</span>
+                <span class="s0"># in this mode, we ignore errors about undefined entities</span>
+                <span class="s0">for entry in context._error_log.filter_from_errors():</span>
+                    <span class="s0">if entry.type != ErrorTypes.WAR_UNDECLARED_ENTITY and \</span>
+                           <span class="s0">entry.type != ErrorTypes.ERR_UNDECLARED_ENTITY:</span>
+                        <span class="s0">break</span>
+                <span class="s0">else:</span>
+                    <span class="s0">error = 0</span>
+
+        <span class="s0">if not pctxt.wellFormed and pctxt.disableSAX and context._has_raised():</span>
+            <span class="s0"># propagate Python exceptions immediately</span>
+            <span class="s0">recover = 0</span>
+            <span class="s0">error = 1</span>
+
+        <span class="s0">if fixup_error or not recover and (error or not pctxt.wellFormed):</span>
+            <span class="s0">self._feed_parser_running = 0</span>
+            <span class="s0">try:</span>
+                <span class="s0">context._handleParseResult(self, pctxt.myDoc, None)</span>
+            <span class="s0">finally:</span>
+                <span class="s0">context.cleanup()</span>
+
+    <span class="s0">cpdef close(self):</span>
+        <span class="s0">&quot;&quot;&quot;close(self)</span>
+
+        <span class="s0">Terminates feeding data to this parser.  This tells the parser to</span>
+        <span class="s0">process any remaining data in the feed buffer, and then returns the</span>
+        <span class="s0">root Element of the tree that was parsed.</span>
+
+        <span class="s0">This method must be called after passing the last chunk of data into</span>
+        <span class="s0">the ``feed()`` method.  It should only be called when using the feed</span>
+        <span class="s0">parser interface, all other usage is undefined.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if not self._feed_parser_running:</span>
+            <span class="s0">raise XMLSyntaxError(&quot;no element found&quot;,</span>
+                                 <span class="s0">xmlerror.XML_ERR_INTERNAL_ERROR, 0, 0,</span>
+                                 <span class="s0">self._filename)</span>
+
+        <span class="s0">context = self._getPushParserContext()</span>
+        <span class="s0">pctxt = context._c_ctxt</span>
+
+        <span class="s0">self._feed_parser_running = 0</span>
+        <span class="s0">if self._for_html:</span>
+            <span class="s0">htmlparser.htmlParseChunk(pctxt, NULL, 0, 1)</span>
+        <span class="s0">else:</span>
+            <span class="s0">xmlparser.xmlParseChunk(pctxt, NULL, 0, 1)</span>
+
+        <span class="s0">if (pctxt.recovery and not pctxt.disableSAX and</span>
+                <span class="s0">isinstance(context, _SaxParserContext)):</span>
+            <span class="s0"># apply any left-over 'end' events</span>
+            <span class="s0">(&lt;_SaxParserContext&gt;context).flushEvents()</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">result = context._handleParseResult(self, pctxt.myDoc, None)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">context.cleanup()</span>
+
+        <span class="s0">if isinstance(result, _Document):</span>
+            <span class="s0">return (&lt;_Document&gt;result).getroot()</span>
+        <span class="s0">else:</span>
+            <span class="s0">return result</span>
+
+
+<span class="s0">cdef (int, int) _parse_data_chunk(xmlparser.xmlParserCtxt* c_ctxt,</span>
+                                  <span class="s0">const char* char_data, int buffer_len):</span>
+    <span class="s0">fixup_error = 0</span>
+    <span class="s0">with nogil:</span>
+        <span class="s0">if c_ctxt.html:</span>
+            <span class="s0">c_node = c_ctxt.node  # last node where the parser stopped</span>
+            <span class="s0">orig_loader = _register_document_loader()</span>
+            <span class="s0">error = htmlparser.htmlParseChunk(c_ctxt, char_data, buffer_len, 0)</span>
+            <span class="s0">_reset_document_loader(orig_loader)</span>
+            <span class="s0"># and now for the fun part: move node names to the dict</span>
+            <span class="s0">if c_ctxt.myDoc:</span>
+                <span class="s0">fixup_error = _fixHtmlDictSubtreeNames(</span>
+                    <span class="s0">c_ctxt.dict, c_ctxt.myDoc, c_node)</span>
+                <span class="s0">if c_ctxt.myDoc.dict and c_ctxt.myDoc.dict is not c_ctxt.dict:</span>
+                    <span class="s0">xmlparser.xmlDictFree(c_ctxt.myDoc.dict)</span>
+                    <span class="s0">c_ctxt.myDoc.dict = c_ctxt.dict</span>
+                    <span class="s0">xmlparser.xmlDictReference(c_ctxt.dict)</span>
+        <span class="s0">else:</span>
+            <span class="s0">orig_loader = _register_document_loader()</span>
+            <span class="s0">error = xmlparser.xmlParseChunk(c_ctxt, char_data, buffer_len, 0)</span>
+            <span class="s0">_reset_document_loader(orig_loader)</span>
+    <span class="s0">return (error, fixup_error)</span>
+
+
+<span class="s0">cdef int _htmlCtxtResetPush(xmlparser.xmlParserCtxt* c_ctxt,</span>
+                             <span class="s0">const_char* c_data, int buffer_len,</span>
+                             <span class="s0">const_char* c_filename, const_char* c_encoding,</span>
+                             <span class="s0">int parse_options) except -1:</span>
+    <span class="s0">cdef xmlparser.xmlParserInput* c_input_stream</span>
+    <span class="s0"># libxml2 lacks an HTML push parser setup function</span>
+    <span class="s0">error = xmlparser.xmlCtxtResetPush(</span>
+        <span class="s0">c_ctxt, c_data, buffer_len, c_filename, c_encoding)</span>
+    <span class="s0">if error:</span>
+        <span class="s0">return error</span>
+
+    <span class="s0"># fix libxml2 setup for HTML</span>
+    <span class="s0">c_ctxt.progressive = 1</span>
+    <span class="s0">c_ctxt.html = 1</span>
+    <span class="s0">htmlparser.htmlCtxtUseOptions(c_ctxt, parse_options)</span>
+
+    <span class="s0">return 0</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## XML parser</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef int _XML_DEFAULT_PARSE_OPTIONS</span>
+<span class="s0">_XML_DEFAULT_PARSE_OPTIONS = (</span>
+    <span class="s0">xmlparser.XML_PARSE_NOENT   |</span>
+    <span class="s0">xmlparser.XML_PARSE_NOCDATA |</span>
+    <span class="s0">xmlparser.XML_PARSE_NONET   |</span>
+    <span class="s0">xmlparser.XML_PARSE_COMPACT |</span>
+    <span class="s0">xmlparser.XML_PARSE_BIG_LINES</span>
+    <span class="s0">)</span>
+
+<span class="s0">cdef class XMLParser(_FeedParser):</span>
+    <span class="s0">&quot;&quot;&quot;XMLParser(self, encoding=None, attribute_defaults=False, dtd_validation=False, load_dtd=False, no_network=True, ns_clean=False, recover=False, schema: XMLSchema =None, huge_tree=False, remove_blank_text=False, resolve_entities=True, remove_comments=False, remove_pis=False, strip_cdata=True, collect_ids=True, target=None, compact=True)</span>
+
+    <span class="s0">The XML parser.</span>
+
+    <span class="s0">Parsers can be supplied as additional argument to various parse</span>
+    <span class="s0">functions of the lxml API.  A default parser is always available</span>
+    <span class="s0">and can be replaced by a call to the global function</span>
+    <span class="s0">'set_default_parser'.  New parsers can be created at any time</span>
+    <span class="s0">without a major run-time overhead.</span>
+
+    <span class="s0">The keyword arguments in the constructor are mainly based on the</span>
+    <span class="s0">libxml2 parser configuration.  A DTD will also be loaded if DTD</span>
+    <span class="s0">validation or attribute default values are requested (unless you</span>
+    <span class="s0">additionally provide an XMLSchema from which the default</span>
+    <span class="s0">attributes can be read).</span>
+
+    <span class="s0">Available boolean keyword arguments:</span>
+
+    <span class="s0">- attribute_defaults - inject default attributes from DTD or XMLSchema</span>
+    <span class="s0">- dtd_validation     - validate against a DTD referenced by the document</span>
+    <span class="s0">- load_dtd           - use DTD for parsing</span>
+    <span class="s0">- no_network         - prevent network access for related files (default: True)</span>
+    <span class="s0">- ns_clean           - clean up redundant namespace declarations</span>
+    <span class="s0">- recover            - try hard to parse through broken XML</span>
+    <span class="s0">- remove_blank_text  - discard blank text nodes that appear ignorable</span>
+    <span class="s0">- remove_comments    - discard comments</span>
+    <span class="s0">- remove_pis         - discard processing instructions</span>
+    <span class="s0">- strip_cdata        - replace CDATA sections by normal text content (default: True)</span>
+    <span class="s0">- compact            - save memory for short text content (default: True)</span>
+    <span class="s0">- collect_ids        - use a hash table of XML IDs for fast access (default: True, always True with DTD validation)</span>
+    <span class="s0">- huge_tree          - disable security restrictions and support very deep trees</span>
+                           <span class="s0">and very long text content (only affects libxml2 2.7+)</span>
+
+    <span class="s0">Other keyword arguments:</span>
+
+    <span class="s0">- resolve_entities - replace entities by their text value: False for keeping the</span>
+          <span class="s0">entity references, True for resolving them, and 'internal' for resolving</span>
+          <span class="s0">internal definitions only (no external file/URL access).</span>
+          <span class="s0">The default used to be True and was changed to 'internal' in lxml 5.0.</span>
+    <span class="s0">- encoding - override the document encoding (note: libiconv encoding name)</span>
+    <span class="s0">- target   - a parser target object that will receive the parse events</span>
+    <span class="s0">- schema   - an XMLSchema to validate against</span>
+
+    <span class="s0">Note that you should avoid sharing parsers between threads.  While this is</span>
+    <span class="s0">not harmful, it is more efficient to use separate parsers.  This does not</span>
+    <span class="s0">apply to the default parser.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, *, encoding=None, attribute_defaults=False,</span>
+                 <span class="s0">dtd_validation=False, load_dtd=False, no_network=True,</span>
+                 <span class="s0">ns_clean=False, recover=False, XMLSchema schema=None,</span>
+                 <span class="s0">huge_tree=False, remove_blank_text=False, resolve_entities='internal',</span>
+                 <span class="s0">remove_comments=False, remove_pis=False, strip_cdata=True,</span>
+                 <span class="s0">collect_ids=True, target=None, compact=True):</span>
+        <span class="s0">cdef int parse_options</span>
+        <span class="s0">cdef bint resolve_external = True</span>
+        <span class="s0">parse_options = _XML_DEFAULT_PARSE_OPTIONS</span>
+        <span class="s0">if load_dtd:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_DTDLOAD</span>
+        <span class="s0">if dtd_validation:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_DTDVALID | \</span>
+                            <span class="s0">xmlparser.XML_PARSE_DTDLOAD</span>
+        <span class="s0">if attribute_defaults:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_DTDATTR</span>
+            <span class="s0">if schema is None:</span>
+                <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_DTDLOAD</span>
+        <span class="s0">if ns_clean:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_NSCLEAN</span>
+        <span class="s0">if recover:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_RECOVER</span>
+        <span class="s0">if remove_blank_text:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_NOBLANKS</span>
+        <span class="s0">if huge_tree:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_HUGE</span>
+        <span class="s0">if not no_network:</span>
+            <span class="s0">parse_options = parse_options ^ xmlparser.XML_PARSE_NONET</span>
+        <span class="s0">if not compact:</span>
+            <span class="s0">parse_options = parse_options ^ xmlparser.XML_PARSE_COMPACT</span>
+        <span class="s0">if not resolve_entities:</span>
+            <span class="s0">parse_options = parse_options ^ xmlparser.XML_PARSE_NOENT</span>
+        <span class="s0">elif resolve_entities == 'internal':</span>
+            <span class="s0">resolve_external = False</span>
+        <span class="s0">if not strip_cdata:</span>
+            <span class="s0">parse_options = parse_options ^ xmlparser.XML_PARSE_NOCDATA</span>
+
+        <span class="s0">_BaseParser.__init__(self, parse_options, False, schema,</span>
+                             <span class="s0">remove_comments, remove_pis, strip_cdata,</span>
+                             <span class="s0">collect_ids, target, encoding, resolve_external)</span>
+
+
+<span class="s0">cdef class XMLPullParser(XMLParser):</span>
+    <span class="s0">&quot;&quot;&quot;XMLPullParser(self, events=None, *, tag=None, **kwargs)</span>
+
+    <span class="s0">XML parser that collects parse events in an iterator.</span>
+
+    <span class="s0">The collected events are the same as for iterparse(), but the</span>
+    <span class="s0">parser itself is non-blocking in the sense that it receives</span>
+    <span class="s0">data chunks incrementally through its .feed() method, instead</span>
+    <span class="s0">of reading them directly from a file(-like) object all by itself.</span>
+
+    <span class="s0">By default, it collects Element end events.  To change that,</span>
+    <span class="s0">pass any subset of the available events into the ``events``</span>
+    <span class="s0">argument: ``'start'``, ``'end'``, ``'start-ns'``,</span>
+    <span class="s0">``'end-ns'``, ``'comment'``, ``'pi'``.</span>
+
+    <span class="s0">To support loading external dependencies relative to the input</span>
+    <span class="s0">source, you can pass the ``base_url``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, events=None, *, tag=None, base_url=None, **kwargs):</span>
+        <span class="s0">XMLParser.__init__(self, **kwargs)</span>
+        <span class="s0">if events is None:</span>
+            <span class="s0">events = ('end',)</span>
+        <span class="s0">self._setBaseURL(base_url)</span>
+        <span class="s0">self._collectEvents(events, tag)</span>
+
+    <span class="s0">def read_events(self):</span>
+        <span class="s0">return (&lt;_SaxParserContext?&gt;self._getPushParserContext()).events_iterator</span>
+
+
+<span class="s0">cdef class ETCompatXMLParser(XMLParser):</span>
+    <span class="s0">&quot;&quot;&quot;ETCompatXMLParser(self, encoding=None, attribute_defaults=False, \</span>
+                 <span class="s0">dtd_validation=False, load_dtd=False, no_network=True, \</span>
+                 <span class="s0">ns_clean=False, recover=False, schema=None, \</span>
+                 <span class="s0">huge_tree=False, remove_blank_text=False, resolve_entities=True, \</span>
+                 <span class="s0">remove_comments=True, remove_pis=True, strip_cdata=True, \</span>
+                 <span class="s0">target=None, compact=True)</span>
+
+    <span class="s0">An XML parser with an ElementTree compatible default setup.</span>
+
+    <span class="s0">See the XMLParser class for details.</span>
+
+    <span class="s0">This parser has ``remove_comments`` and ``remove_pis`` enabled by default</span>
+    <span class="s0">and thus ignores comments and processing instructions.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, *, encoding=None, attribute_defaults=False,</span>
+                 <span class="s0">dtd_validation=False, load_dtd=False, no_network=True,</span>
+                 <span class="s0">ns_clean=False, recover=False, schema=None,</span>
+                 <span class="s0">huge_tree=False, remove_blank_text=False, resolve_entities=True,</span>
+                 <span class="s0">remove_comments=True, remove_pis=True, strip_cdata=True,</span>
+                 <span class="s0">target=None, compact=True):</span>
+        <span class="s0">XMLParser.__init__(self,</span>
+                           <span class="s0">attribute_defaults=attribute_defaults,</span>
+                           <span class="s0">dtd_validation=dtd_validation,</span>
+                           <span class="s0">load_dtd=load_dtd,</span>
+                           <span class="s0">no_network=no_network,</span>
+                           <span class="s0">ns_clean=ns_clean,</span>
+                           <span class="s0">recover=recover,</span>
+                           <span class="s0">remove_blank_text=remove_blank_text,</span>
+                           <span class="s0">huge_tree=huge_tree,</span>
+                           <span class="s0">compact=compact,</span>
+                           <span class="s0">resolve_entities=resolve_entities,</span>
+                           <span class="s0">remove_comments=remove_comments,</span>
+                           <span class="s0">remove_pis=remove_pis,</span>
+                           <span class="s0">strip_cdata=strip_cdata,</span>
+                           <span class="s0">target=target,</span>
+                           <span class="s0">encoding=encoding,</span>
+                           <span class="s0">schema=schema)</span>
+
+<span class="s0"># ET 1.2 compatible name</span>
+<span class="s0">XMLTreeBuilder = ETCompatXMLParser</span>
+
+
+<span class="s0">cdef XMLParser __DEFAULT_XML_PARSER</span>
+<span class="s0">__DEFAULT_XML_PARSER = XMLParser()</span>
+
+<span class="s0">__GLOBAL_PARSER_CONTEXT.setDefaultParser(__DEFAULT_XML_PARSER)</span>
+
+<span class="s0">def set_default_parser(_BaseParser parser=None):</span>
+    <span class="s0">&quot;&quot;&quot;set_default_parser(parser=None)</span>
+
+    <span class="s0">Set a default parser for the current thread.  This parser is used</span>
+    <span class="s0">globally whenever no parser is supplied to the various parse functions of</span>
+    <span class="s0">the lxml API.  If this function is called without a parser (or if it is</span>
+    <span class="s0">None), the default parser is reset to the original configuration.</span>
+
+    <span class="s0">Note that the pre-installed default parser is not thread-safe.  Avoid the</span>
+    <span class="s0">default parser in multi-threaded environments.  You can create a separate</span>
+    <span class="s0">parser for each thread explicitly or use a parser pool.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = __DEFAULT_XML_PARSER</span>
+    <span class="s0">__GLOBAL_PARSER_CONTEXT.setDefaultParser(parser)</span>
+
+<span class="s0">def get_default_parser():</span>
+    <span class="s0">&quot;get_default_parser()&quot;</span>
+    <span class="s0">return __GLOBAL_PARSER_CONTEXT.getDefaultParser()</span>
+
+<span class="s0">############################################################</span>
+<span class="s0">## HTML parser</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef int _HTML_DEFAULT_PARSE_OPTIONS</span>
+<span class="s0">_HTML_DEFAULT_PARSE_OPTIONS = (</span>
+    <span class="s0">htmlparser.HTML_PARSE_RECOVER |</span>
+    <span class="s0">htmlparser.HTML_PARSE_NONET   |</span>
+    <span class="s0">htmlparser.HTML_PARSE_COMPACT</span>
+    <span class="s0">)</span>
+
+<span class="s0">cdef object _UNUSED = object()</span>
+
+<span class="s0">cdef class HTMLParser(_FeedParser):</span>
+    <span class="s0">&quot;&quot;&quot;HTMLParser(self, encoding=None, remove_blank_text=False, \</span>
+                   <span class="s0">remove_comments=False, remove_pis=False, \</span>
+                   <span class="s0">no_network=True, target=None, schema: XMLSchema =None, \</span>
+                   <span class="s0">recover=True, compact=True, collect_ids=True, huge_tree=False)</span>
+
+    <span class="s0">The HTML parser.</span>
+
+    <span class="s0">This parser allows reading HTML into a normal XML tree.  By</span>
+    <span class="s0">default, it can read broken (non well-formed) HTML, depending on</span>
+    <span class="s0">the capabilities of libxml2.  Use the 'recover' option to switch</span>
+    <span class="s0">this off.</span>
+
+    <span class="s0">Available boolean keyword arguments:</span>
+
+    <span class="s0">- recover            - try hard to parse through broken HTML (default: True)</span>
+    <span class="s0">- no_network         - prevent network access for related files (default: True)</span>
+    <span class="s0">- remove_blank_text  - discard empty text nodes that are ignorable (i.e. not actual text content)</span>
+    <span class="s0">- remove_comments    - discard comments</span>
+    <span class="s0">- remove_pis         - discard processing instructions</span>
+    <span class="s0">- compact            - save memory for short text content (default: True)</span>
+    <span class="s0">- default_doctype    - add a default doctype even if it is not found in the HTML (default: True)</span>
+    <span class="s0">- collect_ids        - use a hash table of XML IDs for fast access (default: True)</span>
+    <span class="s0">- huge_tree          - disable security restrictions and support very deep trees</span>
+                           <span class="s0">and very long text content (only affects libxml2 2.7+)</span>
+
+    <span class="s0">Other keyword arguments:</span>
+
+    <span class="s0">- encoding - override the document encoding (note: libiconv encoding name)</span>
+    <span class="s0">- target   - a parser target object that will receive the parse events</span>
+    <span class="s0">- schema   - an XMLSchema to validate against</span>
+
+    <span class="s0">Note that you should avoid sharing parsers between threads for performance</span>
+    <span class="s0">reasons.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, *, encoding=None, remove_blank_text=False,</span>
+                 <span class="s0">remove_comments=False, remove_pis=False, strip_cdata=_UNUSED,</span>
+                 <span class="s0">no_network=True, target=None, XMLSchema schema=None,</span>
+                 <span class="s0">recover=True, compact=True, default_doctype=True,</span>
+                 <span class="s0">collect_ids=True, huge_tree=False):</span>
+        <span class="s0">cdef int parse_options</span>
+        <span class="s0">parse_options = _HTML_DEFAULT_PARSE_OPTIONS</span>
+        <span class="s0">if remove_blank_text:</span>
+            <span class="s0">parse_options = parse_options | htmlparser.HTML_PARSE_NOBLANKS</span>
+        <span class="s0">if not recover:</span>
+            <span class="s0">parse_options = parse_options ^ htmlparser.HTML_PARSE_RECOVER</span>
+        <span class="s0">if not no_network:</span>
+            <span class="s0">parse_options = parse_options ^ htmlparser.HTML_PARSE_NONET</span>
+        <span class="s0">if not compact:</span>
+            <span class="s0">parse_options = parse_options ^ htmlparser.HTML_PARSE_COMPACT</span>
+        <span class="s0">if not default_doctype:</span>
+            <span class="s0">parse_options = parse_options ^ htmlparser.HTML_PARSE_NODEFDTD</span>
+        <span class="s0">if huge_tree:</span>
+            <span class="s0">parse_options = parse_options | xmlparser.XML_PARSE_HUGE</span>
+
+        <span class="s0">if strip_cdata is not _UNUSED:</span>
+            <span class="s0">import warnings</span>
+            <span class="s0">warnings.warn(</span>
+                <span class="s0">&quot;The 'strip_cdata' option of HTMLParser() has never done anything and will eventually be removed.&quot;,</span>
+                <span class="s0">DeprecationWarning)</span>
+        <span class="s0">_BaseParser.__init__(self, parse_options, True, schema,</span>
+                             <span class="s0">remove_comments, remove_pis, strip_cdata,</span>
+                             <span class="s0">collect_ids, target, encoding)</span>
+
+
+<span class="s0">cdef HTMLParser __DEFAULT_HTML_PARSER</span>
+<span class="s0">__DEFAULT_HTML_PARSER = HTMLParser()</span>
+
+
+<span class="s0">cdef class HTMLPullParser(HTMLParser):</span>
+    <span class="s0">&quot;&quot;&quot;HTMLPullParser(self, events=None, *, tag=None, base_url=None, **kwargs)</span>
+
+    <span class="s0">HTML parser that collects parse events in an iterator.</span>
+
+    <span class="s0">The collected events are the same as for iterparse(), but the</span>
+    <span class="s0">parser itself is non-blocking in the sense that it receives</span>
+    <span class="s0">data chunks incrementally through its .feed() method, instead</span>
+    <span class="s0">of reading them directly from a file(-like) object all by itself.</span>
+
+    <span class="s0">By default, it collects Element end events.  To change that,</span>
+    <span class="s0">pass any subset of the available events into the ``events``</span>
+    <span class="s0">argument: ``'start'``, ``'end'``, ``'start-ns'``,</span>
+    <span class="s0">``'end-ns'``, ``'comment'``, ``'pi'``.</span>
+
+    <span class="s0">To support loading external dependencies relative to the input</span>
+    <span class="s0">source, you can pass the ``base_url``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, events=None, *, tag=None, base_url=None, **kwargs):</span>
+        <span class="s0">HTMLParser.__init__(self, **kwargs)</span>
+        <span class="s0">if events is None:</span>
+            <span class="s0">events = ('end',)</span>
+        <span class="s0">self._setBaseURL(base_url)</span>
+        <span class="s0">self._collectEvents(events, tag)</span>
+
+    <span class="s0">def read_events(self):</span>
+        <span class="s0">return (&lt;_SaxParserContext?&gt;self._getPushParserContext()).events_iterator</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## helper functions for document creation</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef xmlDoc* _parseDoc(text, filename, _BaseParser parser) except NULL:</span>
+    <span class="s0">cdef char* c_filename</span>
+    <span class="s0">cdef char* c_text</span>
+    <span class="s0">cdef Py_ssize_t c_len</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = __GLOBAL_PARSER_CONTEXT.getDefaultParser()</span>
+    <span class="s0">if not filename:</span>
+        <span class="s0">c_filename = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">filename_utf = _encodeFilenameUTF8(filename)</span>
+        <span class="s0">c_filename = _cstr(filename_utf)</span>
+    <span class="s0">if isinstance(text, unicode):</span>
+        <span class="s0">if python.PyUnicode_IS_READY(text):</span>
+            <span class="s0"># PEP-393 Unicode string</span>
+            <span class="s0">c_len = python.PyUnicode_GET_LENGTH(text) * python.PyUnicode_KIND(text)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># old Py_UNICODE string</span>
+            <span class="s0">c_len = python.PyUnicode_GET_DATA_SIZE(text)</span>
+        <span class="s0">if c_len &gt; limits.INT_MAX:</span>
+            <span class="s0">return (&lt;_BaseParser&gt;parser)._parseDocFromFilelike(</span>
+                <span class="s0">StringIO(text), filename, None)</span>
+        <span class="s0">return (&lt;_BaseParser&gt;parser)._parseUnicodeDoc(text, c_filename)</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_len = python.PyBytes_GET_SIZE(text)</span>
+        <span class="s0">if c_len &gt; limits.INT_MAX:</span>
+            <span class="s0">return (&lt;_BaseParser&gt;parser)._parseDocFromFilelike(</span>
+                <span class="s0">BytesIO(text), filename, None)</span>
+        <span class="s0">c_text = _cstr(text)</span>
+        <span class="s0">return (&lt;_BaseParser&gt;parser)._parseDoc(c_text, c_len, c_filename)</span>
+
+<span class="s0">cdef xmlDoc* _parseDocFromFile(filename8, _BaseParser parser) except NULL:</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = __GLOBAL_PARSER_CONTEXT.getDefaultParser()</span>
+    <span class="s0">return (&lt;_BaseParser&gt;parser)._parseDocFromFile(_cstr(filename8))</span>
+
+<span class="s0">cdef xmlDoc* _parseDocFromFilelike(source, filename,</span>
+                                   <span class="s0">_BaseParser parser) except NULL:</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = __GLOBAL_PARSER_CONTEXT.getDefaultParser()</span>
+    <span class="s0">return (&lt;_BaseParser&gt;parser)._parseDocFromFilelike(source, filename, None)</span>
+
+<span class="s0">cdef xmlDoc* _newXMLDoc() except NULL:</span>
+    <span class="s0">cdef xmlDoc* result</span>
+    <span class="s0">result = tree.xmlNewDoc(NULL)</span>
+    <span class="s0">if result is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">if result.encoding is NULL:</span>
+        <span class="s0">result.encoding = tree.xmlStrdup(&lt;unsigned char*&gt;&quot;UTF-8&quot;)</span>
+    <span class="s0">__GLOBAL_PARSER_CONTEXT.initDocDict(result)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef xmlDoc* _newHTMLDoc() except NULL:</span>
+    <span class="s0">cdef xmlDoc* result</span>
+    <span class="s0">result = tree.htmlNewDoc(NULL, NULL)</span>
+    <span class="s0">if result is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">__GLOBAL_PARSER_CONTEXT.initDocDict(result)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef xmlDoc* _copyDoc(xmlDoc* c_doc, int recursive) except NULL:</span>
+    <span class="s0">cdef xmlDoc* result</span>
+    <span class="s0">if recursive:</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">result = tree.xmlCopyDoc(c_doc, recursive)</span>
+    <span class="s0">else:</span>
+        <span class="s0">result = tree.xmlCopyDoc(c_doc, 0)</span>
+    <span class="s0">if result is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">__GLOBAL_PARSER_CONTEXT.initDocDict(result)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef xmlDoc* _copyDocRoot(xmlDoc* c_doc, xmlNode* c_new_root) except NULL:</span>
+    <span class="s0">&quot;Recursively copy the document and make c_new_root the new root node.&quot;</span>
+    <span class="s0">cdef xmlDoc* result</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">result = tree.xmlCopyDoc(c_doc, 0) # non recursive</span>
+    <span class="s0">__GLOBAL_PARSER_CONTEXT.initDocDict(result)</span>
+    <span class="s0">with nogil:</span>
+        <span class="s0">c_node = tree.xmlDocCopyNode(c_new_root, result, 1) # recursive</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">tree.xmlDocSetRootElement(result, c_node)</span>
+    <span class="s0">_copyTail(c_new_root.next, c_node)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef xmlNode* _copyNodeToDoc(xmlNode* c_node, xmlDoc* c_doc) except NULL:</span>
+    <span class="s0">&quot;Recursively copy the element into the document. c_doc is not modified.&quot;</span>
+    <span class="s0">cdef xmlNode* c_root</span>
+    <span class="s0">c_root = tree.xmlDocCopyNode(c_node, c_doc, 1) # recursive</span>
+    <span class="s0">if c_root is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">_copyTail(c_node.next, c_root)</span>
+    <span class="s0">return c_root</span>
+
+
+<span class="s0">############################################################</span>
+<span class="s0">## API level helper functions for _Document creation</span>
+<span class="s0">############################################################</span>
+
+<span class="s0">cdef _Document _parseDocument(source, _BaseParser parser, base_url):</span>
+    <span class="s0">cdef _Document doc</span>
+    <span class="s0">source = _getFSPathOrObject(source)</span>
+    <span class="s0">if _isString(source):</span>
+        <span class="s0"># parse the file directly from the filesystem</span>
+        <span class="s0">doc = _parseDocumentFromURL(_encodeFilename(source), parser)</span>
+        <span class="s0"># fix base URL if requested</span>
+        <span class="s0">if base_url is not None:</span>
+            <span class="s0">base_url = _encodeFilenameUTF8(base_url)</span>
+            <span class="s0">if doc._c_doc.URL is not NULL:</span>
+                <span class="s0">tree.xmlFree(&lt;char*&gt;doc._c_doc.URL)</span>
+            <span class="s0">doc._c_doc.URL = tree.xmlStrdup(_xcstr(base_url))</span>
+        <span class="s0">return doc</span>
+
+    <span class="s0">if base_url is not None:</span>
+        <span class="s0">url = base_url</span>
+    <span class="s0">else:</span>
+        <span class="s0">url = _getFilenameForFile(source)</span>
+
+    <span class="s0">if hasattr(source, 'getvalue') and hasattr(source, 'tell'):</span>
+        <span class="s0"># StringIO - reading from start?</span>
+        <span class="s0">if source.tell() == 0:</span>
+            <span class="s0">return _parseMemoryDocument(source.getvalue(), url, parser)</span>
+
+    <span class="s0"># Support for file-like objects (urlgrabber.urlopen, ...)</span>
+    <span class="s0">if hasattr(source, 'read'):</span>
+        <span class="s0">return _parseFilelikeDocument(source, url, parser)</span>
+
+    <span class="s0">raise TypeError, f&quot;cannot parse from '{python._fqtypename(source).decode('UTF-8')}'&quot;</span>
+
+<span class="s0">cdef _Document _parseDocumentFromURL(url, _BaseParser parser):</span>
+    <span class="s0">c_doc = _parseDocFromFile(url, parser)</span>
+    <span class="s0">return _documentFactory(c_doc, parser)</span>
+
+<span class="s0">cdef _Document _parseMemoryDocument(text, url, _BaseParser parser):</span>
+    <span class="s0">if isinstance(text, unicode):</span>
+        <span class="s0">if _hasEncodingDeclaration(text):</span>
+            <span class="s0">raise ValueError(</span>
+                <span class="s0">&quot;Unicode strings with encoding declaration are not supported. &quot;</span>
+                <span class="s0">&quot;Please use bytes input or XML fragments without declaration.&quot;)</span>
+    <span class="s0">elif not isinstance(text, bytes):</span>
+        <span class="s0">raise ValueError, &quot;can only parse strings&quot;</span>
+    <span class="s0">c_doc = _parseDoc(text, url, parser)</span>
+    <span class="s0">return _documentFactory(c_doc, parser)</span>
+
+<span class="s0">cdef _Document _parseFilelikeDocument(source, url, _BaseParser parser):</span>
+    <span class="s0">c_doc = _parseDocFromFilelike(source, url, parser)</span>
+    <span class="s0">return _documentFactory(c_doc, parser)</span>
+</pre>
+</body>
+</html>

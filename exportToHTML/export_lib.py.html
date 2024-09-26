@@ -1,0 +1,873 @@
+<html>
+<head>
+<title>export_lib.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+export_lib.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Library for exporting inference-only Keras models/layers.&quot;&quot;&quot;</span>
+
+<span class="s2">import </span><span class="s1">inspect</span>
+<span class="s2">import </span><span class="s1">itertools</span>
+<span class="s2">import </span><span class="s1">string</span>
+
+<span class="s2">from </span><span class="s1">absl </span><span class="s2">import </span><span class="s1">logging</span>
+
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">backend</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">tree</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">api_export </span><span class="s2">import </span><span class="s1">keras_export</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">.</span><span class="s1">common</span><span class="s3">.</span><span class="s1">stateless_scope </span><span class="s2">import </span><span class="s1">StatelessScope</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers </span><span class="s2">import </span><span class="s1">Layer</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">models </span><span class="s2">import </span><span class="s1">Functional</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">models </span><span class="s2">import </span><span class="s1">Sequential</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils </span><span class="s2">import </span><span class="s1">io_utils</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils</span><span class="s3">.</span><span class="s1">module_utils </span><span class="s2">import </span><span class="s1">tensorflow </span><span class="s2">as </span><span class="s1">tf</span>
+
+
+<span class="s3">@</span><span class="s1">keras_export</span><span class="s3">(</span><span class="s4">&quot;keras.export.ExportArchive&quot;</span><span class="s3">)</span>
+<span class="s2">class </span><span class="s1">ExportArchive</span><span class="s3">:</span>
+    <span class="s0">&quot;&quot;&quot;ExportArchive is used to write SavedModel artifacts (e.g. for inference). 
+ 
+    If you have a Keras model or layer that you want to export as SavedModel for 
+    serving (e.g. via TensorFlow-Serving), you can use `ExportArchive` 
+    to configure the different serving endpoints you need to make available, 
+    as well as their signatures. Simply instantiate an `ExportArchive`, 
+    use `track()` to register the layer(s) or model(s) to be used, 
+    then use the `add_endpoint()` method to register a new serving endpoint. 
+    When done, use the `write_out()` method to save the artifact. 
+ 
+    The resulting artifact is a SavedModel and can be reloaded via 
+    `tf.saved_model.load`. 
+ 
+    Examples: 
+ 
+    Here's how to export a model for inference. 
+ 
+    ```python 
+    export_archive = ExportArchive() 
+    export_archive.track(model) 
+    export_archive.add_endpoint( 
+        name=&quot;serve&quot;, 
+        fn=model.call, 
+        input_signature=[tf.TensorSpec(shape=(None, 3), dtype=tf.float32)], 
+    ) 
+    export_archive.write_out(&quot;path/to/location&quot;) 
+ 
+    # Elsewhere, we can reload the artifact and serve it. 
+    # The endpoint we added is available as a method: 
+    serving_model = tf.saved_model.load(&quot;path/to/location&quot;) 
+    outputs = serving_model.serve(inputs) 
+    ``` 
+ 
+    Here's how to export a model with one endpoint for inference and one 
+    endpoint for a training-mode forward pass (e.g. with dropout on). 
+ 
+    ```python 
+    export_archive = ExportArchive() 
+    export_archive.track(model) 
+    export_archive.add_endpoint( 
+        name=&quot;call_inference&quot;, 
+        fn=lambda x: model.call(x, training=False), 
+        input_signature=[tf.TensorSpec(shape=(None, 3), dtype=tf.float32)], 
+    ) 
+    export_archive.add_endpoint( 
+        name=&quot;call_training&quot;, 
+        fn=lambda x: model.call(x, training=True), 
+        input_signature=[tf.TensorSpec(shape=(None, 3), dtype=tf.float32)], 
+    ) 
+    export_archive.write_out(&quot;path/to/location&quot;) 
+    ``` 
+ 
+    **Note on resource tracking:** 
+ 
+    `ExportArchive` is able to automatically track all `tf.Variables` used 
+    by its endpoints, so most of the time calling `.track(model)` 
+    is not strictly required. However, if your model uses lookup layers such 
+    as `IntegerLookup`, `StringLookup`, or `TextVectorization`, 
+    it will need to be tracked explicitly via `.track(model)`. 
+ 
+    Explicit tracking is also required if you need to be able to access 
+    the properties `variables`, `trainable_variables`, or 
+    `non_trainable_variables` on the revived archive. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names </span><span class="s3">= []</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_signatures </span><span class="s3">= {}</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">tensorflow_version </span><span class="s3">= </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">__version__</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable </span><span class="s3">= </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">__internal__</span><span class="s3">.</span><span class="s1">tracking</span><span class="s3">.</span><span class="s1">AutoTrackable</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">variables </span><span class="s3">= []</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">trainable_variables </span><span class="s3">= []</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">non_trainable_variables </span><span class="s3">= []</span>
+
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;jax&quot;</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_variables </span><span class="s3">= []</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_trainable_variables </span><span class="s3">= []</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_non_trainable_variables </span><span class="s3">= []</span>
+
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() </span><span class="s2">not in </span><span class="s3">(</span><span class="s4">&quot;tensorflow&quot;</span><span class="s3">, </span><span class="s4">&quot;jax&quot;</span><span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">(</span>
+                <span class="s4">&quot;The export API is only compatible with JAX and TF backends.&quot;</span>
+            <span class="s3">)</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">variables</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">variables</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">trainable_variables</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">trainable_variables</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">non_trainable_variables</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">non_trainable_variables</span>
+
+    <span class="s2">def </span><span class="s1">track</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">resource</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Track the variables (and other assets) of a layer or model. 
+ 
+        By default, all variables used by an endpoint function 
+        are automatically tracked when you call `add_endpoint()`. 
+        However, non-variables assets such as lookup tables 
+        need to be tracked manually. Note that lookup tables 
+        used by built-in Keras layers 
+        (`TextVectorization`, `IntegerLookup`, `StringLookup`) 
+        are automatically tracked in `add_endpoint()`. 
+ 
+        Arguments: 
+            resource: A trackable TensorFlow resource. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;tensorflow&quot; </span><span class="s2">and not </span><span class="s1">isinstance</span><span class="s3">(</span>
+            <span class="s1">resource</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">__internal__</span><span class="s3">.</span><span class="s1">tracking</span><span class="s3">.</span><span class="s1">Trackable</span>
+        <span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;Invalid resource type. Expected an instance of a &quot;</span>
+                <span class="s4">&quot;TensorFlow `Trackable` (such as a Keras `Layer` or `Model`). &quot;</span>
+                <span class="s4">f&quot;Received instead an object of type '</span><span class="s2">{</span><span class="s1">type</span><span class="s3">(</span><span class="s1">resource</span><span class="s3">)</span><span class="s2">}</span><span class="s4">'. &quot;</span>
+                <span class="s4">f&quot;Object received: </span><span class="s2">{</span><span class="s1">resource</span><span class="s2">}</span><span class="s4">&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;jax&quot; </span><span class="s2">and not </span><span class="s1">isinstance</span><span class="s3">(</span>
+            <span class="s1">resource</span><span class="s3">, </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">jax</span><span class="s3">.</span><span class="s1">layer</span><span class="s3">.</span><span class="s1">JaxLayer</span>
+        <span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;Invalid resource type. Expected an instance of a &quot;</span>
+                <span class="s4">&quot;JAX-based Keras `Layer` or `Model`. &quot;</span>
+                <span class="s4">f&quot;Received instead an object of type '</span><span class="s2">{</span><span class="s1">type</span><span class="s3">(</span><span class="s1">resource</span><span class="s3">)</span><span class="s2">}</span><span class="s4">'. &quot;</span>
+                <span class="s4">f&quot;Object received: </span><span class="s2">{</span><span class="s1">resource</span><span class="s2">}</span><span class="s4">&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">resource</span><span class="s3">, </span><span class="s1">Layer</span><span class="s3">):</span>
+            <span class="s2">if not </span><span class="s1">resource</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                    <span class="s4">&quot;The layer provided has not yet been built. &quot;</span>
+                    <span class="s4">&quot;It must be built before export.&quot;</span>
+                <span class="s3">)</span>
+
+        <span class="s5"># Layers in `_tracked` are not part of the trackables that get saved,</span>
+        <span class="s5"># because we're creating the attribute in a</span>
+        <span class="s5"># no_automatic_dependency_tracking scope.</span>
+        <span class="s2">if not </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s4">&quot;_tracked&quot;</span><span class="s3">):</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_tracked </span><span class="s3">= []</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tracked</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">resource</span><span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">resource</span><span class="s3">, </span><span class="s1">Layer</span><span class="s3">):</span>
+            <span class="s5"># Variables in the lists below are actually part of the trackables</span>
+            <span class="s5"># that get saved, because the lists are created in __init__.</span>
+            <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;jax&quot;</span><span class="s3">:</span>
+
+                <span class="s1">trainable_variables </span><span class="s3">= </span><span class="s1">tree</span><span class="s3">.</span><span class="s1">flatten</span><span class="s3">(</span><span class="s1">resource</span><span class="s3">.</span><span class="s1">trainable_variables</span><span class="s3">)</span>
+                <span class="s1">non_trainable_variables </span><span class="s3">= </span><span class="s1">tree</span><span class="s3">.</span><span class="s1">flatten</span><span class="s3">(</span>
+                    <span class="s1">resource</span><span class="s3">.</span><span class="s1">non_trainable_variables</span>
+                <span class="s3">)</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_trainable_variables </span><span class="s3">+= </span><span class="s1">trainable_variables</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_non_trainable_variables </span><span class="s3">+= </span><span class="s1">non_trainable_variables</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_variables </span><span class="s3">= (</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_trainable_variables</span>
+                    <span class="s3">+ </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_non_trainable_variables</span>
+                <span class="s3">)</span>
+
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">trainable_variables </span><span class="s3">+= [</span>
+                    <span class="s1">tf</span><span class="s3">.</span><span class="s1">Variable</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">trainable_variables</span>
+                <span class="s3">]</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">non_trainable_variables </span><span class="s3">+= [</span>
+                    <span class="s1">tf</span><span class="s3">.</span><span class="s1">Variable</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">non_trainable_variables</span>
+                <span class="s3">]</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">variables </span><span class="s3">= (</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">trainable_variables</span>
+                    <span class="s3">+ </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">non_trainable_variables</span>
+                <span class="s3">)</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">variables </span><span class="s3">+= </span><span class="s1">resource</span><span class="s3">.</span><span class="s1">variables</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">trainable_variables </span><span class="s3">+= (</span>
+                    <span class="s1">resource</span><span class="s3">.</span><span class="s1">trainable_variables</span>
+                <span class="s3">)</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">non_trainable_variables </span><span class="s3">+= (</span>
+                    <span class="s1">resource</span><span class="s3">.</span><span class="s1">non_trainable_variables</span>
+                <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">add_endpoint</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">fn</span><span class="s3">, </span><span class="s1">input_signature</span><span class="s3">=</span><span class="s2">None</span><span class="s3">, </span><span class="s1">jax2tf_kwargs</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Register a new serving endpoint. 
+ 
+        Arguments: 
+            name: Str, name of the endpoint. 
+            fn: A function. It should only leverage resources 
+                (e.g. `tf.Variable` objects or `tf.lookup.StaticHashTable` 
+                objects) that are available on the models/layers 
+                tracked by the `ExportArchive` (you can call `.track(model)` 
+                to track a new model). 
+                The shape and dtype of the inputs to the function must be 
+                known. For that purpose, you can either 1) make sure that 
+                `fn` is a `tf.function` that has been called at least once, or 
+                2) provide an `input_signature` argument that specifies the 
+                shape and dtype of the inputs (see below). 
+            input_signature: Used to specify the shape and dtype of the 
+                inputs to `fn`. List of `tf.TensorSpec` objects (one 
+                per positional input argument of `fn`). Nested arguments are 
+                allowed (see below for an example showing a Functional model 
+                with 2 input arguments). 
+            jax2tf_kwargs: Optional. A dict for arguments to pass to `jax2tf`. 
+                Supported only when the backend is JAX. See documentation for 
+                [`jax2tf.convert`]( 
+                    https://github.com/google/jax/blob/main/jax/experimental/jax2tf/README.md). 
+                The values for `native_serialization` and `polymorphic_shapes`, 
+                if not provided, are automatically computed. 
+ 
+        Returns: 
+            The `tf.function` wrapping `fn` that was added to the archive. 
+ 
+        Example: 
+ 
+        Adding an endpoint using the `input_signature` argument when the 
+        model has a single input argument: 
+ 
+        ```python 
+        export_archive = ExportArchive() 
+        export_archive.track(model) 
+        export_archive.add_endpoint( 
+            name=&quot;serve&quot;, 
+            fn=model.call, 
+            input_signature=[tf.TensorSpec(shape=(None, 3), dtype=tf.float32)], 
+        ) 
+        ``` 
+ 
+        Adding an endpoint using the `input_signature` argument when the 
+        model has two positional input arguments: 
+ 
+        ```python 
+        export_archive = ExportArchive() 
+        export_archive.track(model) 
+        export_archive.add_endpoint( 
+            name=&quot;serve&quot;, 
+            fn=model.call, 
+            input_signature=[ 
+                tf.TensorSpec(shape=(None, 3), dtype=tf.float32), 
+                tf.TensorSpec(shape=(None, 4), dtype=tf.float32), 
+            ], 
+        ) 
+        ``` 
+ 
+        Adding an endpoint using the `input_signature` argument when the 
+        model has one input argument that is a list of 2 tensors (e.g. 
+        a Functional model with 2 inputs): 
+ 
+        ```python 
+        model = keras.Model(inputs=[x1, x2], outputs=outputs) 
+ 
+        export_archive = ExportArchive() 
+        export_archive.track(model) 
+        export_archive.add_endpoint( 
+            name=&quot;serve&quot;, 
+            fn=model.call, 
+            input_signature=[ 
+                [ 
+                    tf.TensorSpec(shape=(None, 3), dtype=tf.float32), 
+                    tf.TensorSpec(shape=(None, 4), dtype=tf.float32), 
+                ], 
+            ], 
+        ) 
+        ``` 
+ 
+        This also works with dictionary inputs: 
+ 
+        ```python 
+        model = keras.Model(inputs={&quot;x1&quot;: x1, &quot;x2&quot;: x2}, outputs=outputs) 
+ 
+        export_archive = ExportArchive() 
+        export_archive.track(model) 
+        export_archive.add_endpoint( 
+            name=&quot;serve&quot;, 
+            fn=model.call, 
+            input_signature=[ 
+                { 
+                    &quot;x1&quot;: tf.TensorSpec(shape=(None, 3), dtype=tf.float32), 
+                    &quot;x2&quot;: tf.TensorSpec(shape=(None, 4), dtype=tf.float32), 
+                }, 
+            ], 
+        ) 
+        ``` 
+ 
+        Adding an endpoint that is a `tf.function`: 
+ 
+        ```python 
+        @tf.function() 
+        def serving_fn(x): 
+            return model(x) 
+ 
+        # The function must be traced, i.e. it must be called at least once. 
+        serving_fn(tf.random.normal(shape=(2, 3))) 
+ 
+        export_archive = ExportArchive() 
+        export_archive.track(model) 
+        export_archive.add_endpoint(name=&quot;serve&quot;, fn=serving_fn) 
+        ``` 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">name </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span><span class="s4">f&quot;Endpoint name '</span><span class="s2">{</span><span class="s1">name</span><span class="s2">}</span><span class="s4">' is already taken.&quot;</span><span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">jax2tf_kwargs </span><span class="s2">and </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() != </span><span class="s4">&quot;jax&quot;</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;'jax2tf_kwargs' is only supported with the jax backend. &quot;</span>
+                <span class="s4">f&quot;Current backend: </span><span class="s2">{</span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">()</span><span class="s2">}</span><span class="s4">&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">input_signature</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;tensorflow&quot;</span><span class="s3">:</span>
+                <span class="s1">decorated_fn </span><span class="s3">= </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">function</span><span class="s3">(</span>
+                    <span class="s1">fn</span><span class="s3">, </span><span class="s1">input_signature</span><span class="s3">=</span><span class="s1">input_signature</span><span class="s3">, </span><span class="s1">autograph</span><span class="s3">=</span><span class="s2">False</span>
+                <span class="s3">)</span>
+            <span class="s2">else</span><span class="s3">:  </span><span class="s5"># JAX backend</span>
+
+                <span class="s5"># 1. Create a stateless wrapper for `fn`</span>
+                <span class="s5"># 2. jax2tf the stateless wrapper</span>
+                <span class="s5"># 3. Create a stateful function that binds the variables with</span>
+                <span class="s5">#    the jax2tf converted stateless wrapper</span>
+                <span class="s5"># 4. Make the signature of the stateful function the same as the</span>
+                <span class="s5">#    original function</span>
+                <span class="s5"># 5. Wrap in a `tf.function`</span>
+                <span class="s2">def </span><span class="s1">stateless_fn</span><span class="s3">(</span><span class="s1">variables</span><span class="s3">, *</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+                    <span class="s1">state_mapping </span><span class="s3">= </span><span class="s1">zip</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_variables</span><span class="s3">, </span><span class="s1">variables</span><span class="s3">)</span>
+                    <span class="s2">with </span><span class="s1">StatelessScope</span><span class="s3">(</span><span class="s1">state_mapping</span><span class="s3">=</span><span class="s1">state_mapping</span><span class="s3">) </span><span class="s2">as </span><span class="s1">scope</span><span class="s3">:</span>
+                        <span class="s1">output </span><span class="s3">= </span><span class="s1">fn</span><span class="s3">(*</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+
+                    <span class="s5"># Gather updated non-trainable variables</span>
+                    <span class="s1">non_trainable_variables </span><span class="s3">= []</span>
+                    <span class="s2">for </span><span class="s1">var </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_non_trainable_variables</span><span class="s3">:</span>
+                        <span class="s1">new_value </span><span class="s3">= </span><span class="s1">scope</span><span class="s3">.</span><span class="s1">get_current_value</span><span class="s3">(</span><span class="s1">var</span><span class="s3">)</span>
+                        <span class="s1">non_trainable_variables</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">new_value</span><span class="s3">)</span>
+                    <span class="s2">return </span><span class="s1">output</span><span class="s3">, </span><span class="s1">non_trainable_variables</span>
+
+                <span class="s1">jax2tf_stateless_fn </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_convert_jax2tf_function</span><span class="s3">(</span>
+                    <span class="s1">stateless_fn</span><span class="s3">,</span>
+                    <span class="s1">input_signature</span><span class="s3">,</span>
+                    <span class="s1">jax2tf_kwargs</span><span class="s3">=</span><span class="s1">jax2tf_kwargs</span><span class="s3">,</span>
+                <span class="s3">)</span>
+
+                <span class="s2">def </span><span class="s1">stateful_fn</span><span class="s3">(*</span><span class="s1">args</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+                    <span class="s1">output</span><span class="s3">, </span><span class="s1">non_trainable_variables </span><span class="s3">= </span><span class="s1">jax2tf_stateless_fn</span><span class="s3">(</span>
+                        <span class="s5"># Change the trackable `ListWrapper` to a plain `list`</span>
+                        <span class="s1">list</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">variables</span><span class="s3">),</span>
+                        <span class="s3">*</span><span class="s1">args</span><span class="s3">,</span>
+                        <span class="s3">**</span><span class="s1">kwargs</span><span class="s3">,</span>
+                    <span class="s3">)</span>
+                    <span class="s2">for </span><span class="s1">var</span><span class="s3">, </span><span class="s1">new_value </span><span class="s2">in </span><span class="s1">zip</span><span class="s3">(</span>
+                        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">non_trainable_variables</span><span class="s3">,</span>
+                        <span class="s1">non_trainable_variables</span><span class="s3">,</span>
+                    <span class="s3">):</span>
+                        <span class="s1">var</span><span class="s3">.</span><span class="s1">assign</span><span class="s3">(</span><span class="s1">new_value</span><span class="s3">)</span>
+                    <span class="s2">return </span><span class="s1">output</span>
+
+                <span class="s5"># Note: we truncate the number of parameters to what is</span>
+                <span class="s5"># specified by `input_signature`.</span>
+                <span class="s1">fn_signature </span><span class="s3">= </span><span class="s1">inspect</span><span class="s3">.</span><span class="s1">signature</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">)</span>
+                <span class="s1">fn_parameters </span><span class="s3">= </span><span class="s1">list</span><span class="s3">(</span><span class="s1">fn_signature</span><span class="s3">.</span><span class="s1">parameters</span><span class="s3">.</span><span class="s1">values</span><span class="s3">())</span>
+                <span class="s1">stateful_fn</span><span class="s3">.</span><span class="s1">__signature__ </span><span class="s3">= </span><span class="s1">inspect</span><span class="s3">.</span><span class="s1">Signature</span><span class="s3">(</span>
+                    <span class="s1">parameters</span><span class="s3">=</span><span class="s1">fn_parameters</span><span class="s3">[</span><span class="s6">0 </span><span class="s3">: </span><span class="s1">len</span><span class="s3">(</span><span class="s1">input_signature</span><span class="s3">)],</span>
+                    <span class="s1">return_annotation</span><span class="s3">=</span><span class="s1">fn_signature</span><span class="s3">.</span><span class="s1">return_annotation</span><span class="s3">,</span>
+                <span class="s3">)</span>
+
+                <span class="s1">decorated_fn </span><span class="s3">= </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">function</span><span class="s3">(</span>
+                    <span class="s1">stateful_fn</span><span class="s3">,</span>
+                    <span class="s1">input_signature</span><span class="s3">=</span><span class="s1">input_signature</span><span class="s3">,</span>
+                    <span class="s1">autograph</span><span class="s3">=</span><span class="s2">False</span><span class="s3">,</span>
+                <span class="s3">)</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_signatures</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">input_signature</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">, </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">types</span><span class="s3">.</span><span class="s1">experimental</span><span class="s3">.</span><span class="s1">GenericFunction</span><span class="s3">):</span>
+                <span class="s2">if not </span><span class="s1">fn</span><span class="s3">.</span><span class="s1">_list_all_concrete_functions</span><span class="s3">():</span>
+                    <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                        <span class="s4">f&quot;The provided tf.function '</span><span class="s2">{</span><span class="s1">fn</span><span class="s2">}</span><span class="s4">' &quot;</span>
+                        <span class="s4">&quot;has never been called. &quot;</span>
+                        <span class="s4">&quot;To specify the expected shape and dtype &quot;</span>
+                        <span class="s4">&quot;of the function's arguments, &quot;</span>
+                        <span class="s4">&quot;you must either provide a function that &quot;</span>
+                        <span class="s4">&quot;has been called at least once, or alternatively pass &quot;</span>
+                        <span class="s4">&quot;an `input_signature` argument in `add_endpoint()`.&quot;</span>
+                    <span class="s3">)</span>
+                <span class="s1">decorated_fn </span><span class="s3">= </span><span class="s1">fn</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                    <span class="s4">&quot;If the `fn` argument provided is not a `tf.function`, &quot;</span>
+                    <span class="s4">&quot;you must provide an `input_signature` argument to &quot;</span>
+                    <span class="s4">&quot;specify the shape and dtype of the function arguments. &quot;</span>
+                    <span class="s4">&quot;Example:</span><span class="s2">\n\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;export_archive.add_endpoint(</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;    name='call',</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;    fn=model.call,</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;    input_signature=[</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;        tf.TensorSpec(</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;            shape=(None, 224, 224, 3),</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;            dtype=tf.float32,</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;        )</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;    ],</span><span class="s2">\n</span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;)&quot;</span>
+                <span class="s3">)</span>
+        <span class="s1">setattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">decorated_fn</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">decorated_fn</span>
+
+    <span class="s2">def </span><span class="s1">add_variable_collection</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">variables</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Register a set of variables to be retrieved after reloading. 
+ 
+        Arguments: 
+            name: The string name for the collection. 
+            variables: A tuple/list/set of `tf.Variable` instances. 
+ 
+        Example: 
+ 
+        ```python 
+        export_archive = ExportArchive() 
+        export_archive.track(model) 
+        # Register an endpoint 
+        export_archive.add_endpoint( 
+            name=&quot;serve&quot;, 
+            fn=model.call, 
+            input_signature=[tf.TensorSpec(shape=(None, 3), dtype=tf.float32)], 
+        ) 
+        # Save a variable collection 
+        export_archive.add_variable_collection( 
+            name=&quot;optimizer_variables&quot;, variables=model.optimizer.variables) 
+        export_archive.write_out(&quot;path/to/location&quot;) 
+ 
+        # Reload the object 
+        revived_object = tf.saved_model.load(&quot;path/to/location&quot;) 
+        # Retrieve the variables 
+        optimizer_variables = revived_object.optimizer_variables 
+        ``` 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">variables</span><span class="s3">, (</span><span class="s1">list</span><span class="s3">, </span><span class="s1">tuple</span><span class="s3">, </span><span class="s1">set</span><span class="s3">)):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;Expected `variables` to be a list/tuple/set. &quot;</span>
+                <span class="s4">f&quot;Received instead object of type '</span><span class="s2">{</span><span class="s1">type</span><span class="s3">(</span><span class="s1">variables</span><span class="s3">)</span><span class="s2">}</span><span class="s4">'.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s5"># Ensure that all variables added are either tf.Variables</span>
+        <span class="s5"># or Variables created by Keras 3 with the TF or JAX backends.</span>
+        <span class="s2">if not </span><span class="s1">all</span><span class="s3">(</span>
+            <span class="s1">isinstance</span><span class="s3">(</span><span class="s1">v</span><span class="s3">, (</span><span class="s1">tf</span><span class="s3">.</span><span class="s1">Variable</span><span class="s3">, </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">Variable</span><span class="s3">)) </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">variables</span>
+        <span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;Expected all elements in `variables` to be &quot;</span>
+                <span class="s4">&quot;`tf.Variable` instances. Found instead the following types: &quot;</span>
+                <span class="s4">f&quot;</span><span class="s2">{</span><span class="s1">list</span><span class="s3">(</span><span class="s1">set</span><span class="s3">(</span><span class="s1">type</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">variables</span><span class="s3">))</span><span class="s2">}</span><span class="s4">&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;jax&quot;</span><span class="s3">:</span>
+            <span class="s1">variables </span><span class="s3">= </span><span class="s1">tree</span><span class="s3">.</span><span class="s1">flatten</span><span class="s3">(</span><span class="s1">tree</span><span class="s3">.</span><span class="s1">map_structure</span><span class="s3">(</span><span class="s1">tf</span><span class="s3">.</span><span class="s1">Variable</span><span class="s3">, </span><span class="s1">variables</span><span class="s3">))</span>
+        <span class="s1">setattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">, </span><span class="s1">name</span><span class="s3">, </span><span class="s1">list</span><span class="s3">(</span><span class="s1">variables</span><span class="s3">))</span>
+
+    <span class="s2">def </span><span class="s1">write_out</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">filepath</span><span class="s3">, </span><span class="s1">options</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Write the corresponding SavedModel to disk. 
+ 
+        Arguments: 
+            filepath: `str` or `pathlib.Path` object. 
+                Path where to save the artifact. 
+            options: `tf.saved_model.SaveOptions` object that specifies 
+                SavedModel saving options. 
+ 
+        **Note on TF-Serving**: all endpoints registered via `add_endpoint()` 
+        are made visible for TF-Serving in the SavedModel artifact. In addition, 
+        the first endpoint registered is made visible under the alias 
+        `&quot;serving_default&quot;` (unless an endpoint with the name 
+        `&quot;serving_default&quot;` was already registered manually), 
+        since TF-Serving requires this endpoint to be set. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;No endpoints have been set yet. Call add_endpoint().&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() == </span><span class="s4">&quot;tensorflow&quot;</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_filter_and_track_resources</span><span class="s3">()</span>
+
+        <span class="s1">signatures </span><span class="s3">= {}</span>
+        <span class="s2">for </span><span class="s1">name </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">:</span>
+            <span class="s1">signatures</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_concrete_fn</span><span class="s3">(</span><span class="s1">name</span><span class="s3">)</span>
+        <span class="s5"># Add &quot;serving_default&quot; signature key for TFServing</span>
+        <span class="s2">if </span><span class="s4">&quot;serving_default&quot; </span><span class="s2">not in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">:</span>
+            <span class="s1">signatures</span><span class="s3">[</span><span class="s4">&quot;serving_default&quot;</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_concrete_fn</span><span class="s3">(</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">[</span><span class="s6">0</span><span class="s3">]</span>
+            <span class="s3">)</span>
+
+        <span class="s1">tf</span><span class="s3">.</span><span class="s1">saved_model</span><span class="s3">.</span><span class="s1">save</span><span class="s3">(</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">,</span>
+            <span class="s1">filepath</span><span class="s3">,</span>
+            <span class="s1">options</span><span class="s3">=</span><span class="s1">options</span><span class="s3">,</span>
+            <span class="s1">signatures</span><span class="s3">=</span><span class="s1">signatures</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+        <span class="s5"># Print out available endpoints</span>
+        <span class="s1">endpoints </span><span class="s3">= </span><span class="s4">&quot;</span><span class="s2">\n\n</span><span class="s4">&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span>
+            <span class="s1">_print_signature</span><span class="s3">(</span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">, </span><span class="s1">name</span><span class="s3">), </span><span class="s1">name</span><span class="s3">)</span>
+            <span class="s2">for </span><span class="s1">name </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span>
+        <span class="s3">)</span>
+        <span class="s1">io_utils</span><span class="s3">.</span><span class="s1">print_msg</span><span class="s3">(</span>
+            <span class="s4">f&quot;Saved artifact at '</span><span class="s2">{</span><span class="s1">filepath</span><span class="s2">}</span><span class="s4">'. &quot;</span>
+            <span class="s4">&quot;The following endpoints are available:</span><span class="s2">\n\n</span><span class="s4">&quot;</span>
+            <span class="s4">f&quot;</span><span class="s2">{</span><span class="s1">endpoints</span><span class="s2">}</span><span class="s4">&quot;</span>
+        <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">_get_concrete_fn</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">endpoint</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Workaround for some SavedModel quirks.&quot;&quot;&quot;</span>
+        <span class="s2">if </span><span class="s1">endpoint </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_signatures</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">, </span><span class="s1">endpoint</span><span class="s3">)</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">traces </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">, </span><span class="s1">endpoint</span><span class="s3">).</span><span class="s1">_trackable_children</span><span class="s3">(</span>
+                <span class="s4">&quot;saved_model&quot;</span>
+            <span class="s3">)</span>
+            <span class="s2">return </span><span class="s1">list</span><span class="s3">(</span><span class="s1">traces</span><span class="s3">.</span><span class="s1">values</span><span class="s3">())[</span><span class="s6">0</span><span class="s3">]</span>
+
+    <span class="s2">def </span><span class="s1">_get_variables_used_by_endpoints</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">fns </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_concrete_fn</span><span class="s3">(</span><span class="s1">name</span><span class="s3">) </span><span class="s2">for </span><span class="s1">name </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">]</span>
+        <span class="s2">return </span><span class="s1">_list_variables_used_by_fns</span><span class="s3">(</span><span class="s1">fns</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">_filter_and_track_resources</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Track resources used by endpoints / referenced in `track()` calls.&quot;&quot;&quot;</span>
+        <span class="s5"># Start by extracting variables from endpoints.</span>
+        <span class="s1">fns </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_get_concrete_fn</span><span class="s3">(</span><span class="s1">name</span><span class="s3">) </span><span class="s2">for </span><span class="s1">name </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_endpoint_names</span><span class="s3">]</span>
+        <span class="s1">tvs</span><span class="s3">, </span><span class="s1">ntvs </span><span class="s3">= </span><span class="s1">_list_variables_used_by_fns</span><span class="s3">(</span><span class="s1">fns</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">_all_variables </span><span class="s3">= </span><span class="s1">list</span><span class="s3">(</span><span class="s1">tvs </span><span class="s3">+ </span><span class="s1">ntvs</span><span class="s3">)</span>
+
+        <span class="s5"># Next, track lookup tables.</span>
+        <span class="s5"># Hopefully, one day this will be automated at the tf.function level.</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">_misc_assets </span><span class="s3">= []</span>
+        <span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers </span><span class="s2">import </span><span class="s1">IntegerLookup</span>
+        <span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers </span><span class="s2">import </span><span class="s1">StringLookup</span>
+        <span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers </span><span class="s2">import </span><span class="s1">TextVectorization</span>
+
+        <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s4">&quot;_tracked&quot;</span><span class="s3">):</span>
+            <span class="s2">for </span><span class="s1">root </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tracked</span><span class="s3">:</span>
+                <span class="s1">descendants </span><span class="s3">= </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">train</span><span class="s3">.</span><span class="s1">TrackableView</span><span class="s3">(</span><span class="s1">root</span><span class="s3">).</span><span class="s1">descendants</span><span class="s3">()</span>
+                <span class="s2">for </span><span class="s1">trackable </span><span class="s2">in </span><span class="s1">descendants</span><span class="s3">:</span>
+                    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span>
+                        <span class="s1">trackable</span><span class="s3">,</span>
+                        <span class="s3">(</span><span class="s1">IntegerLookup</span><span class="s3">, </span><span class="s1">StringLookup</span><span class="s3">, </span><span class="s1">TextVectorization</span><span class="s3">),</span>
+                    <span class="s3">):</span>
+                        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tf_trackable</span><span class="s3">.</span><span class="s1">_misc_assets</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">trackable</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">_convert_jax2tf_function</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">fn</span><span class="s3">, </span><span class="s1">input_signature</span><span class="s3">, </span><span class="s1">jax2tf_kwargs</span><span class="s3">=</span><span class="s2">None</span><span class="s3">):</span>
+        <span class="s2">from </span><span class="s1">jax</span><span class="s3">.</span><span class="s1">experimental </span><span class="s2">import </span><span class="s1">jax2tf</span>
+
+        <span class="s2">if </span><span class="s1">jax2tf_kwargs </span><span class="s2">is None</span><span class="s3">:</span>
+            <span class="s1">jax2tf_kwargs </span><span class="s3">= {}</span>
+
+        <span class="s2">if </span><span class="s4">&quot;native_serialization&quot; </span><span class="s2">not in </span><span class="s1">jax2tf_kwargs</span><span class="s3">:</span>
+            <span class="s1">jax2tf_kwargs</span><span class="s3">[</span><span class="s4">&quot;native_serialization&quot;</span><span class="s3">] = (</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">_check_device_compatible</span><span class="s3">()</span>
+            <span class="s3">)</span>
+
+        <span class="s1">variables_shapes </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_to_polymorphic_shape</span><span class="s3">(</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_backend_variables</span><span class="s3">, </span><span class="s1">allow_none</span><span class="s3">=</span><span class="s2">False</span>
+        <span class="s3">)</span>
+        <span class="s2">if </span><span class="s4">&quot;polymorphic_shapes&quot; </span><span class="s2">in </span><span class="s1">jax2tf_kwargs</span><span class="s3">:</span>
+            <span class="s1">input_shapes </span><span class="s3">= </span><span class="s1">jax2tf_kwargs</span><span class="s3">[</span><span class="s4">&quot;polymorphic_shapes&quot;</span><span class="s3">]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">input_shapes </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_to_polymorphic_shape</span><span class="s3">(</span><span class="s1">input_signature</span><span class="s3">)</span>
+        <span class="s1">jax2tf_kwargs</span><span class="s3">[</span><span class="s4">&quot;polymorphic_shapes&quot;</span><span class="s3">] = [</span><span class="s1">variables_shapes</span><span class="s3">] + </span><span class="s1">input_shapes</span>
+
+        <span class="s2">return </span><span class="s1">jax2tf</span><span class="s3">.</span><span class="s1">convert</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">, **</span><span class="s1">jax2tf_kwargs</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">_to_polymorphic_shape</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">struct</span><span class="s3">, </span><span class="s1">allow_none</span><span class="s3">=</span><span class="s2">True</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">allow_none</span><span class="s3">:</span>
+            <span class="s5"># Generates unique names: a, b, ... z, aa, ab, ... az, ba, ... zz</span>
+            <span class="s5"># for unknown non-batch dims. Defined here to be scope per endpoint.</span>
+            <span class="s1">dim_names </span><span class="s3">= </span><span class="s1">itertools</span><span class="s3">.</span><span class="s1">chain</span><span class="s3">(</span>
+                <span class="s1">string</span><span class="s3">.</span><span class="s1">ascii_lowercase</span><span class="s3">,</span>
+                <span class="s1">itertools</span><span class="s3">.</span><span class="s1">starmap</span><span class="s3">(</span>
+                    <span class="s2">lambda </span><span class="s1">a</span><span class="s3">, </span><span class="s1">b</span><span class="s3">: </span><span class="s1">a </span><span class="s3">+ </span><span class="s1">b</span><span class="s3">,</span>
+                    <span class="s1">itertools</span><span class="s3">.</span><span class="s1">product</span><span class="s3">(</span><span class="s1">string</span><span class="s3">.</span><span class="s1">ascii_lowercase</span><span class="s3">, </span><span class="s1">repeat</span><span class="s3">=</span><span class="s6">2</span><span class="s3">),</span>
+                <span class="s3">),</span>
+            <span class="s3">)</span>
+
+        <span class="s2">def </span><span class="s1">convert_shape</span><span class="s3">(</span><span class="s1">x</span><span class="s3">):</span>
+            <span class="s1">poly_shape </span><span class="s3">= []</span>
+            <span class="s2">for </span><span class="s1">index</span><span class="s3">, </span><span class="s1">dim </span><span class="s2">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">list</span><span class="s3">(</span><span class="s1">x</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">)):</span>
+                <span class="s2">if </span><span class="s1">dim </span><span class="s2">is not None</span><span class="s3">:</span>
+                    <span class="s1">poly_shape</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">str</span><span class="s3">(</span><span class="s1">dim</span><span class="s3">))</span>
+                <span class="s2">elif not </span><span class="s1">allow_none</span><span class="s3">:</span>
+                    <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                        <span class="s4">f&quot;Illegal None dimension in </span><span class="s2">{</span><span class="s1">x</span><span class="s2">} </span><span class="s4">with shape </span><span class="s2">{</span><span class="s1">x</span><span class="s3">.</span><span class="s1">shape</span><span class="s2">}</span><span class="s4">&quot;</span>
+                    <span class="s3">)</span>
+                <span class="s2">elif </span><span class="s1">index </span><span class="s3">== </span><span class="s6">0</span><span class="s3">:</span>
+                    <span class="s1">poly_shape</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s4">&quot;batch&quot;</span><span class="s3">)</span>
+                <span class="s2">else</span><span class="s3">:</span>
+                    <span class="s1">poly_shape</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">next</span><span class="s3">(</span><span class="s1">dim_names</span><span class="s3">))</span>
+            <span class="s2">return </span><span class="s4">&quot;(&quot; </span><span class="s3">+ </span><span class="s4">&quot;, &quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">poly_shape</span><span class="s3">) + </span><span class="s4">&quot;)&quot;</span>
+
+        <span class="s2">return </span><span class="s1">tree</span><span class="s3">.</span><span class="s1">map_structure</span><span class="s3">(</span><span class="s1">convert_shape</span><span class="s3">, </span><span class="s1">struct</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">_check_device_compatible</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">from </span><span class="s1">jax </span><span class="s2">import </span><span class="s1">default_backend </span><span class="s2">as </span><span class="s1">jax_device</span>
+
+        <span class="s2">if </span><span class="s3">(</span>
+            <span class="s1">jax_device</span><span class="s3">() == </span><span class="s4">&quot;gpu&quot;</span>
+            <span class="s2">and </span><span class="s1">len</span><span class="s3">(</span><span class="s1">tf</span><span class="s3">.</span><span class="s1">config</span><span class="s3">.</span><span class="s1">list_physical_devices</span><span class="s3">(</span><span class="s4">&quot;GPU&quot;</span><span class="s3">)) == </span><span class="s6">0</span>
+        <span class="s3">):</span>
+            <span class="s1">logging</span><span class="s3">.</span><span class="s1">warning</span><span class="s3">(</span>
+                <span class="s4">&quot;JAX backend is using GPU for export, but installed &quot;</span>
+                <span class="s4">&quot;TF package cannot access GPU, so reloading the model with &quot;</span>
+                <span class="s4">&quot;the TF runtime in the same environment will not work. &quot;</span>
+                <span class="s4">&quot;To use JAX-native serialization for high-performance export &quot;</span>
+                <span class="s4">&quot;and serving, please install `tensorflow-gpu` and ensure &quot;</span>
+                <span class="s4">&quot;CUDA version compatiblity between your JAX and TF &quot;</span>
+                <span class="s4">&quot;installations.&quot;</span>
+            <span class="s3">)</span>
+            <span class="s2">return False</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">return True</span>
+
+
+<span class="s2">def </span><span class="s1">export_model</span><span class="s3">(</span><span class="s1">model</span><span class="s3">, </span><span class="s1">filepath</span><span class="s3">):</span>
+    <span class="s1">export_archive </span><span class="s3">= </span><span class="s1">ExportArchive</span><span class="s3">()</span>
+    <span class="s1">export_archive</span><span class="s3">.</span><span class="s1">track</span><span class="s3">(</span><span class="s1">model</span><span class="s3">)</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">model</span><span class="s3">, (</span><span class="s1">Functional</span><span class="s3">, </span><span class="s1">Sequential</span><span class="s3">)):</span>
+        <span class="s1">input_signature </span><span class="s3">= </span><span class="s1">tree</span><span class="s3">.</span><span class="s1">map_structure</span><span class="s3">(</span><span class="s1">_make_tensor_spec</span><span class="s3">, </span><span class="s1">model</span><span class="s3">.</span><span class="s1">inputs</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">input_signature</span><span class="s3">, </span><span class="s1">list</span><span class="s3">) </span><span class="s2">and </span><span class="s1">len</span><span class="s3">(</span><span class="s1">input_signature</span><span class="s3">) &gt; </span><span class="s6">1</span><span class="s3">:</span>
+            <span class="s1">input_signature </span><span class="s3">= [</span><span class="s1">input_signature</span><span class="s3">]</span>
+        <span class="s1">export_archive</span><span class="s3">.</span><span class="s1">add_endpoint</span><span class="s3">(</span><span class="s4">&quot;serve&quot;</span><span class="s3">, </span><span class="s1">model</span><span class="s3">.</span><span class="s1">__call__</span><span class="s3">, </span><span class="s1">input_signature</span><span class="s3">)</span>
+    <span class="s2">else</span><span class="s3">:</span>
+        <span class="s1">input_signature </span><span class="s3">= </span><span class="s1">_get_input_signature</span><span class="s3">(</span><span class="s1">model</span><span class="s3">)</span>
+        <span class="s2">if not </span><span class="s1">input_signature </span><span class="s2">or not </span><span class="s1">model</span><span class="s3">.</span><span class="s1">_called</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">&quot;The model provided has never called. &quot;</span>
+                <span class="s4">&quot;It must be called at least once before export.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s1">export_archive</span><span class="s3">.</span><span class="s1">add_endpoint</span><span class="s3">(</span><span class="s4">&quot;serve&quot;</span><span class="s3">, </span><span class="s1">model</span><span class="s3">.</span><span class="s1">__call__</span><span class="s3">, </span><span class="s1">input_signature</span><span class="s3">)</span>
+    <span class="s1">export_archive</span><span class="s3">.</span><span class="s1">write_out</span><span class="s3">(</span><span class="s1">filepath</span><span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">_get_input_signature</span><span class="s3">(</span><span class="s1">model</span><span class="s3">):</span>
+    <span class="s1">shapes_dict </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">model</span><span class="s3">, </span><span class="s4">&quot;_build_shapes_dict&quot;</span><span class="s3">, </span><span class="s2">None</span><span class="s3">)</span>
+    <span class="s2">if not </span><span class="s1">shapes_dict</span><span class="s3">:</span>
+        <span class="s2">return None</span>
+
+    <span class="s2">def </span><span class="s1">make_tensor_spec</span><span class="s3">(</span><span class="s1">structure</span><span class="s3">):</span>
+        <span class="s5"># We need to turn wrapper structures like TrackingDict or _DictWrapper</span>
+        <span class="s5"># into plain Python structures because they don't work with jax2tf/JAX.</span>
+        <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">structure</span><span class="s3">, </span><span class="s1">dict</span><span class="s3">):</span>
+            <span class="s2">return </span><span class="s3">{</span><span class="s1">k</span><span class="s3">: </span><span class="s1">make_tensor_spec</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">for </span><span class="s1">k</span><span class="s3">, </span><span class="s1">v </span><span class="s2">in </span><span class="s1">structure</span><span class="s3">.</span><span class="s1">items</span><span class="s3">()}</span>
+        <span class="s2">elif </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">structure</span><span class="s3">, </span><span class="s1">tuple</span><span class="s3">):</span>
+            <span class="s2">if </span><span class="s1">all</span><span class="s3">(</span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">d</span><span class="s3">, (</span><span class="s1">int</span><span class="s3">, </span><span class="s1">type</span><span class="s3">(</span><span class="s2">None</span><span class="s3">))) </span><span class="s2">for </span><span class="s1">d </span><span class="s2">in </span><span class="s1">structure</span><span class="s3">):</span>
+                <span class="s2">return </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">TensorSpec</span><span class="s3">(</span>
+                    <span class="s1">shape</span><span class="s3">=(</span><span class="s2">None</span><span class="s3">,) + </span><span class="s1">structure</span><span class="s3">[</span><span class="s6">1</span><span class="s3">:], </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">model</span><span class="s3">.</span><span class="s1">input_dtype</span>
+                <span class="s3">)</span>
+            <span class="s2">return </span><span class="s1">tuple</span><span class="s3">(</span><span class="s1">make_tensor_spec</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">structure</span><span class="s3">)</span>
+        <span class="s2">elif </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">structure</span><span class="s3">, </span><span class="s1">list</span><span class="s3">):</span>
+            <span class="s2">if </span><span class="s1">all</span><span class="s3">(</span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">d</span><span class="s3">, (</span><span class="s1">int</span><span class="s3">, </span><span class="s1">type</span><span class="s3">(</span><span class="s2">None</span><span class="s3">))) </span><span class="s2">for </span><span class="s1">d </span><span class="s2">in </span><span class="s1">structure</span><span class="s3">):</span>
+                <span class="s2">return </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">TensorSpec</span><span class="s3">(</span>
+                    <span class="s1">shape</span><span class="s3">=[</span><span class="s2">None</span><span class="s3">] + </span><span class="s1">structure</span><span class="s3">[</span><span class="s6">1</span><span class="s3">:], </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">model</span><span class="s3">.</span><span class="s1">input_dtype</span>
+                <span class="s3">)</span>
+            <span class="s2">return </span><span class="s3">[</span><span class="s1">make_tensor_spec</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">structure</span><span class="s3">]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">f&quot;Unsupported type </span><span class="s2">{</span><span class="s1">type</span><span class="s3">(</span><span class="s1">structure</span><span class="s3">)</span><span class="s2">} </span><span class="s4">for </span><span class="s2">{</span><span class="s1">structure</span><span class="s2">}</span><span class="s4">&quot;</span>
+            <span class="s3">)</span>
+
+    <span class="s2">return </span><span class="s3">[</span><span class="s1">make_tensor_spec</span><span class="s3">(</span><span class="s1">value</span><span class="s3">) </span><span class="s2">for </span><span class="s1">value </span><span class="s2">in </span><span class="s1">shapes_dict</span><span class="s3">.</span><span class="s1">values</span><span class="s3">()]</span>
+
+
+<span class="s3">@</span><span class="s1">keras_export</span><span class="s3">(</span><span class="s4">&quot;keras.layers.TFSMLayer&quot;</span><span class="s3">)</span>
+<span class="s2">class </span><span class="s1">TFSMLayer</span><span class="s3">(</span><span class="s1">Layer</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Reload a Keras model/layer that was saved via SavedModel / ExportArchive. 
+ 
+    Arguments: 
+        filepath: `str` or `pathlib.Path` object. The path to the SavedModel. 
+        call_endpoint: Name of the endpoint to use as the `call()` method 
+            of the reloaded layer. If the SavedModel was created 
+            via `model.export()`, 
+            then the default endpoint name is `'serve'`. In other cases 
+            it may be named `'serving_default'`. 
+ 
+    Example: 
+ 
+    ```python 
+    model.export(&quot;path/to/artifact&quot;) 
+    reloaded_layer = TFSMLayer(&quot;path/to/artifact&quot;) 
+    outputs = reloaded_layer(inputs) 
+    ``` 
+ 
+    The reloaded object can be used like a regular Keras layer, and supports 
+    training/fine-tuning of its trainable weights. Note that the reloaded 
+    object retains none of the internal structure or custom methods of the 
+    original object -- it's a brand new layer created around the saved 
+    function. 
+ 
+    **Limitations:** 
+ 
+    * Only call endpoints with a single `inputs` tensor argument 
+    (which may optionally be a dict/tuple/list of tensors) are supported. 
+    For endpoints with multiple separate input tensor arguments, consider 
+    subclassing `TFSMLayer` and implementing a `call()` method with a 
+    custom signature. 
+    * If you need training-time behavior to differ from inference-time behavior 
+    (i.e. if you need the reloaded object to support a `training=True` argument 
+    in `__call__()`), make sure that the training-time call function is 
+    saved as a standalone endpoint in the artifact, and provide its name 
+    to the `TFSMLayer` via the `call_training_endpoint` argument. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">filepath</span><span class="s3">,</span>
+        <span class="s1">call_endpoint</span><span class="s3">=</span><span class="s4">&quot;serve&quot;</span><span class="s3">,</span>
+        <span class="s1">call_training_endpoint</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">trainable</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s1">name</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">dtype</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+    <span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">backend</span><span class="s3">.</span><span class="s1">backend</span><span class="s3">() != </span><span class="s4">&quot;tensorflow&quot;</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">(</span>
+                <span class="s4">&quot;The TFSMLayer is only currently supported with the &quot;</span>
+                <span class="s4">&quot;TensorFlow backend.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s5"># Initialize an empty layer, then add_weight() etc. as needed.</span>
+        <span class="s1">super</span><span class="s3">().</span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">trainable</span><span class="s3">=</span><span class="s1">trainable</span><span class="s3">, </span><span class="s1">name</span><span class="s3">=</span><span class="s1">name</span><span class="s3">, </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">dtype</span><span class="s3">)</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj </span><span class="s3">= </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">saved_model</span><span class="s3">.</span><span class="s1">load</span><span class="s3">(</span><span class="s1">filepath</span><span class="s3">)</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">filepath </span><span class="s3">= </span><span class="s1">filepath</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">call_endpoint </span><span class="s3">= </span><span class="s1">call_endpoint</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint </span><span class="s3">= </span><span class="s1">call_training_endpoint</span>
+
+        <span class="s5"># Resolve the call function.</span>
+        <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">, </span><span class="s1">call_endpoint</span><span class="s3">):</span>
+            <span class="s5"># Case 1: it's set as an attribute.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">call_endpoint_fn </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">, </span><span class="s1">call_endpoint</span><span class="s3">)</span>
+        <span class="s2">elif </span><span class="s1">call_endpoint </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">.</span><span class="s1">signatures</span><span class="s3">:</span>
+            <span class="s5"># Case 2: it's listed in the `signatures` field.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">call_endpoint_fn </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">.</span><span class="s1">signatures</span><span class="s3">[</span><span class="s1">call_endpoint</span><span class="s3">]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s4">f&quot;The endpoint '</span><span class="s2">{</span><span class="s1">call_endpoint</span><span class="s2">}</span><span class="s4">' &quot;</span>
+                <span class="s4">&quot;is neither an attribute of the reloaded SavedModel, &quot;</span>
+                <span class="s4">&quot;nor an entry in the `signatures` field of &quot;</span>
+                <span class="s4">&quot;the reloaded SavedModel. Select another endpoint via &quot;</span>
+                <span class="s4">&quot;the `call_endpoint` argument. Available endpoints for &quot;</span>
+                <span class="s4">&quot;this SavedModel: &quot;</span>
+                <span class="s4">f&quot;</span><span class="s2">{</span><span class="s1">list</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">.</span><span class="s1">signatures</span><span class="s3">.</span><span class="s1">keys</span><span class="s3">())</span><span class="s2">}</span><span class="s4">&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s5"># Resolving the training function.</span>
+        <span class="s2">if </span><span class="s1">call_training_endpoint</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">, </span><span class="s1">call_training_endpoint</span><span class="s3">):</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint_fn </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">, </span><span class="s1">call_training_endpoint</span>
+                <span class="s3">)</span>
+            <span class="s2">elif </span><span class="s1">call_training_endpoint </span><span class="s2">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">.</span><span class="s1">signatures</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint_fn </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">.</span><span class="s1">signatures</span><span class="s3">[</span>
+                    <span class="s1">call_training_endpoint</span>
+                <span class="s3">]</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                    <span class="s4">f&quot;The endpoint '</span><span class="s2">{</span><span class="s1">call_training_endpoint</span><span class="s2">}</span><span class="s4">' &quot;</span>
+                    <span class="s4">&quot;is neither an attribute of the reloaded SavedModel, &quot;</span>
+                    <span class="s4">&quot;nor an entry in the `signatures` field of &quot;</span>
+                    <span class="s4">&quot;the reloaded SavedModel. Available endpoints for &quot;</span>
+                    <span class="s4">&quot;this SavedModel: &quot;</span>
+                    <span class="s4">f&quot;</span><span class="s2">{</span><span class="s1">list</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_reloaded_obj</span><span class="s3">.</span><span class="s1">signatures</span><span class="s3">.</span><span class="s1">keys</span><span class="s3">())</span><span class="s2">}</span><span class="s4">&quot;</span>
+                <span class="s3">)</span>
+
+        <span class="s5"># Add trainable and non-trainable weights from the call_endpoint_fn.</span>
+        <span class="s1">all_fns </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_endpoint_fn</span><span class="s3">]</span>
+        <span class="s2">if </span><span class="s1">call_training_endpoint</span><span class="s3">:</span>
+            <span class="s1">all_fns</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint_fn</span><span class="s3">)</span>
+        <span class="s1">tvs</span><span class="s3">, </span><span class="s1">ntvs </span><span class="s3">= </span><span class="s1">_list_variables_used_by_fns</span><span class="s3">(</span><span class="s1">all_fns</span><span class="s3">)</span>
+        <span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">tvs</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_add_existing_weight</span><span class="s3">(</span><span class="s1">v</span><span class="s3">)</span>
+        <span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">ntvs</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_add_existing_weight</span><span class="s3">(</span><span class="s1">v</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">built </span><span class="s3">= </span><span class="s2">True</span>
+
+    <span class="s2">def </span><span class="s1">_add_existing_weight</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">weight</span><span class="s3">):</span>
+        <span class="s0">&quot;&quot;&quot;Tracks an existing weight.&quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_track_variable</span><span class="s3">(</span><span class="s1">weight</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">call</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">inputs</span><span class="s3">, </span><span class="s1">training</span><span class="s3">=</span><span class="s2">False</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">training</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint</span><span class="s3">:</span>
+                <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint_fn</span><span class="s3">(</span><span class="s1">inputs</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_endpoint_fn</span><span class="s3">(</span><span class="s1">inputs</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">get_config</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">base_config </span><span class="s3">= </span><span class="s1">super</span><span class="s3">().</span><span class="s1">get_config</span><span class="s3">()</span>
+        <span class="s1">config </span><span class="s3">= {</span>
+            <span class="s5"># Note: this is not intended to be portable.</span>
+            <span class="s4">&quot;filepath&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filepath</span><span class="s3">,</span>
+            <span class="s4">&quot;call_endpoint&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_endpoint</span><span class="s3">,</span>
+            <span class="s4">&quot;call_training_endpoint&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">call_training_endpoint</span><span class="s3">,</span>
+        <span class="s3">}</span>
+        <span class="s2">return </span><span class="s3">{**</span><span class="s1">base_config</span><span class="s3">, **</span><span class="s1">config</span><span class="s3">}</span>
+
+
+<span class="s2">def </span><span class="s1">_make_tensor_spec</span><span class="s3">(</span><span class="s1">x</span><span class="s3">):</span>
+    <span class="s1">shape </span><span class="s3">= (</span><span class="s2">None</span><span class="s3">,) + </span><span class="s1">x</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">[</span><span class="s6">1</span><span class="s3">:]</span>
+    <span class="s2">return </span><span class="s1">tf</span><span class="s3">.</span><span class="s1">TensorSpec</span><span class="s3">(</span><span class="s1">shape</span><span class="s3">, </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">x</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">, </span><span class="s1">name</span><span class="s3">=</span><span class="s1">x</span><span class="s3">.</span><span class="s1">name</span><span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">_print_signature</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">, </span><span class="s1">name</span><span class="s3">):</span>
+    <span class="s1">concrete_fn </span><span class="s3">= </span><span class="s1">fn</span><span class="s3">.</span><span class="s1">_list_all_concrete_functions</span><span class="s3">()[</span><span class="s6">0</span><span class="s3">]</span>
+    <span class="s1">pprinted_signature </span><span class="s3">= </span><span class="s1">concrete_fn</span><span class="s3">.</span><span class="s1">pretty_printed_signature</span><span class="s3">(</span><span class="s1">verbose</span><span class="s3">=</span><span class="s2">True</span><span class="s3">)</span>
+    <span class="s1">lines </span><span class="s3">= </span><span class="s1">pprinted_signature</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s4">&quot;</span><span class="s2">\n</span><span class="s4">&quot;</span><span class="s3">)</span>
+    <span class="s1">lines </span><span class="s3">= [</span><span class="s4">f&quot;* Endpoint '</span><span class="s2">{</span><span class="s1">name</span><span class="s2">}</span><span class="s4">'&quot;</span><span class="s3">] + </span><span class="s1">lines</span><span class="s3">[</span><span class="s6">1</span><span class="s3">:]</span>
+    <span class="s1">endpoint </span><span class="s3">= </span><span class="s4">&quot;</span><span class="s2">\n</span><span class="s4">&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">lines</span><span class="s3">)</span>
+    <span class="s2">return </span><span class="s1">endpoint</span>
+
+
+<span class="s2">def </span><span class="s1">_list_variables_used_by_fns</span><span class="s3">(</span><span class="s1">fns</span><span class="s3">):</span>
+    <span class="s1">trainable_variables </span><span class="s3">= []</span>
+    <span class="s1">non_trainable_variables </span><span class="s3">= []</span>
+    <span class="s1">trainable_variables_ids </span><span class="s3">= </span><span class="s1">set</span><span class="s3">()</span>
+    <span class="s1">non_trainable_variables_ids </span><span class="s3">= </span><span class="s1">set</span><span class="s3">()</span>
+    <span class="s2">for </span><span class="s1">fn </span><span class="s2">in </span><span class="s1">fns</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">, </span><span class="s4">&quot;concrete_functions&quot;</span><span class="s3">):</span>
+            <span class="s1">concrete_functions </span><span class="s3">= </span><span class="s1">fn</span><span class="s3">.</span><span class="s1">concrete_functions</span>
+        <span class="s2">elif </span><span class="s1">hasattr</span><span class="s3">(</span><span class="s1">fn</span><span class="s3">, </span><span class="s4">&quot;get_concrete_function&quot;</span><span class="s3">):</span>
+            <span class="s1">concrete_functions </span><span class="s3">= [</span><span class="s1">fn</span><span class="s3">.</span><span class="s1">get_concrete_function</span><span class="s3">()]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">concrete_functions </span><span class="s3">= [</span><span class="s1">fn</span><span class="s3">]</span>
+        <span class="s2">for </span><span class="s1">concrete_fn </span><span class="s2">in </span><span class="s1">concrete_functions</span><span class="s3">:</span>
+            <span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">concrete_fn</span><span class="s3">.</span><span class="s1">trainable_variables</span><span class="s3">:</span>
+                <span class="s2">if </span><span class="s1">id</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">not in </span><span class="s1">trainable_variables_ids</span><span class="s3">:</span>
+                    <span class="s1">trainable_variables</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">v</span><span class="s3">)</span>
+                    <span class="s1">trainable_variables_ids</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s1">id</span><span class="s3">(</span><span class="s1">v</span><span class="s3">))</span>
+
+            <span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">concrete_fn</span><span class="s3">.</span><span class="s1">variables</span><span class="s3">:</span>
+                <span class="s2">if </span><span class="s3">(</span>
+                    <span class="s1">id</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">not in </span><span class="s1">trainable_variables_ids</span>
+                    <span class="s2">and </span><span class="s1">id</span><span class="s3">(</span><span class="s1">v</span><span class="s3">) </span><span class="s2">not in </span><span class="s1">non_trainable_variables_ids</span>
+                <span class="s3">):</span>
+                    <span class="s1">non_trainable_variables</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">v</span><span class="s3">)</span>
+                    <span class="s1">non_trainable_variables_ids</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s1">id</span><span class="s3">(</span><span class="s1">v</span><span class="s3">))</span>
+    <span class="s2">return </span><span class="s1">trainable_variables</span><span class="s3">, </span><span class="s1">non_trainable_variables</span>
+</pre>
+</body>
+</html>

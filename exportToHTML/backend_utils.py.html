@@ -1,0 +1,548 @@
+<html>
+<head>
+<title>backend_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #6aab73;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+backend_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">operator</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+
+<span class="s0">def </span><span class="s1">_convert_conv_tranpose_padding_args_from_keras_to_jax</span><span class="s2">(</span>
+    <span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">stride</span><span class="s2">, </span><span class="s1">dilation_rate</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">, </span><span class="s1">output_padding</span>
+<span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Convert the padding arguments from Keras to the ones used by JAX. 
+    JAX starts with an shape of size `(input-1) * stride - kernel_size + 2`, 
+    then adds `left_pad` on the left, and `right_pad` on the right. 
+    In Keras, the `padding` argument determines a base shape, to which 
+    `output_padding` is added on the right. If `output_padding` is None, it will 
+    be given a default value. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">assert </span><span class="s1">padding</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">() </span><span class="s0">in </span><span class="s2">{</span><span class="s4">&quot;valid&quot;</span><span class="s2">, </span><span class="s4">&quot;same&quot;</span><span class="s2">}</span>
+    <span class="s1">kernel_size </span><span class="s2">= (</span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) * </span><span class="s1">dilation_rate </span><span class="s2">+ </span><span class="s5">1</span>
+
+    <span class="s0">if </span><span class="s1">padding</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">() == </span><span class="s4">&quot;valid&quot;</span><span class="s2">:</span>
+        <span class="s6"># If output_padding is None, we fill it so that the shape of the output</span>
+        <span class="s6"># is `(input-1)*s + max(kernel_size, stride)`</span>
+        <span class="s1">output_padding </span><span class="s2">= (</span>
+            <span class="s1">max</span><span class="s2">(</span><span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">stride</span><span class="s2">) - </span><span class="s1">kernel_size</span>
+            <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None</span>
+            <span class="s0">else </span><span class="s1">output_padding</span>
+        <span class="s2">)</span>
+        <span class="s1">left_pad </span><span class="s2">= </span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">1</span>
+        <span class="s1">right_pad </span><span class="s2">= </span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">1 </span><span class="s2">+ </span><span class="s1">output_padding</span>
+
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s6"># When output_padding is None, we want the shape of the output to</span>
+            <span class="s6"># be `input * s`, therefore a total padding of</span>
+            <span class="s6"># `stride + kernel_size - 2`</span>
+            <span class="s1">pad_len </span><span class="s2">= </span><span class="s1">stride </span><span class="s2">+ </span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">2</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s6"># When output_padding is filled, we want the shape of the output to</span>
+            <span class="s6"># be `(input-1)*stride + kernel_size%2 + output_padding`</span>
+            <span class="s1">pad_len </span><span class="s2">= </span><span class="s1">kernel_size </span><span class="s2">+ </span><span class="s1">kernel_size </span><span class="s2">% </span><span class="s5">2 </span><span class="s2">- </span><span class="s5">2 </span><span class="s2">+ </span><span class="s1">output_padding</span>
+        <span class="s1">left_pad </span><span class="s2">= </span><span class="s1">min</span><span class="s2">(</span><span class="s1">pad_len </span><span class="s2">// </span><span class="s5">2 </span><span class="s2">+ </span><span class="s1">pad_len </span><span class="s2">% </span><span class="s5">2</span><span class="s2">, </span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">1</span><span class="s2">)</span>
+        <span class="s1">right_pad </span><span class="s2">= </span><span class="s1">pad_len </span><span class="s2">- </span><span class="s1">left_pad</span>
+
+    <span class="s0">return </span><span class="s1">left_pad</span><span class="s2">, </span><span class="s1">right_pad</span>
+
+
+<span class="s0">def </span><span class="s1">_convert_conv_tranpose_padding_args_from_keras_to_torch</span><span class="s2">(</span>
+    <span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">stride</span><span class="s2">, </span><span class="s1">dilation_rate</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">, </span><span class="s1">output_padding</span>
+<span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Convert the padding arguments from Keras to the ones used by Torch. 
+    Torch starts with an output shape of `(input-1) * stride + kernel_size`, 
+    then removes `torch_padding` from both sides, and adds 
+    `torch_output_padding` on the right. 
+    Because in Torch the output_padding can only be added to the right, 
+    consistency with Tensorflow is not always possible. In particular this is 
+    the case when both the Torch padding and output_padding values are 
+    strictly positive. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">assert </span><span class="s1">padding</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">() </span><span class="s0">in </span><span class="s2">{</span><span class="s4">&quot;valid&quot;</span><span class="s2">, </span><span class="s4">&quot;same&quot;</span><span class="s2">}</span>
+    <span class="s1">original_kernel_size </span><span class="s2">= </span><span class="s1">kernel_size</span>
+    <span class="s1">kernel_size </span><span class="s2">= (</span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) * </span><span class="s1">dilation_rate </span><span class="s2">+ </span><span class="s5">1</span>
+
+    <span class="s0">if </span><span class="s1">padding</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">() == </span><span class="s4">&quot;valid&quot;</span><span class="s2">:</span>
+        <span class="s6"># If output_padding is None, we fill it so that the shape of the output</span>
+        <span class="s6"># is `(i-1)*s + max(k, s)`</span>
+        <span class="s1">output_padding </span><span class="s2">= (</span>
+            <span class="s1">max</span><span class="s2">(</span><span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">stride</span><span class="s2">) - </span><span class="s1">kernel_size</span>
+            <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None</span>
+            <span class="s0">else </span><span class="s1">output_padding</span>
+        <span class="s2">)</span>
+        <span class="s1">torch_padding </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">torch_output_padding </span><span class="s2">= </span><span class="s1">output_padding</span>
+
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s6"># When output_padding is None, we want the shape of the output to be</span>
+        <span class="s6"># `input * s`, otherwise we use the value provided.</span>
+        <span class="s1">output_padding </span><span class="s2">= (</span>
+            <span class="s1">stride </span><span class="s2">- </span><span class="s1">kernel_size </span><span class="s2">% </span><span class="s5">2</span>
+            <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None</span>
+            <span class="s0">else </span><span class="s1">output_padding</span>
+        <span class="s2">)</span>
+        <span class="s1">torch_padding </span><span class="s2">= </span><span class="s1">max</span><span class="s2">(</span>
+            <span class="s2">-((</span><span class="s1">kernel_size </span><span class="s2">% </span><span class="s5">2 </span><span class="s2">- </span><span class="s1">kernel_size </span><span class="s2">+ </span><span class="s1">output_padding</span><span class="s2">) // </span><span class="s5">2</span><span class="s2">), </span><span class="s5">0</span>
+        <span class="s2">)</span>
+        <span class="s1">torch_output_padding </span><span class="s2">= (</span>
+            <span class="s5">2 </span><span class="s2">* </span><span class="s1">torch_padding </span><span class="s2">+ </span><span class="s1">kernel_size </span><span class="s2">% </span><span class="s5">2 </span><span class="s2">- </span><span class="s1">kernel_size </span><span class="s2">+ </span><span class="s1">output_padding</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">torch_padding </span><span class="s2">&gt; </span><span class="s5">0 </span><span class="s0">and </span><span class="s1">torch_output_padding </span><span class="s2">&gt; </span><span class="s5">0</span><span class="s2">:</span>
+        <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+            <span class="s4">f&quot;You might experience inconsistencies across backends when &quot;</span>
+            <span class="s4">f&quot;calling conv transpose with kernel_size=</span><span class="s0">{</span><span class="s1">original_kernel_size</span><span class="s0">}</span><span class="s4">, &quot;</span>
+            <span class="s4">f&quot;stride=</span><span class="s0">{</span><span class="s1">stride</span><span class="s0">}</span><span class="s4">, dilation_rate=</span><span class="s0">{</span><span class="s1">dilation_rate</span><span class="s0">}</span><span class="s4">, &quot;</span>
+            <span class="s4">f&quot;padding=</span><span class="s0">{</span><span class="s1">padding</span><span class="s0">}</span><span class="s4">, output_padding=</span><span class="s0">{</span><span class="s1">output_padding</span><span class="s0">}</span><span class="s4">.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">torch_output_padding </span><span class="s2">&gt;= </span><span class="s1">stride</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">f&quot;The padding arguments (padding=</span><span class="s0">{</span><span class="s1">padding</span><span class="s0">}</span><span class="s4">) and &quot;</span>
+            <span class="s4">f&quot;output_padding=</span><span class="s0">{</span><span class="s1">output_padding</span><span class="s0">}</span><span class="s4">) lead to a Torch &quot;</span>
+            <span class="s4">f&quot;output_padding (</span><span class="s0">{</span><span class="s1">torch_output_padding</span><span class="s0">}</span><span class="s4">) that is greater than &quot;</span>
+            <span class="s4">f&quot;strides (</span><span class="s0">{</span><span class="s1">stride</span><span class="s0">}</span><span class="s4">). This is not supported. You can change the &quot;</span>
+            <span class="s4">f&quot;padding arguments, kernel or stride, or run on another backend. &quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">torch_padding</span><span class="s2">, </span><span class="s1">torch_output_padding</span>
+
+
+<span class="s0">def </span><span class="s1">compute_conv_transpose_padding_args_for_jax</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">,</span>
+    <span class="s1">kernel_shape</span><span class="s2">,</span>
+    <span class="s1">strides</span><span class="s2">,</span>
+    <span class="s1">padding</span><span class="s2">,</span>
+    <span class="s1">output_padding</span><span class="s2">,</span>
+    <span class="s1">dilation_rate</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">num_spatial_dims </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s5">2</span>
+    <span class="s1">kernel_spatial_shape </span><span class="s2">= </span><span class="s1">kernel_shape</span><span class="s2">[:-</span><span class="s5">2</span><span class="s2">]</span>
+
+    <span class="s1">jax_padding </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_spatial_dims</span><span class="s2">):</span>
+        <span class="s1">output_padding_i </span><span class="s2">= (</span>
+            <span class="s1">output_padding</span>
+            <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None or </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">output_padding</span><span class="s2">, </span><span class="s1">int</span><span class="s2">)</span>
+            <span class="s0">else </span><span class="s1">output_padding</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s1">strides_i </span><span class="s2">= </span><span class="s1">strides </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">strides</span><span class="s2">, </span><span class="s1">int</span><span class="s2">) </span><span class="s0">else </span><span class="s1">strides</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s1">dilation_rate_i </span><span class="s2">= (</span>
+            <span class="s1">dilation_rate</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dilation_rate</span><span class="s2">, </span><span class="s1">int</span><span class="s2">)</span>
+            <span class="s0">else </span><span class="s1">dilation_rate</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s2">(</span>
+            <span class="s1">pad_left</span><span class="s2">,</span>
+            <span class="s1">pad_right</span><span class="s2">,</span>
+        <span class="s2">) = </span><span class="s1">_convert_conv_tranpose_padding_args_from_keras_to_jax</span><span class="s2">(</span>
+            <span class="s1">kernel_size</span><span class="s2">=</span><span class="s1">kernel_spatial_shape</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s1">stride</span><span class="s2">=</span><span class="s1">strides_i</span><span class="s2">,</span>
+            <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s1">dilation_rate_i</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s1">output_padding</span><span class="s2">=</span><span class="s1">output_padding_i</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">jax_padding</span><span class="s2">.</span><span class="s1">append</span><span class="s2">((</span><span class="s1">pad_left</span><span class="s2">, </span><span class="s1">pad_right</span><span class="s2">))</span>
+
+    <span class="s0">return </span><span class="s1">jax_padding</span>
+
+
+<span class="s0">def </span><span class="s1">compute_conv_transpose_padding_args_for_torch</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">,</span>
+    <span class="s1">kernel_shape</span><span class="s2">,</span>
+    <span class="s1">strides</span><span class="s2">,</span>
+    <span class="s1">padding</span><span class="s2">,</span>
+    <span class="s1">output_padding</span><span class="s2">,</span>
+    <span class="s1">dilation_rate</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">num_spatial_dims </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s5">2</span>
+    <span class="s1">kernel_spatial_shape </span><span class="s2">= </span><span class="s1">kernel_shape</span><span class="s2">[:-</span><span class="s5">2</span><span class="s2">]</span>
+
+    <span class="s1">torch_paddings </span><span class="s2">= []</span>
+    <span class="s1">torch_output_paddings </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_spatial_dims</span><span class="s2">):</span>
+        <span class="s1">output_padding_i </span><span class="s2">= (</span>
+            <span class="s1">output_padding</span>
+            <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None or </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">output_padding</span><span class="s2">, </span><span class="s1">int</span><span class="s2">)</span>
+            <span class="s0">else </span><span class="s1">output_padding</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s1">strides_i </span><span class="s2">= </span><span class="s1">strides </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">strides</span><span class="s2">, </span><span class="s1">int</span><span class="s2">) </span><span class="s0">else </span><span class="s1">strides</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s1">dilation_rate_i </span><span class="s2">= (</span>
+            <span class="s1">dilation_rate</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dilation_rate</span><span class="s2">, </span><span class="s1">int</span><span class="s2">)</span>
+            <span class="s0">else </span><span class="s1">dilation_rate</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s2">(</span>
+            <span class="s1">torch_padding</span><span class="s2">,</span>
+            <span class="s1">torch_output_padding</span><span class="s2">,</span>
+        <span class="s2">) = </span><span class="s1">_convert_conv_tranpose_padding_args_from_keras_to_torch</span><span class="s2">(</span>
+            <span class="s1">kernel_size</span><span class="s2">=</span><span class="s1">kernel_spatial_shape</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s1">stride</span><span class="s2">=</span><span class="s1">strides_i</span><span class="s2">,</span>
+            <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s1">dilation_rate_i</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s1">output_padding</span><span class="s2">=</span><span class="s1">output_padding_i</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">torch_paddings</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">torch_padding</span><span class="s2">)</span>
+        <span class="s1">torch_output_paddings</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">torch_output_padding</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">torch_paddings</span><span class="s2">, </span><span class="s1">torch_output_paddings</span>
+
+
+<span class="s0">def </span><span class="s1">_get_output_shape_given_tf_padding</span><span class="s2">(</span>
+    <span class="s1">input_size</span><span class="s2">, </span><span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">strides</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">, </span><span class="s1">output_padding</span><span class="s2">, </span><span class="s1">dilation_rate</span>
+<span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">input_size </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">assert </span><span class="s1">padding</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">() </span><span class="s0">in </span><span class="s2">{</span><span class="s4">&quot;valid&quot;</span><span class="s2">, </span><span class="s4">&quot;same&quot;</span><span class="s2">}</span>
+
+    <span class="s1">kernel_size </span><span class="s2">= (</span><span class="s1">kernel_size </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) * </span><span class="s1">dilation_rate </span><span class="s2">+ </span><span class="s5">1</span>
+
+    <span class="s0">if </span><span class="s1">padding</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">() == </span><span class="s4">&quot;valid&quot;</span><span class="s2">:</span>
+        <span class="s1">output_padding </span><span class="s2">= (</span>
+            <span class="s1">max</span><span class="s2">(</span><span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">strides</span><span class="s2">) - </span><span class="s1">kernel_size</span>
+            <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None</span>
+            <span class="s0">else </span><span class="s1">output_padding</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s2">(</span><span class="s1">input_size </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) * </span><span class="s1">strides </span><span class="s2">+ </span><span class="s1">kernel_size </span><span class="s2">+ </span><span class="s1">output_padding</span>
+
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">output_padding </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">input_size </span><span class="s2">* </span><span class="s1">strides</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">(</span><span class="s1">input_size </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) * </span><span class="s1">strides </span><span class="s2">+ </span><span class="s1">kernel_size </span><span class="s2">% </span><span class="s5">2 </span><span class="s2">+ </span><span class="s1">output_padding</span>
+
+
+<span class="s0">def </span><span class="s1">compute_conv_transpose_output_shape</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">,</span>
+    <span class="s1">kernel_size</span><span class="s2">,</span>
+    <span class="s1">filters</span><span class="s2">,</span>
+    <span class="s1">strides</span><span class="s2">,</span>
+    <span class="s1">padding</span><span class="s2">,</span>
+    <span class="s1">output_padding</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">data_format</span><span class="s2">=</span><span class="s4">&quot;channels_last&quot;</span><span class="s2">,</span>
+    <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s5">1</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s1">num_spatial_dims </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s5">2</span>
+    <span class="s1">kernel_spatial_shape </span><span class="s2">= </span><span class="s1">kernel_size</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">output_padding</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s1">output_padding </span><span class="s2">= (</span><span class="s1">output_padding</span><span class="s2">,) * </span><span class="s1">len</span><span class="s2">(</span><span class="s1">kernel_spatial_shape</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">strides</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s1">strides </span><span class="s2">= (</span><span class="s1">strides</span><span class="s2">,) * </span><span class="s1">num_spatial_dims</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dilation_rate</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s1">dilation_rate </span><span class="s2">= (</span><span class="s1">dilation_rate</span><span class="s2">,) * </span><span class="s1">num_spatial_dims</span>
+
+    <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s4">&quot;channels_last&quot;</span><span class="s2">:</span>
+        <span class="s1">input_spatial_shape </span><span class="s2">= </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">:-</span><span class="s5">1</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">input_spatial_shape </span><span class="s2">= </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">2</span><span class="s2">:]</span>
+
+    <span class="s1">output_shape </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_spatial_dims</span><span class="s2">):</span>
+        <span class="s1">current_output_padding </span><span class="s2">= (</span>
+            <span class="s0">None if </span><span class="s1">output_padding </span><span class="s0">is None else </span><span class="s1">output_padding</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+        <span class="s2">)</span>
+
+        <span class="s1">shape_i </span><span class="s2">= </span><span class="s1">_get_output_shape_given_tf_padding</span><span class="s2">(</span>
+            <span class="s1">input_size</span><span class="s2">=</span><span class="s1">input_spatial_shape</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s1">kernel_size</span><span class="s2">=</span><span class="s1">kernel_spatial_shape</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s1">strides</span><span class="s2">=</span><span class="s1">strides</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s1">output_padding</span><span class="s2">=</span><span class="s1">current_output_padding</span><span class="s2">,</span>
+            <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s1">dilation_rate</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+        <span class="s2">)</span>
+        <span class="s1">output_shape</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">shape_i</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s4">&quot;channels_last&quot;</span><span class="s2">:</span>
+        <span class="s1">output_shape </span><span class="s2">= [</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]] + </span><span class="s1">output_shape </span><span class="s2">+ [</span><span class="s1">filters</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">output_shape </span><span class="s2">= [</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">], </span><span class="s1">filters</span><span class="s2">] + </span><span class="s1">output_shape</span>
+    <span class="s0">return </span><span class="s1">output_shape</span>
+
+
+<span class="s0">def </span><span class="s1">canonicalize_axis</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">, </span><span class="s1">num_dims</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Canonicalize an axis in [-num_dims, num_dims) to [0, num_dims).&quot;&quot;&quot;</span>
+    <span class="s1">axis </span><span class="s2">= </span><span class="s1">operator</span><span class="s2">.</span><span class="s1">index</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">)</span>
+    <span class="s0">if not </span><span class="s2">-</span><span class="s1">num_dims </span><span class="s2">&lt;= </span><span class="s1">axis </span><span class="s2">&lt; </span><span class="s1">num_dims</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">f&quot;axis </span><span class="s0">{</span><span class="s1">axis</span><span class="s0">} </span><span class="s4">is out of bounds for an array with dimension &quot;</span>
+            <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">num_dims</span><span class="s0">}</span><span class="s4">.&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">axis </span><span class="s2">&lt; </span><span class="s5">0</span><span class="s2">:</span>
+        <span class="s1">axis </span><span class="s2">= </span><span class="s1">axis </span><span class="s2">+ </span><span class="s1">num_dims</span>
+    <span class="s0">return </span><span class="s1">axis</span>
+
+
+<span class="s0">def </span><span class="s1">standardize_axis_for_numpy</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Standardize an axis to a tuple if it is a list in the numpy backend.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">) </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">, </span><span class="s1">list</span><span class="s2">) </span><span class="s0">else </span><span class="s1">axis</span>
+
+
+<span class="s0">def </span><span class="s1">to_tuple_or_list</span><span class="s2">(</span><span class="s1">value</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Convert the non-`None` value to either a tuple or a list.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">value </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">value</span>
+    <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, (</span><span class="s1">int</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">)):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">&quot;`value` must be an integer, tuple or list. &quot;</span>
+            <span class="s4">f&quot;Received: value=</span><span class="s0">{</span><span class="s1">value</span><span class="s0">}</span><span class="s4">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">(</span><span class="s1">value</span><span class="s2">,)</span>
+    <span class="s0">return </span><span class="s1">value</span>
+
+
+<span class="s6">### Code for ops.vectorize() used for TF and torch backends.</span>
+
+<span class="s6"># See http://docs.scipy.org/doc/numpy/reference/c-api.generalized-ufuncs.html</span>
+<span class="s1">_DIMENSION_NAME </span><span class="s2">= </span><span class="s4">r&quot;\w+&quot;</span>
+<span class="s1">_CORE_DIMENSION_LIST </span><span class="s2">= </span><span class="s4">&quot;(?:{0:}(?:,{0:})*)?&quot;</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span><span class="s1">_DIMENSION_NAME</span><span class="s2">)</span>
+<span class="s1">_ARGUMENT </span><span class="s2">= </span><span class="s4">rf&quot;\(</span><span class="s0">{</span><span class="s1">_CORE_DIMENSION_LIST</span><span class="s0">}</span><span class="s4">\)&quot;</span>
+<span class="s1">_ARGUMENT_LIST </span><span class="s2">= </span><span class="s4">&quot;{0:}(?:,{0:})*&quot;</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span><span class="s1">_ARGUMENT</span><span class="s2">)</span>
+<span class="s1">_SIGNATURE </span><span class="s2">= </span><span class="s4">&quot;^{0:}-&gt;{0:}$&quot;</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span><span class="s1">_ARGUMENT_LIST</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_vectorize_parse_gufunc_signature</span><span class="s2">(</span>
+    <span class="s1">signature</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">if not </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span><span class="s1">_SIGNATURE</span><span class="s2">, </span><span class="s1">signature</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s4">f&quot;not a valid gufunc signature: </span><span class="s0">{</span><span class="s1">signature</span><span class="s0">}</span><span class="s4">&quot;</span><span class="s2">)</span>
+    <span class="s1">args</span><span class="s2">, </span><span class="s1">retvals </span><span class="s2">= (</span>
+        <span class="s2">[</span>
+            <span class="s1">tuple</span><span class="s2">(</span><span class="s1">re</span><span class="s2">.</span><span class="s1">findall</span><span class="s2">(</span><span class="s1">_DIMENSION_NAME</span><span class="s2">, </span><span class="s1">arg</span><span class="s2">))</span>
+            <span class="s0">for </span><span class="s1">arg </span><span class="s0">in </span><span class="s1">re</span><span class="s2">.</span><span class="s1">findall</span><span class="s2">(</span><span class="s1">_ARGUMENT</span><span class="s2">, </span><span class="s1">arg_list</span><span class="s2">)</span>
+        <span class="s2">]</span>
+        <span class="s0">for </span><span class="s1">arg_list </span><span class="s0">in </span><span class="s1">signature</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s4">&quot;-&gt;&quot;</span><span class="s2">)</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">args</span><span class="s2">, </span><span class="s1">retvals</span>
+
+
+<span class="s0">def </span><span class="s1">_vectorize_update_dim_sizes</span><span class="s2">(</span><span class="s1">dim_sizes</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">, </span><span class="s1">core_dims</span><span class="s2">, </span><span class="s1">is_input</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+    <span class="s1">num_core_dims </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">core_dims</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">is_input</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) &lt; </span><span class="s1">num_core_dims</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f&quot;input with shape </span><span class="s0">{</span><span class="s1">shape</span><span class="s0">} </span><span class="s4">does not &quot;</span>
+                <span class="s4">&quot;have enough dimensions for all core &quot;</span>
+                <span class="s4">f&quot;dimensions </span><span class="s0">{</span><span class="s1">core_dims</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) != </span><span class="s1">num_core_dims</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f&quot;output shape </span><span class="s0">{</span><span class="s1">shape</span><span class="s0">} </span><span class="s4">does not &quot;</span>
+                <span class="s4">f&quot;match core dimensions </span><span class="s0">{</span><span class="s1">core_dims</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s1">core_shape </span><span class="s2">= </span><span class="s1">shape</span><span class="s2">[-</span><span class="s1">num_core_dims</span><span class="s2">:] </span><span class="s0">if </span><span class="s1">core_dims </span><span class="s0">else </span><span class="s2">()</span>
+    <span class="s0">for </span><span class="s1">dim</span><span class="s2">, </span><span class="s1">size </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">core_dims</span><span class="s2">, </span><span class="s1">core_shape</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">dim </span><span class="s0">not in </span><span class="s1">dim_sizes</span><span class="s2">:</span>
+            <span class="s1">dim_sizes</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">] = </span><span class="s1">size</span>
+        <span class="s0">elif </span><span class="s1">size </span><span class="s2">!= </span><span class="s1">dim_sizes</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f&quot;inconsistent size for core dimension </span><span class="s0">{</span><span class="s1">dim</span><span class="s0">}</span><span class="s4">: &quot;</span>
+                <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">size</span><span class="s0">} </span><span class="s4">vs </span><span class="s0">{</span><span class="s1">dim_sizes</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_vectorize_parse_input_dimensions</span><span class="s2">(</span>
+    <span class="s1">args</span><span class="s2">,</span>
+    <span class="s1">input_core_dims</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+
+    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">args</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_core_dims</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+            <span class="s4">&quot;wrong number of positional arguments: &quot;</span>
+            <span class="s4">f&quot;expected </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_core_dims</span><span class="s2">)</span><span class="s0">}</span><span class="s4">, got </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">args</span><span class="s2">)</span><span class="s0">}</span><span class="s4">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s1">shapes </span><span class="s2">= []</span>
+    <span class="s1">dim_sizes</span><span class="s2">: </span><span class="s1">dict</span><span class="s2">[</span><span class="s1">str</span><span class="s2">, </span><span class="s1">int</span><span class="s2">] = {}</span>
+    <span class="s0">for </span><span class="s1">arg</span><span class="s2">, </span><span class="s1">core_dims </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">args</span><span class="s2">, </span><span class="s1">input_core_dims</span><span class="s2">):</span>
+        <span class="s1">_vectorize_update_dim_sizes</span><span class="s2">(</span>
+            <span class="s1">dim_sizes</span><span class="s2">, </span><span class="s1">arg</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">core_dims</span><span class="s2">, </span><span class="s1">is_input</span><span class="s2">=</span><span class="s0">True</span>
+        <span class="s2">)</span>
+        <span class="s1">ndim </span><span class="s2">= </span><span class="s1">arg</span><span class="s2">.</span><span class="s1">ndim </span><span class="s2">- </span><span class="s1">len</span><span class="s2">(</span><span class="s1">core_dims</span><span class="s2">)</span>
+        <span class="s1">shapes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">arg</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[:</span><span class="s1">ndim</span><span class="s2">])</span>
+    <span class="s1">broadcast_shape </span><span class="s2">= </span><span class="s1">shapes</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+    <span class="s0">for </span><span class="s1">s </span><span class="s0">in </span><span class="s1">shapes</span><span class="s2">:</span>
+        <span class="s1">broadcast_shape </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">broadcast_shapes</span><span class="s2">(</span><span class="s1">broadcast_shape</span><span class="s2">, </span><span class="s1">s</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">broadcast_shape</span><span class="s2">, </span><span class="s1">dim_sizes</span>
+
+
+<span class="s0">def </span><span class="s1">_vectorize_check_output_dims</span><span class="s2">(</span>
+    <span class="s1">func</span><span class="s2">,</span>
+    <span class="s1">dim_sizes</span><span class="s2">,</span>
+    <span class="s1">expected_output_core_dims</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+
+    <span class="s0">def </span><span class="s1">wrapped</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">):</span>
+        <span class="s1">out </span><span class="s2">= </span><span class="s1">func</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">out</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+            <span class="s1">out_shapes </span><span class="s2">= [</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">out</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">out_shapes </span><span class="s2">= [</span><span class="s1">out</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">]</span>
+
+        <span class="s0">if </span><span class="s1">expected_output_core_dims </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">output_core_dims </span><span class="s2">= [()] * </span><span class="s1">len</span><span class="s2">(</span><span class="s1">out_shapes</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">output_core_dims </span><span class="s2">= </span><span class="s1">expected_output_core_dims</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">output_core_dims</span><span class="s2">) &gt; </span><span class="s5">1 </span><span class="s0">and not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">out</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+                    <span class="s4">&quot;output must be a tuple when multiple outputs &quot;</span>
+                    <span class="s4">f&quot;are expected, got: </span><span class="s0">{</span><span class="s1">out</span><span class="s0">}</span><span class="s4">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">out_shapes</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">output_core_dims</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+                    <span class="s4">&quot;wrong number of output arguments: &quot;</span>
+                    <span class="s4">f&quot;expected </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">output_core_dims</span><span class="s2">)</span><span class="s0">}</span><span class="s4">, got </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">out_shapes</span><span class="s2">)</span><span class="s0">}</span><span class="s4">&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s1">sizes </span><span class="s2">= </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">dim_sizes</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">shape</span><span class="s2">, </span><span class="s1">core_dims </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">out_shapes</span><span class="s2">, </span><span class="s1">output_core_dims</span><span class="s2">):</span>
+            <span class="s1">_vectorize_update_dim_sizes</span><span class="s2">(</span><span class="s1">sizes</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">, </span><span class="s1">core_dims</span><span class="s2">, </span><span class="s1">is_input</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">out</span>
+
+    <span class="s0">return </span><span class="s1">wrapped</span>
+
+
+<span class="s0">def </span><span class="s1">_vectorize_apply_excluded</span><span class="s2">(</span><span class="s1">func</span><span class="s2">, </span><span class="s1">excluded</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs</span><span class="s2">):</span>
+    <span class="s0">if not </span><span class="s1">excluded</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">func</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs</span>
+
+    <span class="s1">dynamic_args </span><span class="s2">= [</span><span class="s1">arg </span><span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">arg </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">args</span><span class="s2">) </span><span class="s0">if </span><span class="s1">i </span><span class="s0">not in </span><span class="s1">excluded</span><span class="s2">]</span>
+    <span class="s1">dynamic_kwargs </span><span class="s2">= {</span>
+        <span class="s1">key</span><span class="s2">: </span><span class="s1">val </span><span class="s0">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">val </span><span class="s0">in </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">() </span><span class="s0">if </span><span class="s1">key </span><span class="s0">not in </span><span class="s1">excluded</span>
+    <span class="s2">}</span>
+    <span class="s1">static_args </span><span class="s2">= [</span>
+        <span class="s2">(</span><span class="s1">i</span><span class="s2">, </span><span class="s1">args</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">e </span><span class="s0">for </span><span class="s1">e </span><span class="s0">in </span><span class="s1">excluded </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">e</span><span class="s2">, </span><span class="s1">int</span><span class="s2">))</span>
+        <span class="s0">if </span><span class="s1">i </span><span class="s2">&lt; </span><span class="s1">len</span><span class="s2">(</span><span class="s1">args</span><span class="s2">)</span>
+    <span class="s2">]</span>
+    <span class="s1">static_kwargs </span><span class="s2">= {</span><span class="s1">key</span><span class="s2">: </span><span class="s1">val </span><span class="s0">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">val </span><span class="s0">in </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">() </span><span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s1">excluded</span><span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">new_func</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s1">args </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">args</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">arg </span><span class="s0">in </span><span class="s1">static_args</span><span class="s2">:</span>
+            <span class="s1">args</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s1">i</span><span class="s2">, </span><span class="s1">arg</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">func</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">, **</span><span class="s1">static_kwargs</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">new_func</span><span class="s2">, </span><span class="s1">dynamic_args</span><span class="s2">, </span><span class="s1">dynamic_kwargs</span>
+
+
+<span class="s0">def </span><span class="s1">vectorize_impl</span><span class="s2">(</span><span class="s1">pyfunc</span><span class="s2">, </span><span class="s1">vmap_fn</span><span class="s2">, *, </span><span class="s1">excluded</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">signature</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Implementation adapted from JAX and NumPy.&quot;&quot;&quot;</span>
+
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+
+    <span class="s1">excluded </span><span class="s2">= </span><span class="s0">None or </span><span class="s1">set</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">functools</span><span class="s2">.</span><span class="s1">wraps</span><span class="s2">(</span><span class="s1">pyfunc</span><span class="s2">)</span>
+    <span class="s0">def </span><span class="s1">wrapped</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s1">excluded_func</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs </span><span class="s2">= </span><span class="s1">_vectorize_apply_excluded</span><span class="s2">(</span>
+            <span class="s1">pyfunc</span><span class="s2">, </span><span class="s1">excluded</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">kwargs</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">signature </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">input_core_dims</span><span class="s2">, </span><span class="s1">output_core_dims </span><span class="s2">= (</span>
+                <span class="s1">_vectorize_parse_gufunc_signature</span><span class="s2">(</span><span class="s1">signature</span><span class="s2">)</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">input_core_dims </span><span class="s2">= [()] * </span><span class="s1">len</span><span class="s2">(</span><span class="s1">args</span><span class="s2">)</span>
+            <span class="s1">output_core_dims </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s1">none_args </span><span class="s2">= {</span><span class="s1">i </span><span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">arg </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">args</span><span class="s2">) </span><span class="s0">if </span><span class="s1">arg </span><span class="s0">is None</span><span class="s2">}</span>
+        <span class="s0">if </span><span class="s1">any</span><span class="s2">(</span><span class="s1">none_args</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">any</span><span class="s2">(</span><span class="s1">input_core_dims</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] != () </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">none_args</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">f&quot;Cannot pass None at locations </span><span class="s0">{</span><span class="s1">none_args</span><span class="s0">} </span><span class="s4">&quot;</span>
+                    <span class="s4">f&quot;with signature=</span><span class="s0">{</span><span class="s1">signature</span><span class="s0">}</span><span class="s4">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">excluded_func</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">_vectorize_apply_excluded</span><span class="s2">(</span>
+                <span class="s1">excluded_func</span><span class="s2">, </span><span class="s1">none_args</span><span class="s2">, </span><span class="s1">args</span><span class="s2">, {}</span>
+            <span class="s2">)</span>
+            <span class="s1">input_core_dims </span><span class="s2">= [</span>
+                <span class="s1">dim</span>
+                <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">input_core_dims</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">i </span><span class="s0">not in </span><span class="s1">none_args</span>
+            <span class="s2">]</span>
+
+        <span class="s1">args </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">map</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">, </span><span class="s1">args</span><span class="s2">))</span>
+
+        <span class="s1">broadcast_shape</span><span class="s2">, </span><span class="s1">dim_sizes </span><span class="s2">= </span><span class="s1">_vectorize_parse_input_dimensions</span><span class="s2">(</span>
+            <span class="s1">args</span><span class="s2">, </span><span class="s1">input_core_dims</span>
+        <span class="s2">)</span>
+        <span class="s1">checked_func </span><span class="s2">= </span><span class="s1">_vectorize_check_output_dims</span><span class="s2">(</span>
+            <span class="s1">excluded_func</span><span class="s2">, </span><span class="s1">dim_sizes</span><span class="s2">, </span><span class="s1">output_core_dims</span>
+        <span class="s2">)</span>
+        <span class="s1">squeezed_args </span><span class="s2">= []</span>
+        <span class="s1">rev_filled_shapes </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">arg</span><span class="s2">, </span><span class="s1">core_dims </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">args</span><span class="s2">, </span><span class="s1">input_core_dims</span><span class="s2">):</span>
+            <span class="s1">noncore_shape </span><span class="s2">= </span><span class="s1">arg</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[: </span><span class="s1">arg</span><span class="s2">.</span><span class="s1">ndim </span><span class="s2">- </span><span class="s1">len</span><span class="s2">(</span><span class="s1">core_dims</span><span class="s2">)]</span>
+
+            <span class="s1">pad_ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">broadcast_shape</span><span class="s2">) - </span><span class="s1">len</span><span class="s2">(</span><span class="s1">noncore_shape</span><span class="s2">)</span>
+            <span class="s1">filled_shape </span><span class="s2">= </span><span class="s1">pad_ndim </span><span class="s2">* (</span><span class="s5">1</span><span class="s2">,) + </span><span class="s1">noncore_shape</span>
+            <span class="s1">rev_filled_shapes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">filled_shape</span><span class="s2">[::-</span><span class="s5">1</span><span class="s2">])</span>
+
+            <span class="s1">squeeze_indices </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span>
+                <span class="s1">i </span><span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">size </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">noncore_shape</span><span class="s2">) </span><span class="s0">if </span><span class="s1">size </span><span class="s2">== </span><span class="s5">1</span>
+            <span class="s2">)</span>
+            <span class="s1">squeezed_arg </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">arg</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">squeeze_indices</span><span class="s2">)</span>
+            <span class="s1">squeezed_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">squeezed_arg</span><span class="s2">)</span>
+
+        <span class="s1">vectorized_func </span><span class="s2">= </span><span class="s1">checked_func</span>
+        <span class="s1">dims_to_expand </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">negdim</span><span class="s2">, </span><span class="s1">axis_sizes </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(*</span><span class="s1">rev_filled_shapes</span><span class="s2">)):</span>
+            <span class="s1">in_axes </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s0">None if </span><span class="s1">size </span><span class="s2">== </span><span class="s5">1 </span><span class="s0">else </span><span class="s5">0 </span><span class="s0">for </span><span class="s1">size </span><span class="s0">in </span><span class="s1">axis_sizes</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">all</span><span class="s2">(</span><span class="s1">axis </span><span class="s0">is None for </span><span class="s1">axis </span><span class="s0">in </span><span class="s1">in_axes</span><span class="s2">):</span>
+                <span class="s1">dims_to_expand</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">broadcast_shape</span><span class="s2">) - </span><span class="s5">1 </span><span class="s2">- </span><span class="s1">negdim</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">vectorized_func </span><span class="s2">= </span><span class="s1">vmap_fn</span><span class="s2">(</span><span class="s1">vectorized_func</span><span class="s2">, </span><span class="s1">in_axes</span><span class="s2">)</span>
+        <span class="s1">result </span><span class="s2">= </span><span class="s1">vectorized_func</span><span class="s2">(*</span><span class="s1">squeezed_args</span><span class="s2">)</span>
+
+        <span class="s0">if not </span><span class="s1">dims_to_expand</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">result</span>
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">result</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">tuple</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">r</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">dims_to_expand</span><span class="s2">) </span><span class="s0">for </span><span class="s1">r </span><span class="s0">in </span><span class="s1">result</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">result</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">dims_to_expand</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">wrapped</span>
+
+
+<span class="s0">def </span><span class="s1">slice_along_axis</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">start</span><span class="s2">=</span><span class="s5">0</span><span class="s2">, </span><span class="s1">stop</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s5">1</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Slice a Tensor along the given axis.&quot;&quot;&quot;</span>
+    <span class="s6"># Ref: same util function defined in tfp.math.scan_associative</span>
+    <span class="s0">if </span><span class="s1">axis </span><span class="s2">&gt;= </span><span class="s5">0</span><span class="s2">:</span>
+        <span class="s1">slices </span><span class="s2">= [</span><span class="s1">slice</span><span class="s2">(</span><span class="s0">None</span><span class="s2">)] * </span><span class="s1">axis </span><span class="s2">+ [</span><span class="s1">slice</span><span class="s2">(</span><span class="s1">start</span><span class="s2">, </span><span class="s1">stop</span><span class="s2">, </span><span class="s1">step</span><span class="s2">)]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">slices </span><span class="s2">= [</span><span class="s1">Ellipsis</span><span class="s2">, </span><span class="s1">slice</span><span class="s2">(</span><span class="s1">start</span><span class="s2">, </span><span class="s1">stop</span><span class="s2">, </span><span class="s1">step</span><span class="s2">)] + [</span><span class="s1">slice</span><span class="s2">(</span><span class="s0">None</span><span class="s2">)] * (</span>
+            <span class="s2">-</span><span class="s5">1 </span><span class="s2">- </span><span class="s1">axis</span>
+        <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">x</span><span class="s2">[</span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">slices</span><span class="s2">)]</span>
+</pre>
+</body>
+</html>

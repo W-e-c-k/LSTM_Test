@@ -1,0 +1,1036 @@
+<html>
+<head>
+<title>einsum_dense.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+einsum_dense.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">re</span>
+<span class="s0">import </span><span class="s1">string</span>
+
+<span class="s0">import </span><span class="s1">ml_dtypes</span>
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">activations</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">constraints</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">dtype_policies</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">initializers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">quantizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">regularizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s0">import </span><span class="s1">InputSpec</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.layers.EinsumDense&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">EinsumDense</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;A layer that uses `einsum` as the backing computation. 
+ 
+    This layer can perform einsum calculations of arbitrary dimensionality. 
+ 
+    Args: 
+        equation: An equation describing the einsum to perform. 
+            This equation must be a valid einsum string of the form 
+            `ab,bc-&gt;ac`, `...ab,bc-&gt;...ac`, or 
+            `ab...,bc-&gt;ac...` where 'ab', 'bc', and 'ac' can be any valid einsum 
+            axis expression sequence. 
+        output_shape: The expected shape of the output tensor 
+            (excluding the batch dimension and any dimensions 
+            represented by ellipses). You can specify `None` for any dimension 
+            that is unknown or can be inferred from the input shape. 
+        activation: Activation function to use. If you don't specify anything, 
+            no activation is applied 
+            (that is, a &quot;linear&quot; activation: `a(x) = x`). 
+        bias_axes: A string containing the output dimension(s) 
+            to apply a bias to. Each character in the `bias_axes` string 
+            should correspond to a character in the output portion 
+            of the `equation` string. 
+        kernel_initializer: Initializer for the `kernel` weights matrix. 
+        bias_initializer: Initializer for the bias vector. 
+        kernel_regularizer: Regularizer function applied to the `kernel` weights 
+            matrix. 
+        bias_regularizer: Regularizer function applied to the bias vector. 
+        kernel_constraint: Constraint function applied to the `kernel` weights 
+            matrix. 
+        bias_constraint: Constraint function applied to the bias vector. 
+        lora_rank: Optional integer. If set, the layer's forward pass 
+            will implement LoRA (Low-Rank Adaptation) 
+            with the provided rank. LoRA sets the layer's kernel 
+            to non-trainable and replaces it with a delta over the 
+            original kernel, obtained via multiplying two lower-rank 
+            trainable matrices 
+            (the factorization happens on the last dimension). 
+            This can be useful to reduce the 
+            computation cost of fine-tuning large dense layers. 
+            You can also enable LoRA on an existing 
+            `EinsumDense` layer by calling `layer.enable_lora(rank)`. 
+        **kwargs: Base layer keyword arguments, such as `name` and `dtype`. 
+ 
+    Examples: 
+ 
+    **Biased dense layer with einsums** 
+ 
+    This example shows how to instantiate a standard Keras dense layer using 
+    einsum operations. This example is equivalent to 
+    `keras.layers.Dense(64, use_bias=True)`. 
+ 
+    &gt;&gt;&gt; layer = keras.layers.EinsumDense(&quot;ab,bc-&gt;ac&quot;, 
+    ...                                       output_shape=64, 
+    ...                                       bias_axes=&quot;c&quot;) 
+    &gt;&gt;&gt; input_tensor = keras.Input(shape=[32]) 
+    &gt;&gt;&gt; output_tensor = layer(input_tensor) 
+    &gt;&gt;&gt; output_tensor.shape 
+    (None, 64) 
+ 
+    **Applying a dense layer to a sequence** 
+ 
+    This example shows how to instantiate a layer that applies the same dense 
+    operation to every element in a sequence. Here, the `output_shape` has two 
+    values (since there are two non-batch dimensions in the output); the first 
+    dimension in the `output_shape` is `None`, because the sequence dimension 
+    `b` has an unknown shape. 
+ 
+    &gt;&gt;&gt; layer = keras.layers.EinsumDense(&quot;abc,cd-&gt;abd&quot;, 
+    ...                                       output_shape=(None, 64), 
+    ...                                       bias_axes=&quot;d&quot;) 
+    &gt;&gt;&gt; input_tensor = keras.Input(shape=[32, 128]) 
+    &gt;&gt;&gt; output_tensor = layer(input_tensor) 
+    &gt;&gt;&gt; output_tensor.shape 
+    (None, 32, 64) 
+ 
+    **Applying a dense layer to a sequence using ellipses** 
+ 
+    This example shows how to instantiate a layer that applies the same dense 
+    operation to every element in a sequence, but uses the ellipsis notation 
+    instead of specifying the batch and sequence dimensions. 
+ 
+    Because we are using ellipsis notation and have specified only one axis, the 
+    `output_shape` arg is a single value. When instantiated in this way, the 
+    layer can handle any number of sequence dimensions - including the case 
+    where no sequence dimension exists. 
+ 
+    &gt;&gt;&gt; layer = keras.layers.EinsumDense(&quot;...x,xy-&gt;...y&quot;, 
+    ...                                       output_shape=64, 
+    ...                                       bias_axes=&quot;y&quot;) 
+    &gt;&gt;&gt; input_tensor = keras.Input(shape=[32, 128]) 
+    &gt;&gt;&gt; output_tensor = layer(input_tensor) 
+    &gt;&gt;&gt; output_tensor.shape 
+    (None, 32, 64) 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">equation</span><span class="s2">,</span>
+        <span class="s1">output_shape</span><span class="s2">,</span>
+        <span class="s1">activation</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_axes</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;glorot_uniform&quot;</span><span class="s2">,</span>
+        <span class="s1">bias_initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span><span class="s2">,</span>
+        <span class="s1">kernel_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">kernel_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">lora_rank</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(**</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">equation </span><span class="s2">= </span><span class="s1">equation</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">partial_output_shape </span><span class="s2">= (</span><span class="s1">output_shape</span><span class="s2">,)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">partial_output_shape </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_axes </span><span class="s2">= </span><span class="s1">bias_axes</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">activation </span><span class="s2">= </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">activation</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">kernel_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">bias_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">kernel_regularizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">bias_regularizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">kernel_constraint</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">bias_constraint</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_rank </span><span class="s2">= </span><span class="s1">lora_rank</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s1">shape_data </span><span class="s2">= </span><span class="s1">_analyze_einsum_string</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_axes</span><span class="s2">,</span>
+            <span class="s1">input_shape</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">partial_output_shape</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">kernel_shape</span><span class="s2">, </span><span class="s1">bias_shape</span><span class="s2">, </span><span class="s1">full_output_shape </span><span class="s2">= </span><span class="s1">shape_data</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">full_output_shape </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">full_output_shape</span><span class="s2">)</span>
+        <span class="s5"># `self._int8_build` needs `self.input_spec`</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s2">= </span><span class="s1">InputSpec</span><span class="s2">(</span><span class="s1">ndim</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">))</span>
+        <span class="s5"># We use `self._dtype_policy` to check to avoid issues in torch dynamo</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">quantized_build</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s2">!= </span><span class="s3">&quot;int8&quot;</span><span class="s2">:</span>
+            <span class="s5"># If the layer is quantized to int8, `self._kernel` will be added</span>
+            <span class="s5"># in `self._int8_build`. Therefore, we skip it here.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;kernel&quot;</span><span class="s2">,</span>
+                <span class="s1">shape</span><span class="s2">=</span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">kernel_shape</span><span class="s2">),</span>
+                <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer</span><span class="s2">,</span>
+                <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span><span class="s2">,</span>
+                <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint</span><span class="s2">,</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+                <span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">bias_shape </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;bias&quot;</span><span class="s2">,</span>
+                <span class="s1">shape</span><span class="s2">=</span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">bias_shape</span><span class="s2">),</span>
+                <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span><span class="s2">,</span>
+                <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer</span><span class="s2">,</span>
+                <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint</span><span class="s2">,</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+                <span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_rank</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">enable_lora</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_rank</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">kernel</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">AttributeError</span><span class="s2">(</span>
+                <span class="s3">&quot;You must build the layer before accessing `kernel`.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel </span><span class="s2">+ </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">matmul</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_a</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_b</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">_</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">full_output_shape</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">einsum</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">+= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s0">def </span><span class="s1">enable_lora</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">rank</span><span class="s2">, </span><span class="s1">a_initializer</span><span class="s2">=</span><span class="s3">&quot;he_uniform&quot;</span><span class="s2">, </span><span class="s1">b_initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Lora is incompatible with kernel constraints. &quot;</span>
+                <span class="s3">&quot;In order to enable lora on this layer, remove the &quot;</span>
+                <span class="s3">&quot;`kernel_constraint` argument.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Cannot enable lora on a layer that isn't yet built.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;lora is already enabled. &quot;</span>
+                <span class="s3">&quot;This can only be done once per layer.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_tracker</span><span class="s2">.</span><span class="s1">unlock</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_a </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;lora_kernel_a&quot;</span><span class="s2">,</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[:-</span><span class="s6">1</span><span class="s2">] + (</span><span class="s1">rank</span><span class="s2">,)),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">a_initializer</span><span class="s2">),</span>
+            <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_b </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;lora_kernel_b&quot;</span><span class="s2">,</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">rank</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">]),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">b_initializer</span><span class="s2">),</span>
+            <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span><span class="s2">.</span><span class="s1">trainable </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_tracker</span><span class="s2">.</span><span class="s1">lock</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_rank </span><span class="s2">= </span><span class="s1">rank</span>
+
+    <span class="s0">def </span><span class="s1">save_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s5"># Do nothing if the layer isn't yet built</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s5"># The keys of the `store` will be saved as determined because the</span>
+        <span class="s5"># default ordering will change after quantization</span>
+        <span class="s1">kernel_value</span><span class="s2">, </span><span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_kernel_with_merged_lora</span><span class="s2">()</span>
+        <span class="s1">target_variables </span><span class="s2">= [</span><span class="s1">kernel_value</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s2">== </span><span class="s3">&quot;int8&quot;</span><span class="s2">:</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">kernel_scale</span><span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s2">== </span><span class="s3">&quot;float8&quot;</span><span class="s2">:</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_scale</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_amax_history</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_amax_history</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_scale</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_amax_history</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode_error</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">variable </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">target_variables</span><span class="s2">):</span>
+            <span class="s1">store</span><span class="s2">[</span><span class="s1">str</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)] = </span><span class="s1">variable</span>
+
+    <span class="s0">def </span><span class="s1">load_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_load_own_variables</span><span class="s2">(</span><span class="s1">store</span><span class="s2">)</span>
+        <span class="s5"># Do nothing if the layer isn't yet built</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s5"># The keys of the `store` will be saved as determined because the</span>
+        <span class="s5"># default ordering will change after quantization</span>
+        <span class="s1">target_variables </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s2">== </span><span class="s3">&quot;int8&quot;</span><span class="s2">:</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span><span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s2">== </span><span class="s3">&quot;float8&quot;</span><span class="s2">:</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_scale</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_amax_history</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_amax_history</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_scale</span><span class="s2">)</span>
+                <span class="s1">target_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_amax_history</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode_error</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantization_mode</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">variable </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">target_variables</span><span class="s2">):</span>
+            <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">store</span><span class="s2">[</span><span class="s1">str</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)])</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_a</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_a</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">))</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_b</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_b</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s3">&quot;output_shape&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">partial_output_shape</span><span class="s2">,</span>
+            <span class="s3">&quot;equation&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">,</span>
+            <span class="s3">&quot;activation&quot;</span><span class="s2">: </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">),</span>
+            <span class="s3">&quot;bias_axes&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_axes</span><span class="s2">,</span>
+            <span class="s3">&quot;kernel_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;bias_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span><span class="s2">),</span>
+            <span class="s3">&quot;kernel_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;bias_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer</span><span class="s2">),</span>
+            <span class="s3">&quot;activity_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">activity_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;kernel_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint</span><span class="s2">),</span>
+            <span class="s3">&quot;bias_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint</span><span class="s2">),</span>
+        <span class="s2">}</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_rank</span><span class="s2">:</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;lora_rank&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_rank</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">_check_load_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s1">all_vars </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_trainable_variables </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_non_trainable_variables</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">store</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">all_vars</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">all_vars</span><span class="s2">) == </span><span class="s6">0 </span><span class="s0">and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">f&quot;Layer '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' was never built &quot;</span>
+                    <span class="s3">&quot;and thus it doesn't have any variables. &quot;</span>
+                    <span class="s3">f&quot;However the weights file lists </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">store</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span><span class="s0">} </span><span class="s3">&quot;</span>
+                    <span class="s3">&quot;variables for this layer.</span><span class="s0">\n</span><span class="s3">&quot;</span>
+                    <span class="s3">&quot;In most cases, this error indicates that either:</span><span class="s0">\n\n</span><span class="s3">&quot;</span>
+                    <span class="s3">&quot;1. The layer is owned by a parent layer that &quot;</span>
+                    <span class="s3">&quot;implements a `build()` method, but calling the &quot;</span>
+                    <span class="s3">&quot;parent's `build()` method did NOT create the state of &quot;</span>
+                    <span class="s3">f&quot;the child layer '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">'. A `build()` method &quot;</span>
+                    <span class="s3">&quot;must create ALL state for the layer, including &quot;</span>
+                    <span class="s3">&quot;the state of any children layers.</span><span class="s0">\n\n</span><span class="s3">&quot;</span>
+                    <span class="s3">&quot;2. You need to implement &quot;</span>
+                    <span class="s3">&quot;the `def build_from_config(self, config)` method &quot;</span>
+                    <span class="s3">f&quot;on layer '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">', to specify how to rebuild &quot;</span>
+                    <span class="s3">&quot;it during loading. &quot;</span>
+                    <span class="s3">&quot;In this case, you might also want to implement the &quot;</span>
+                    <span class="s3">&quot;method that generates the build config at saving time, &quot;</span>
+                    <span class="s3">&quot;`def get_build_config(self)`. &quot;</span>
+                    <span class="s3">&quot;The method `build_from_config()` is meant &quot;</span>
+                    <span class="s3">&quot;to create the state &quot;</span>
+                    <span class="s3">&quot;of the layer (i.e. its variables) upon deserialization.&quot;</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Layer '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' expected </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">all_vars</span><span class="s2">)</span><span class="s0">} </span><span class="s3">variables, &quot;</span>
+                <span class="s3">&quot;but received &quot;</span>
+                <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">store</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span><span class="s0">} </span><span class="s3">variables during loading. &quot;</span>
+                <span class="s3">f&quot;Expected: </span><span class="s0">{</span><span class="s2">[</span><span class="s1">v</span><span class="s2">.</span><span class="s1">name </span><span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">all_vars</span><span class="s2">]</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s5"># Quantization-related (int8 and float8) methods</span>
+
+    <span class="s0">def </span><span class="s1">quantized_build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;int8&quot;</span><span class="s2">:</span>
+            <span class="s1">shape_data </span><span class="s2">= </span><span class="s1">_analyze_einsum_string</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_axes</span><span class="s2">,</span>
+                <span class="s1">input_shape</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">partial_output_shape</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">kernel_shape</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">shape_data</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_int8_build</span><span class="s2">(</span><span class="s1">kernel_shape</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;float8&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_float8_build</span><span class="s2">()</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode_error</span><span class="s2">(</span><span class="s1">mode</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_int8_build</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">kernel_shape</span><span class="s2">,</span>
+        <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span><span class="s2">,</span>
+        <span class="s1">kernel_scale_initializer</span><span class="s2">=</span><span class="s3">&quot;ones&quot;</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_reduced_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reduced_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_transpose_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_expand_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_squeeze_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_custom_gradient_equation</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reverse_transpose_axes</span><span class="s2">,</span>
+        <span class="s2">) = </span><span class="s1">_analyze_quantization_info</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec</span><span class="s2">.</span><span class="s1">ndim</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_quantizer </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">AbsMaxQuantizer</span><span class="s2">(</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_input_reduced_axes</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;kernel&quot;</span><span class="s2">,</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">kernel_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">kernel_initializer</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;int8&quot;</span><span class="s2">,</span>
+            <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">kernel_scale_shape </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">kernel_shape</span><span class="s2">)</span>
+        <span class="s1">kernel_scale_shape</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reduced_axes</span><span class="s2">] = </span><span class="s6">1</span>
+        <span class="s1">kernel_scale_shape </span><span class="s2">= </span><span class="s1">kernel_scale_shape</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span><span class="s2">]</span>
+        <span class="s1">kernel_scale_shape </span><span class="s2">= </span><span class="s1">kernel_scale_shape</span><span class="s2">.</span><span class="s1">tolist</span><span class="s2">()</span>
+        <span class="s0">for </span><span class="s1">a </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">):</span>
+            <span class="s1">kernel_scale_shape</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s1">a</span><span class="s2">, </span><span class="s6">1</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">a </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">, </span><span class="s1">reverse</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+            <span class="s1">kernel_scale_shape</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s1">a</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;kernel_scale&quot;</span><span class="s2">,</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">kernel_scale_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">kernel_scale_initializer</span><span class="s2">,</span>
+            <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_quantized </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">_float8_build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">dtype_policies </span><span class="s0">import </span><span class="s1">QuantizedFloat8DTypePolicy</span>
+
+        <span class="s5"># If `self.dtype_policy` is not QuantizedFloat8DTypePolicy, then set</span>
+        <span class="s5"># `amax_history_length` to its default value.</span>
+        <span class="s1">amax_history_length </span><span class="s2">= </span><span class="s1">getattr</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy</span><span class="s2">,</span>
+            <span class="s3">&quot;amax_history_length&quot;</span><span class="s2">,</span>
+            <span class="s1">QuantizedFloat8DTypePolicy</span><span class="s2">.</span><span class="s1">default_amax_history_length</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s5"># We set `trainable=True` because we will use the gradients to overwrite</span>
+        <span class="s5"># these variables</span>
+        <span class="s1">scale_kwargs </span><span class="s2">= {</span>
+            <span class="s3">&quot;shape&quot;</span><span class="s2">: (),</span>
+            <span class="s3">&quot;initializer&quot;</span><span class="s2">: </span><span class="s3">&quot;ones&quot;</span><span class="s2">,</span>
+            <span class="s3">&quot;dtype&quot;</span><span class="s2">: </span><span class="s3">&quot;float32&quot;</span><span class="s2">,  </span><span class="s5"># Always be float32</span>
+            <span class="s3">&quot;trainable&quot;</span><span class="s2">: </span><span class="s0">True</span><span class="s2">,</span>
+            <span class="s3">&quot;autocast&quot;</span><span class="s2">: </span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">amax_history_kwargs </span><span class="s2">= {</span>
+            <span class="s3">&quot;shape&quot;</span><span class="s2">: (</span><span class="s1">amax_history_length</span><span class="s2">,),</span>
+            <span class="s3">&quot;initializer&quot;</span><span class="s2">: </span><span class="s3">&quot;zeros&quot;</span><span class="s2">,</span>
+            <span class="s3">&quot;dtype&quot;</span><span class="s2">: </span><span class="s3">&quot;float32&quot;</span><span class="s2">,  </span><span class="s5"># Always be float32</span>
+            <span class="s3">&quot;trainable&quot;</span><span class="s2">: </span><span class="s0">True</span><span class="s2">,</span>
+            <span class="s3">&quot;autocast&quot;</span><span class="s2">: </span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;inputs_scale&quot;</span><span class="s2">, **</span><span class="s1">scale_kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_amax_history </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;inputs_amax_history&quot;</span><span class="s2">, **</span><span class="s1">amax_history_kwargs</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;kernel_scale&quot;</span><span class="s2">, **</span><span class="s1">scale_kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_amax_history </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;kernel_amax_history&quot;</span><span class="s2">, **</span><span class="s1">amax_history_kwargs</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;outputs_grad_scale&quot;</span><span class="s2">, **</span><span class="s1">scale_kwargs</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_amax_history </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;outputs_grad_amax_history&quot;</span><span class="s2">, **</span><span class="s1">amax_history_kwargs</span>
+        <span class="s2">)</span>
+        <span class="s5"># We need to set `overwrite_with_gradient=True` to instruct the</span>
+        <span class="s5"># optimizer to directly overwrite these variables with their computed</span>
+        <span class="s5"># gradients during training</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_scale</span><span class="s2">.</span><span class="s1">overwrite_with_gradient </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_amax_history</span><span class="s2">.</span><span class="s1">overwrite_with_gradient </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span><span class="s2">.</span><span class="s1">overwrite_with_gradient </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_amax_history</span><span class="s2">.</span><span class="s1">overwrite_with_gradient </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_scale</span><span class="s2">.</span><span class="s1">overwrite_with_gradient </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_amax_history</span><span class="s2">.</span><span class="s1">overwrite_with_gradient </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_quantized </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">_int8_call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s2">@</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">custom_gradient</span>
+        <span class="s0">def </span><span class="s1">einsum_with_inputs_gradient</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">kernel</span><span class="s2">, </span><span class="s1">kernel_scale</span><span class="s2">):</span>
+            <span class="s0">def </span><span class="s1">grad_fn</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, </span><span class="s1">upstream</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">upstream </span><span class="s0">is None</span><span class="s2">:</span>
+                    <span class="s2">(</span><span class="s1">upstream</span><span class="s2">,) = </span><span class="s1">args</span>
+                <span class="s5"># De-scale kernel</span>
+                <span class="s1">_kernel_scale </span><span class="s2">= </span><span class="s1">kernel_scale  </span><span class="s5"># Overcome UnboundLocalError</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">:</span>
+                    <span class="s1">_kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+                        <span class="s1">_kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">:</span>
+                    <span class="s1">_kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span>
+                        <span class="s1">_kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span>
+                    <span class="s2">)</span>
+                <span class="s1">_kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span>
+                    <span class="s1">_kernel_scale</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reverse_transpose_axes</span>
+                <span class="s2">)</span>
+                <span class="s1">float_kernel </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide</span><span class="s2">(</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">kernel</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span><span class="s2">),</span>
+                    <span class="s1">_kernel_scale</span><span class="s2">,</span>
+                <span class="s2">)</span>
+                <span class="s5"># From https://stackoverflow.com/a/47609896</span>
+                <span class="s1">inputs_grad </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">einsum</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">_custom_gradient_equation</span><span class="s2">, </span><span class="s1">upstream</span><span class="s2">, </span><span class="s1">float_kernel</span>
+                <span class="s2">)</span>
+                <span class="s0">return </span><span class="s2">(</span><span class="s1">inputs_grad</span><span class="s2">, </span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+
+            <span class="s1">inputs</span><span class="s2">, </span><span class="s1">inputs_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_quantizer</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">einsum</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">kernel</span><span class="s2">)</span>
+            <span class="s5"># Deal with `inputs_scale`</span>
+            <span class="s1">inputs_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span>
+                <span class="s1">inputs_scale</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_input_transpose_axes</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_input_expand_axes</span><span class="s2">:</span>
+                <span class="s1">inputs_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+                    <span class="s1">inputs_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_input_expand_axes</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_input_squeeze_axes</span><span class="s2">:</span>
+                <span class="s1">inputs_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span>
+                    <span class="s1">inputs_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_input_squeeze_axes</span>
+                <span class="s2">)</span>
+            <span class="s5"># De-scale outputs</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span><span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">inputs_scale</span><span class="s2">, </span><span class="s1">kernel_scale</span><span class="s2">))</span>
+            <span class="s0">return </span><span class="s1">x</span><span class="s2">, </span><span class="s1">grad_fn</span>
+
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">einsum_with_inputs_gradient</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span><span class="s2">),</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+            <span class="s1">lora_x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">einsum</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_a</span><span class="s2">)</span>
+            <span class="s1">lora_x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">matmul</span><span class="s2">(</span><span class="s1">lora_x</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_b</span><span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">lora_x</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">+= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s0">def </span><span class="s1">_float8_call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">NotImplementedError</span><span class="s2">(</span>
+                <span class="s3">&quot;Currently, `_float8_call` doesn't support LoRA&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s2">@</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">custom_gradient</span>
+        <span class="s0">def </span><span class="s1">quantized_dequantize_inputs</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">, </span><span class="s1">amax_history</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">training</span><span class="s2">:</span>
+                <span class="s1">new_scale </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">compute_float8_scale</span><span class="s2">(</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">amax_history</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s6">0</span><span class="s2">),</span>
+                    <span class="s1">scale</span><span class="s2">,</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span>
+                        <span class="s1">float</span><span class="s2">(</span><span class="s1">ml_dtypes</span><span class="s2">.</span><span class="s1">finfo</span><span class="s2">(</span><span class="s3">&quot;float8_e4m3fn&quot;</span><span class="s2">).</span><span class="s1">max</span><span class="s2">), </span><span class="s3">&quot;float32&quot;</span>
+                    <span class="s2">),</span>
+                <span class="s2">)</span>
+                <span class="s1">new_amax_history </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">compute_float8_amax_history</span><span class="s2">(</span>
+                    <span class="s1">inputs</span><span class="s2">, </span><span class="s1">amax_history</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">new_scale </span><span class="s2">= </span><span class="s0">None</span>
+                <span class="s1">new_amax_history </span><span class="s2">= </span><span class="s0">None</span>
+            <span class="s1">qdq_inputs </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">quantize_and_dequantize</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">, </span><span class="s3">&quot;float8_e4m3fn&quot;</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span>
+            <span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">grad</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, </span><span class="s1">upstream</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">variables</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">upstream </span><span class="s0">is None</span><span class="s2">:</span>
+                    <span class="s2">(</span><span class="s1">upstream</span><span class="s2">,) = </span><span class="s1">args</span>
+                <span class="s0">return </span><span class="s1">upstream</span><span class="s2">, </span><span class="s1">new_scale</span><span class="s2">, </span><span class="s1">new_amax_history</span>
+
+            <span class="s0">return </span><span class="s1">qdq_inputs</span><span class="s2">, </span><span class="s1">grad</span>
+
+        <span class="s2">@</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">custom_gradient</span>
+        <span class="s0">def </span><span class="s1">quantized_dequantize_outputs</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">, </span><span class="s1">amax_history</span><span class="s2">):</span>
+            <span class="s4">&quot;&quot;&quot;Quantize-dequantize the output gradient but not the output.&quot;&quot;&quot;</span>
+
+            <span class="s0">def </span><span class="s1">grad</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, </span><span class="s1">upstream</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">variables</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">upstream </span><span class="s0">is None</span><span class="s2">:</span>
+                    <span class="s2">(</span><span class="s1">upstream</span><span class="s2">,) = </span><span class="s1">args</span>
+                <span class="s1">new_scale </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">compute_float8_scale</span><span class="s2">(</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">amax_history</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s6">0</span><span class="s2">),</span>
+                    <span class="s1">scale</span><span class="s2">,</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span>
+                        <span class="s1">float</span><span class="s2">(</span><span class="s1">ml_dtypes</span><span class="s2">.</span><span class="s1">finfo</span><span class="s2">(</span><span class="s3">&quot;float8_e5m2&quot;</span><span class="s2">).</span><span class="s1">max</span><span class="s2">), </span><span class="s3">&quot;float32&quot;</span>
+                    <span class="s2">),</span>
+                <span class="s2">)</span>
+                <span class="s1">qdq_upstream </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">quantize_and_dequantize</span><span class="s2">(</span>
+                    <span class="s1">upstream</span><span class="s2">, </span><span class="s1">scale</span><span class="s2">, </span><span class="s3">&quot;float8_e5m2&quot;</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span>
+                <span class="s2">)</span>
+                <span class="s1">new_amax_history </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">compute_float8_amax_history</span><span class="s2">(</span>
+                    <span class="s1">upstream</span><span class="s2">, </span><span class="s1">amax_history</span>
+                <span class="s2">)</span>
+                <span class="s0">return </span><span class="s1">qdq_upstream</span><span class="s2">, </span><span class="s1">new_scale</span><span class="s2">, </span><span class="s1">new_amax_history</span>
+
+            <span class="s0">return </span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">grad</span>
+
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">einsum</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">,</span>
+            <span class="s1">quantized_dequantize_inputs</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">,</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_scale</span><span class="s2">),</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">inputs_amax_history</span><span class="s2">),</span>
+            <span class="s2">),</span>
+            <span class="s1">quantized_dequantize_inputs</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span><span class="s2">),</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span><span class="s2">),</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_amax_history</span><span class="s2">),</span>
+            <span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s5"># `quantized_dequantize_outputs` is placed immediately after</span>
+        <span class="s5"># `ops.einsum` for the sake of pattern matching in gemm_rewrite. That</span>
+        <span class="s5"># way, the qdq will be adjacent to the corresponding einsum_bprop in the</span>
+        <span class="s5"># bprop.</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">quantized_dequantize_outputs</span><span class="s2">(</span>
+            <span class="s1">x</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_scale</span><span class="s2">),</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">outputs_grad_amax_history</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s5"># Under non-mixed precision cases, F32 bias has to be converted to</span>
+            <span class="s5"># BF16 first to get the biasAdd fusion support. ref. PR</span>
+            <span class="s5"># https://github.com/tensorflow/tensorflow/pull/60306</span>
+            <span class="s1">bias </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy</span><span class="s2">.</span><span class="s1">compute_dtype </span><span class="s2">== </span><span class="s3">&quot;float32&quot;</span><span class="s2">:</span>
+                <span class="s1">bias_bf16 </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">bias</span><span class="s2">, </span><span class="s3">&quot;bfloat16&quot;</span><span class="s2">)</span>
+                <span class="s1">bias </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">bias_bf16</span><span class="s2">, </span><span class="s1">bias</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">bias</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s0">def </span><span class="s1">quantize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">, </span><span class="s1">type_check</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+        <span class="s5"># Prevent quantization of the subclasses</span>
+        <span class="s0">if </span><span class="s1">type_check </span><span class="s0">and </span><span class="s2">(</span><span class="s1">type</span><span class="s2">(</span><span class="s1">self</span><span class="s2">) </span><span class="s0">is not </span><span class="s1">EinsumDense</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_not_implemented_error</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">quantize</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;int8&quot;</span><span class="s2">:</span>
+            <span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_reduced_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reduced_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_transpose_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_expand_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_input_squeeze_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_custom_gradient_equation</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reverse_transpose_axes</span><span class="s2">,</span>
+            <span class="s2">) = </span><span class="s1">_analyze_quantization_info</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec</span><span class="s2">.</span><span class="s1">ndim</span><span class="s2">)</span>
+            <span class="s5"># Quantize `self._kernel` to int8 and compute corresponding scale</span>
+            <span class="s1">kernel_value</span><span class="s2">, </span><span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">abs_max_quantize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reduced_axes</span><span class="s2">, </span><span class="s1">to_numpy</span><span class="s2">=</span><span class="s0">True</span>
+            <span class="s2">)</span>
+            <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span>
+                <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">:</span>
+                <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+                    <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">:</span>
+                <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span>
+                    <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span>
+                <span class="s2">)</span>
+            <span class="s1">kernel_shape </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+            <span class="s0">del </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span>
+            <span class="s5"># Utilize a lambda expression as an initializer to prevent adding a</span>
+            <span class="s5"># large constant to the computation graph.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_int8_build</span><span class="s2">(</span>
+                <span class="s1">kernel_shape</span><span class="s2">,</span>
+                <span class="s0">lambda </span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">: </span><span class="s1">kernel_value</span><span class="s2">,</span>
+                <span class="s0">lambda </span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">: </span><span class="s1">kernel_scale</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;float8&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_float8_build</span><span class="s2">()</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode_error</span><span class="s2">(</span><span class="s1">mode</span><span class="s2">)</span>
+
+        <span class="s5"># Set new dtype policy</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">policy </span><span class="s2">= </span><span class="s1">dtype_policies</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">mode</span><span class="s0">}</span><span class="s3">_from_</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy </span><span class="s2">= </span><span class="s1">policy</span>
+
+    <span class="s0">def </span><span class="s1">_get_kernel_with_merged_lora</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy</span><span class="s2">.</span><span class="s1">quantization_mode </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">kernel_value </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel</span>
+            <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_scale</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_enabled</span><span class="s2">:</span>
+                <span class="s5"># Dequantize &amp; quantize to merge lora weights into int8 kernel</span>
+                <span class="s5"># Note that this is a lossy compression</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">:</span>
+                    <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+                        <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">:</span>
+                    <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span>
+                        <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span><span class="s2">:</span>
+
+                    <span class="s0">def </span><span class="s1">_argsort</span><span class="s2">(</span><span class="s1">seq</span><span class="s2">):</span>
+                        <span class="s5"># Ref: https://stackoverflow.com/a/3382369</span>
+                        <span class="s0">return </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">seq</span><span class="s2">)), </span><span class="s1">key</span><span class="s2">=</span><span class="s1">seq</span><span class="s2">.</span><span class="s1">__getitem__</span><span class="s2">)</span>
+
+                    <span class="s1">reverse_transpose </span><span class="s2">= </span><span class="s1">_argsort</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span><span class="s2">)</span>
+                    <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span>
+                        <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">=</span><span class="s1">reverse_transpose</span>
+                    <span class="s2">)</span>
+                <span class="s1">kernel_value </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide</span><span class="s2">(</span><span class="s1">kernel_value</span><span class="s2">, </span><span class="s1">kernel_scale</span><span class="s2">)</span>
+                <span class="s1">kernel_value </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span>
+                    <span class="s1">kernel_value</span><span class="s2">,</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">matmul</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_a</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lora_kernel_b</span><span class="s2">),</span>
+                <span class="s2">)</span>
+                <span class="s1">kernel_value</span><span class="s2">, </span><span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">quantizers</span><span class="s2">.</span><span class="s1">abs_max_quantize</span><span class="s2">(</span>
+                    <span class="s1">kernel_value</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_reduced_axes</span><span class="s2">, </span><span class="s1">to_numpy</span><span class="s2">=</span><span class="s0">True</span>
+                <span class="s2">)</span>
+                <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span>
+                    <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_transpose_axes</span>
+                <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span><span class="s2">:</span>
+                    <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+                        <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_expand_axes</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span><span class="s2">:</span>
+                    <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span>
+                        <span class="s1">kernel_scale</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_kernel_squeeze_axes</span>
+                    <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">kernel_value </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel</span>
+            <span class="s1">kernel_scale </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">return </span><span class="s1">kernel_value</span><span class="s2">, </span><span class="s1">kernel_scale</span>
+
+
+<span class="s0">def </span><span class="s1">_analyze_einsum_string</span><span class="s2">(</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">bias_axes</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">output_shape</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Analyzes an einsum string to determine the required weight shape.&quot;&quot;&quot;</span>
+
+    <span class="s1">dot_replaced_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">sub</span><span class="s2">(</span><span class="s3">r&quot;\.\.\.&quot;</span><span class="s2">, </span><span class="s3">&quot;0&quot;</span><span class="s2">, </span><span class="s1">equation</span><span class="s2">)</span>
+
+    <span class="s5"># This is the case where no ellipses are present in the string.</span>
+    <span class="s1">split_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span>
+        <span class="s3">&quot;([a-zA-Z]+),([a-zA-Z]+)-&gt;([a-zA-Z]+)&quot;</span><span class="s2">, </span><span class="s1">dot_replaced_string</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">split_string</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_analyze_split_string</span><span class="s2">(</span>
+            <span class="s1">split_string</span><span class="s2">, </span><span class="s1">bias_axes</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">output_shape</span>
+        <span class="s2">)</span>
+
+    <span class="s5"># This is the case where ellipses are present on the left.</span>
+    <span class="s1">split_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span>
+        <span class="s3">&quot;0([a-zA-Z]+),([a-zA-Z]+)-&gt;0([a-zA-Z]+)&quot;</span><span class="s2">, </span><span class="s1">dot_replaced_string</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">split_string</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_analyze_split_string</span><span class="s2">(</span>
+            <span class="s1">split_string</span><span class="s2">, </span><span class="s1">bias_axes</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">left_elided</span><span class="s2">=</span><span class="s0">True</span>
+        <span class="s2">)</span>
+
+    <span class="s5"># This is the case where ellipses are present on the right.</span>
+    <span class="s1">split_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span>
+        <span class="s3">&quot;([a-zA-Z]{2,})0,([a-zA-Z]+)-&gt;([a-zA-Z]+)0&quot;</span><span class="s2">, </span><span class="s1">dot_replaced_string</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">split_string</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_analyze_split_string</span><span class="s2">(</span>
+            <span class="s1">split_string</span><span class="s2">, </span><span class="s1">bias_axes</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">output_shape</span>
+        <span class="s2">)</span>
+
+    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+        <span class="s3">f&quot;Invalid einsum equation '</span><span class="s0">{</span><span class="s1">equation</span><span class="s0">}</span><span class="s3">'. Equations must be in the form &quot;</span>
+        <span class="s3">&quot;[X],[Y]-&gt;[Z], ...[X],[Y]-&gt;...[Z], or [X]...,[Y]-&gt;[Z]....&quot;</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_analyze_split_string</span><span class="s2">(</span>
+    <span class="s1">split_string</span><span class="s2">, </span><span class="s1">bias_axes</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">left_elided</span><span class="s2">=</span><span class="s0">False</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Analyze an pre-split einsum string to find the weight shape.&quot;&quot;&quot;</span>
+    <span class="s1">input_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">1</span><span class="s2">)</span>
+    <span class="s1">weight_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">2</span><span class="s2">)</span>
+    <span class="s1">output_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">3</span><span class="s2">)</span>
+    <span class="s1">elided </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s1">output_shape </span><span class="s2">= [</span><span class="s1">output_shape</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">)</span>
+
+    <span class="s1">output_shape</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s6">0</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s6">0</span><span class="s2">])</span>
+
+    <span class="s0">if </span><span class="s1">elided </span><span class="s2">&gt; </span><span class="s6">0 </span><span class="s0">and </span><span class="s1">left_elided</span><span class="s2">:</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s6">1</span><span class="s2">, </span><span class="s1">elided</span><span class="s2">):</span>
+            <span class="s5"># We already inserted the 0th input dimension at dim 0, so we need</span>
+            <span class="s5"># to start at location 1 here.</span>
+            <span class="s1">output_shape</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s6">1</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+    <span class="s0">elif </span><span class="s1">elided </span><span class="s2">&gt; </span><span class="s6">0 </span><span class="s0">and not </span><span class="s1">left_elided</span><span class="s2">:</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s1">elided</span><span class="s2">, </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)):</span>
+            <span class="s1">output_shape</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+
+    <span class="s0">if </span><span class="s1">left_elided</span><span class="s2">:</span>
+        <span class="s5"># If we have beginning dimensions elided, we need to use negative</span>
+        <span class="s5"># indexing to determine where in the input dimension our values are.</span>
+        <span class="s1">input_dim_map </span><span class="s2">= {</span>
+            <span class="s1">dim</span><span class="s2">: (</span><span class="s1">i </span><span class="s2">+ </span><span class="s1">elided</span><span class="s2">) - </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)</span>
+        <span class="s2">}</span>
+        <span class="s5"># Because we've constructed the full output shape already, we don't need</span>
+        <span class="s5"># to do negative indexing.</span>
+        <span class="s1">output_dim_map </span><span class="s2">= {</span>
+            <span class="s1">dim</span><span class="s2">: (</span><span class="s1">i </span><span class="s2">+ </span><span class="s1">elided</span><span class="s2">) </span><span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">)</span>
+        <span class="s2">}</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">input_dim_map </span><span class="s2">= {</span><span class="s1">dim</span><span class="s2">: </span><span class="s1">i </span><span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)}</span>
+        <span class="s1">output_dim_map </span><span class="s2">= {</span><span class="s1">dim</span><span class="s2">: </span><span class="s1">i </span><span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">)}</span>
+
+    <span class="s0">for </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">input_spec</span><span class="s2">:</span>
+        <span class="s1">input_shape_at_dim </span><span class="s2">= </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">input_dim_map</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]]</span>
+        <span class="s0">if </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">output_dim_map</span><span class="s2">:</span>
+            <span class="s1">output_shape_at_dim </span><span class="s2">= </span><span class="s1">output_shape</span><span class="s2">[</span><span class="s1">output_dim_map</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]]</span>
+            <span class="s0">if </span><span class="s2">(</span>
+                <span class="s1">output_shape_at_dim </span><span class="s0">is not None</span>
+                <span class="s0">and </span><span class="s1">output_shape_at_dim </span><span class="s2">!= </span><span class="s1">input_shape_at_dim</span>
+            <span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Input shape and output shape do not match at shared &quot;</span>
+                    <span class="s3">f&quot;dimension '</span><span class="s0">{</span><span class="s1">dim</span><span class="s0">}</span><span class="s3">'. Input shape is </span><span class="s0">{</span><span class="s1">input_shape_at_dim</span><span class="s0">}</span><span class="s3">, &quot;</span>
+                    <span class="s3">&quot;and output shape &quot;</span>
+                    <span class="s3">f&quot;is </span><span class="s0">{</span><span class="s1">output_shape</span><span class="s2">[</span><span class="s1">output_dim_map</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]]</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">output_spec</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">dim </span><span class="s0">not in </span><span class="s1">input_spec </span><span class="s0">and </span><span class="s1">dim </span><span class="s0">not in </span><span class="s1">weight_spec</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Dimension '</span><span class="s0">{</span><span class="s1">dim</span><span class="s0">}</span><span class="s3">' was specified in the output &quot;</span>
+                <span class="s3">f&quot;'</span><span class="s0">{</span><span class="s1">output_spec</span><span class="s0">}</span><span class="s3">' but has no corresponding dim in the input &quot;</span>
+                <span class="s3">f&quot;spec '</span><span class="s0">{</span><span class="s1">input_spec</span><span class="s0">}</span><span class="s3">' or weight spec '</span><span class="s0">{</span><span class="s1">output_spec</span><span class="s0">}</span><span class="s3">'&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s1">weight_shape </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">weight_spec</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">input_dim_map</span><span class="s2">:</span>
+            <span class="s1">weight_shape</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">input_dim_map</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]])</span>
+        <span class="s0">elif </span><span class="s1">dim </span><span class="s0">in </span><span class="s1">output_dim_map</span><span class="s2">:</span>
+            <span class="s1">weight_shape</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">[</span><span class="s1">output_dim_map</span><span class="s2">[</span><span class="s1">dim</span><span class="s2">]])</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Weight dimension '</span><span class="s0">{</span><span class="s1">dim</span><span class="s0">}</span><span class="s3">' did not have a match in either &quot;</span>
+                <span class="s3">f&quot;the input spec '</span><span class="s0">{</span><span class="s1">input_spec</span><span class="s0">}</span><span class="s3">' or the output &quot;</span>
+                <span class="s3">f&quot;spec '</span><span class="s0">{</span><span class="s1">output_spec</span><span class="s0">}</span><span class="s3">'. For this layer, the weight must &quot;</span>
+                <span class="s3">&quot;be fully specified.&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">bias_axes </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">num_left_elided </span><span class="s2">= </span><span class="s1">elided </span><span class="s0">if </span><span class="s1">left_elided </span><span class="s0">else </span><span class="s6">0</span>
+        <span class="s1">idx_map </span><span class="s2">= {</span>
+            <span class="s1">char</span><span class="s2">: </span><span class="s1">output_shape</span><span class="s2">[</span><span class="s1">i </span><span class="s2">+ </span><span class="s1">num_left_elided</span><span class="s2">]</span>
+            <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">char </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">)</span>
+        <span class="s2">}</span>
+
+        <span class="s0">for </span><span class="s1">char </span><span class="s0">in </span><span class="s1">bias_axes</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">char </span><span class="s0">not in </span><span class="s1">output_spec</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">f&quot;Bias dimension '</span><span class="s0">{</span><span class="s1">char</span><span class="s0">}</span><span class="s3">' was requested, but is not part &quot;</span>
+                    <span class="s3">f&quot;of the output spec '</span><span class="s0">{</span><span class="s1">output_spec</span><span class="s0">}</span><span class="s3">'&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s1">first_bias_location </span><span class="s2">= </span><span class="s1">min</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">output_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">char</span><span class="s2">) </span><span class="s0">for </span><span class="s1">char </span><span class="s0">in </span><span class="s1">bias_axes</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s1">bias_output_spec </span><span class="s2">= </span><span class="s1">output_spec</span><span class="s2">[</span><span class="s1">first_bias_location</span><span class="s2">:]</span>
+
+        <span class="s1">bias_shape </span><span class="s2">= [</span>
+            <span class="s1">idx_map</span><span class="s2">[</span><span class="s1">char</span><span class="s2">] </span><span class="s0">if </span><span class="s1">char </span><span class="s0">in </span><span class="s1">bias_axes </span><span class="s0">else </span><span class="s6">1</span>
+            <span class="s0">for </span><span class="s1">char </span><span class="s0">in </span><span class="s1">bias_output_spec</span>
+        <span class="s2">]</span>
+
+        <span class="s0">if not </span><span class="s1">left_elided</span><span class="s2">:</span>
+            <span class="s0">for </span><span class="s1">_ </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">elided</span><span class="s2">):</span>
+                <span class="s1">bias_shape</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s6">1</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">bias_shape </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">return </span><span class="s1">weight_shape</span><span class="s2">, </span><span class="s1">bias_shape</span><span class="s2">, </span><span class="s1">output_shape</span>
+
+
+<span class="s0">def </span><span class="s1">_analyze_quantization_info</span><span class="s2">(</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+
+    <span class="s0">def </span><span class="s1">get_specs</span><span class="s2">(</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s1">possible_labels </span><span class="s2">= </span><span class="s1">string</span><span class="s2">.</span><span class="s1">ascii_letters</span>
+        <span class="s1">dot_replaced_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">sub</span><span class="s2">(</span><span class="s3">r&quot;\.\.\.&quot;</span><span class="s2">, </span><span class="s3">&quot;0&quot;</span><span class="s2">, </span><span class="s1">equation</span><span class="s2">)</span>
+
+        <span class="s5"># This is the case where no ellipses are present in the string.</span>
+        <span class="s1">split_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span>
+            <span class="s3">&quot;([a-zA-Z]+),([a-zA-Z]+)-&gt;([a-zA-Z]+)&quot;</span><span class="s2">, </span><span class="s1">dot_replaced_string</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">split_string </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">input_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s1">weight_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">2</span><span class="s2">)</span>
+            <span class="s1">output_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">3</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">input_spec</span><span class="s2">, </span><span class="s1">weight_spec</span><span class="s2">, </span><span class="s1">output_spec</span>
+
+        <span class="s5"># This is the case where ellipses are present on the left.</span>
+        <span class="s1">split_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span>
+            <span class="s3">&quot;0([a-zA-Z]+),([a-zA-Z]+)-&gt;0([a-zA-Z]+)&quot;</span><span class="s2">, </span><span class="s1">dot_replaced_string</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">split_string </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">input_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s1">weight_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">2</span><span class="s2">)</span>
+            <span class="s1">output_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">3</span><span class="s2">)</span>
+            <span class="s1">elided </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)</span>
+            <span class="s1">possible_labels </span><span class="s2">= </span><span class="s1">sorted</span><span class="s2">(</span>
+                <span class="s1">set</span><span class="s2">(</span><span class="s1">possible_labels</span><span class="s2">)</span>
+                <span class="s2">- </span><span class="s1">set</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)</span>
+                <span class="s2">- </span><span class="s1">set</span><span class="s2">(</span><span class="s1">weight_spec</span><span class="s2">)</span>
+                <span class="s2">- </span><span class="s1">set</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">)</span>
+            <span class="s2">)</span>
+            <span class="s5"># Pad labels on the left to `input_spec` and `output_spec`</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">elided</span><span class="s2">):</span>
+                <span class="s1">input_spec </span><span class="s2">= </span><span class="s1">possible_labels</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] + </span><span class="s1">input_spec</span>
+                <span class="s1">output_spec </span><span class="s2">= </span><span class="s1">possible_labels</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] + </span><span class="s1">output_spec</span>
+            <span class="s0">return </span><span class="s1">input_spec</span><span class="s2">, </span><span class="s1">weight_spec</span><span class="s2">, </span><span class="s1">output_spec</span>
+
+        <span class="s5"># This is the case where ellipses are present on the right.</span>
+        <span class="s1">split_string </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span>
+            <span class="s3">&quot;([a-zA-Z]{2,})0,([a-zA-Z]+)-&gt;([a-zA-Z]+)0&quot;</span><span class="s2">, </span><span class="s1">dot_replaced_string</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">split_string </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">input_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s1">weight_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">2</span><span class="s2">)</span>
+            <span class="s1">output_spec </span><span class="s2">= </span><span class="s1">split_string</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">3</span><span class="s2">)</span>
+            <span class="s1">elided </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) - </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)</span>
+            <span class="s1">possible_labels </span><span class="s2">= </span><span class="s1">sorted</span><span class="s2">(</span>
+                <span class="s1">set</span><span class="s2">(</span><span class="s1">possible_labels</span><span class="s2">)</span>
+                <span class="s2">- </span><span class="s1">set</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">)</span>
+                <span class="s2">- </span><span class="s1">set</span><span class="s2">(</span><span class="s1">weight_spec</span><span class="s2">)</span>
+                <span class="s2">- </span><span class="s1">set</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">)</span>
+            <span class="s2">)</span>
+            <span class="s5"># Pad labels on the right to `input_spec` and `output_spec`</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">elided</span><span class="s2">):</span>
+                <span class="s1">input_spec </span><span class="s2">= </span><span class="s1">input_spec </span><span class="s2">+ </span><span class="s1">possible_labels</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+                <span class="s1">output_spec </span><span class="s2">= </span><span class="s1">output_spec </span><span class="s2">+ </span><span class="s1">possible_labels</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+            <span class="s0">return </span><span class="s1">input_spec</span><span class="s2">, </span><span class="s1">weight_spec</span><span class="s2">, </span><span class="s1">output_spec</span>
+
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;Invalid einsum equation '</span><span class="s0">{</span><span class="s1">equation</span><span class="s0">}</span><span class="s3">'. Equations must be in the &quot;</span>
+            <span class="s3">&quot;form [X],[Y]-&gt;[Z], ...[X],[Y]-&gt;...[Z], or [X]...,[Y]-&gt;[Z]....&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">input_spec</span><span class="s2">, </span><span class="s1">weight_spec</span><span class="s2">, </span><span class="s1">output_spec </span><span class="s2">= </span><span class="s1">get_specs</span><span class="s2">(</span><span class="s1">equation</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">)</span>
+
+    <span class="s5"># Determine the axes that should be reduced by the quantizer</span>
+    <span class="s1">input_reduced_axes </span><span class="s2">= []</span>
+    <span class="s1">weight_reduced_axes </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">label </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">input_spec</span><span class="s2">):</span>
+        <span class="s1">index </span><span class="s2">= </span><span class="s1">output_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">label</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">index </span><span class="s2">== -</span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">input_reduced_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)</span>
+    <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">label </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">weight_spec</span><span class="s2">):</span>
+        <span class="s1">index </span><span class="s2">= </span><span class="s1">output_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">label</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">index </span><span class="s2">== -</span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">weight_reduced_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)</span>
+
+    <span class="s5"># Determine the axes of `ops.expand_dims`</span>
+    <span class="s1">input_expand_axes </span><span class="s2">= []</span>
+    <span class="s1">weight_expand_axes </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">label </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">):</span>
+        <span class="s1">index_input </span><span class="s2">= </span><span class="s1">input_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">label</span><span class="s2">)</span>
+        <span class="s1">index_weight </span><span class="s2">= </span><span class="s1">weight_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">label</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">index_input </span><span class="s2">== -</span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">input_expand_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">index_weight </span><span class="s2">== -</span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">weight_expand_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)</span>
+
+    <span class="s5"># Determine the axes of `ops.transpose`</span>
+    <span class="s1">input_transpose_axes </span><span class="s2">= []</span>
+    <span class="s1">weight_transpose_axes </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">label </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">output_spec</span><span class="s2">):</span>
+        <span class="s1">index_input </span><span class="s2">= </span><span class="s1">input_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">label</span><span class="s2">)</span>
+        <span class="s1">index_weight </span><span class="s2">= </span><span class="s1">weight_spec</span><span class="s2">.</span><span class="s1">find</span><span class="s2">(</span><span class="s1">label</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">index_input </span><span class="s2">!= -</span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">input_transpose_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">index_input</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">index_weight </span><span class="s2">!= -</span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">weight_transpose_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">index_weight</span><span class="s2">)</span>
+    <span class="s5"># Postprocess the information:</span>
+    <span class="s5"># 1. Add dummy axes (1) to transpose_axes</span>
+    <span class="s5"># 2. Add axis to squeeze_axes if 1. failed</span>
+    <span class="s1">input_squeeze_axes </span><span class="s2">= []</span>
+    <span class="s1">weight_squeeze_axes </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">ori_index </span><span class="s0">in </span><span class="s1">input_reduced_axes</span><span class="s2">:</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">index </span><span class="s2">= </span><span class="s1">input_expand_axes</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s6">0</span><span class="s2">)</span>
+        <span class="s0">except </span><span class="s1">IndexError</span><span class="s2">:</span>
+            <span class="s1">input_squeeze_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">ori_index</span><span class="s2">)</span>
+        <span class="s1">input_transpose_axes</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s1">index</span><span class="s2">, </span><span class="s1">ori_index</span><span class="s2">)</span>
+    <span class="s0">for </span><span class="s1">ori_index </span><span class="s0">in </span><span class="s1">weight_reduced_axes</span><span class="s2">:</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">index </span><span class="s2">= </span><span class="s1">weight_expand_axes</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s6">0</span><span class="s2">)</span>
+        <span class="s0">except </span><span class="s1">IndexError</span><span class="s2">:</span>
+            <span class="s1">weight_squeeze_axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">ori_index</span><span class="s2">)</span>
+        <span class="s1">weight_transpose_axes</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s1">index</span><span class="s2">, </span><span class="s1">ori_index</span><span class="s2">)</span>
+    <span class="s5"># Prepare equation for `einsum_with_inputs_gradient`</span>
+    <span class="s1">custom_gradient_equation </span><span class="s2">= </span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">output_spec</span><span class="s0">}</span><span class="s3">,</span><span class="s0">{</span><span class="s1">weight_spec</span><span class="s0">}</span><span class="s3">-&gt;</span><span class="s0">{</span><span class="s1">input_spec</span><span class="s0">}</span><span class="s3">&quot;</span>
+    <span class="s1">weight_reverse_transpose_axes </span><span class="s2">= [</span>
+        <span class="s1">i</span>
+        <span class="s0">for </span><span class="s2">(</span><span class="s1">_</span><span class="s2">, </span><span class="s1">i</span><span class="s2">) </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span>
+            <span class="s2">(</span><span class="s1">v</span><span class="s2">, </span><span class="s1">i</span><span class="s2">) </span><span class="s0">for </span><span class="s2">(</span><span class="s1">i</span><span class="s2">, </span><span class="s1">v</span><span class="s2">) </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">weight_transpose_axes</span><span class="s2">)</span>
+        <span class="s2">)</span>
+    <span class="s2">]</span>
+    <span class="s0">return </span><span class="s2">(</span>
+        <span class="s1">input_reduced_axes</span><span class="s2">,</span>
+        <span class="s1">weight_reduced_axes</span><span class="s2">,</span>
+        <span class="s1">input_transpose_axes</span><span class="s2">,</span>
+        <span class="s1">weight_transpose_axes</span><span class="s2">,</span>
+        <span class="s1">input_expand_axes</span><span class="s2">,</span>
+        <span class="s1">weight_expand_axes</span><span class="s2">,</span>
+        <span class="s1">input_squeeze_axes</span><span class="s2">,</span>
+        <span class="s1">weight_squeeze_axes</span><span class="s2">,</span>
+        <span class="s1">custom_gradient_equation</span><span class="s2">,</span>
+        <span class="s1">weight_reverse_transpose_axes</span><span class="s2">,</span>
+    <span class="s2">)</span>
+</pre>
+</body>
+</html>

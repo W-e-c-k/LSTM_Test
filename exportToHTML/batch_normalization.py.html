@@ -1,0 +1,367 @@
+<html>
+<head>
+<title>batch_normalization.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+batch_normalization.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">constraints</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">initializers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">regularizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend </span><span class="s0">import </span><span class="s1">standardize_dtype</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s0">import </span><span class="s1">InputSpec</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.layers.BatchNormalization&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">BatchNormalization</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Layer that normalizes its inputs. 
+ 
+    Batch normalization applies a transformation that maintains the mean output 
+    close to 0 and the output standard deviation close to 1. 
+ 
+    Importantly, batch normalization works differently during training and 
+    during inference. 
+ 
+    **During training** (i.e. when using `fit()` or when calling the layer/model 
+    with the argument `training=True`), the layer normalizes its output using 
+    the mean and standard deviation of the current batch of inputs. That is to 
+    say, for each channel being normalized, the layer returns 
+    `gamma * (batch - mean(batch)) / sqrt(var(batch) + epsilon) + beta`, where: 
+ 
+    - `epsilon` is small constant (configurable as part of the constructor 
+    arguments) 
+    - `gamma` is a learned scaling factor (initialized as 1), which 
+    can be disabled by passing `scale=False` to the constructor. 
+    - `beta` is a learned offset factor (initialized as 0), which 
+    can be disabled by passing `center=False` to the constructor. 
+ 
+    **During inference** (i.e. when using `evaluate()` or `predict()` or when 
+    calling the layer/model with the argument `training=False` (which is the 
+    default), the layer normalizes its output using a moving average of the 
+    mean and standard deviation of the batches it has seen during training. That 
+    is to say, it returns 
+    `gamma * (batch - self.moving_mean) / sqrt(self.moving_var+epsilon) + beta`. 
+ 
+    `self.moving_mean` and `self.moving_var` are non-trainable variables that 
+    are updated each time the layer in called in training mode, as such: 
+ 
+    - `moving_mean = moving_mean * momentum + mean(batch) * (1 - momentum)` 
+    - `moving_var = moving_var * momentum + var(batch) * (1 - momentum)` 
+ 
+    As such, the layer will only normalize its inputs during inference 
+    *after having been trained on data that has similar statistics as the 
+    inference data*. 
+ 
+    Args: 
+        axis: Integer, the axis that should be normalized 
+            (typically the features axis). For instance, after a `Conv2D` layer 
+            with `data_format=&quot;channels_first&quot;`, use `axis=1`. 
+        momentum: Momentum for the moving average. 
+        epsilon: Small float added to variance to avoid dividing by zero. 
+        center: If `True`, add offset of `beta` to normalized tensor. 
+            If `False`, `beta` is ignored. 
+        scale: If `True`, multiply by `gamma`. If `False`, `gamma` is not used. 
+            When the next layer is linear this can be disabled 
+            since the scaling will be done by the next layer. 
+        beta_initializer: Initializer for the beta weight. 
+        gamma_initializer: Initializer for the gamma weight. 
+        moving_mean_initializer: Initializer for the moving mean. 
+        moving_variance_initializer: Initializer for the moving variance. 
+        beta_regularizer: Optional regularizer for the beta weight. 
+        gamma_regularizer: Optional regularizer for the gamma weight. 
+        beta_constraint: Optional constraint for the beta weight. 
+        gamma_constraint: Optional constraint for the gamma weight. 
+        synchronized: Only applicable with the TensorFlow backend. 
+            If `True`, synchronizes the global batch statistics (mean and 
+            variance) for the layer across all devices at each training step 
+            in a distributed training strategy. 
+            If `False`, each replica uses its own local batch statistics. 
+        **kwargs: Base layer keyword arguments (e.g. `name` and `dtype`). 
+ 
+    Call arguments: 
+        inputs: Input tensor (of any rank). 
+        training: Python boolean indicating whether the layer should behave in 
+            training mode or in inference mode. 
+            - `training=True`: The layer will normalize its inputs using 
+            the mean and variance of the current batch of inputs. 
+            - `training=False`: The layer will normalize its inputs using 
+            the mean and variance of its moving statistics, learned during 
+            training. 
+        mask: Binary tensor of shape broadcastable to `inputs` tensor, with 
+            `True` values indicating the positions for which mean and variance 
+            should be computed. Masked elements of the current inputs are not 
+            taken into account for mean and variance computation during 
+            training. Any prior unmasked element values will be taken into 
+            account until their momentum expires. 
+ 
+    Reference: 
+ 
+    - [Ioffe and Szegedy, 2015](https://arxiv.org/abs/1502.03167). 
+ 
+    **About setting `layer.trainable = False` on a `BatchNormalization` layer:** 
+ 
+    The meaning of setting `layer.trainable = False` is to freeze the layer, 
+    i.e. its internal state will not change during training: 
+    its trainable weights will not be updated 
+    during `fit()` or `train_on_batch()`, and its state updates will not be run. 
+ 
+    Usually, this does not necessarily mean that the layer is run in inference 
+    mode (which is normally controlled by the `training` argument that can 
+    be passed when calling a layer). &quot;Frozen state&quot; and &quot;inference mode&quot; 
+    are two separate concepts. 
+ 
+    However, in the case of the `BatchNormalization` layer, **setting 
+    `trainable = False` on the layer means that the layer will be 
+    subsequently run in inference mode** (meaning that it will use 
+    the moving mean and the moving variance to normalize the current batch, 
+    rather than using the mean and variance of the current batch). 
+ 
+    Note that: 
+ 
+    - Setting `trainable` on an model containing other layers will recursively 
+        set the `trainable` value of all inner layers. 
+    - If the value of the `trainable` attribute is changed after calling 
+        `compile()` on a model, the new value doesn't take effect for this model 
+        until `compile()` is called again. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">,</span>
+        <span class="s1">momentum</span><span class="s2">=</span><span class="s5">0.99</span><span class="s2">,</span>
+        <span class="s1">epsilon</span><span class="s2">=</span><span class="s5">1e-3</span><span class="s2">,</span>
+        <span class="s1">center</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">scale</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">beta_initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span><span class="s2">,</span>
+        <span class="s1">gamma_initializer</span><span class="s2">=</span><span class="s3">&quot;ones&quot;</span><span class="s2">,</span>
+        <span class="s1">moving_mean_initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span><span class="s2">,</span>
+        <span class="s1">moving_variance_initializer</span><span class="s2">=</span><span class="s3">&quot;ones&quot;</span><span class="s2">,</span>
+        <span class="s1">beta_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">gamma_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">beta_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">gamma_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">synchronized</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(**</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">axis </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">axis</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">synchronized </span><span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Argument synchronized=True is only supported &quot;</span>
+                <span class="s3">&quot;with the TensorFlow backend.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">synchronized </span><span class="s2">= </span><span class="s1">synchronized</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">momentum </span><span class="s2">= </span><span class="s1">float</span><span class="s2">(</span><span class="s1">momentum</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon </span><span class="s2">= </span><span class="s1">float</span><span class="s2">(</span><span class="s1">epsilon</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">center </span><span class="s2">= </span><span class="s1">center</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">scale </span><span class="s2">= </span><span class="s1">scale</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">beta_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">beta_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">gamma_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">moving_mean_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span>
+            <span class="s1">moving_variance_initializer</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">beta_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">beta_regularizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">gamma_regularizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">beta_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">beta_constraint</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">gamma_constraint</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">supports_masking </span><span class="s2">= </span><span class="s0">True</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">gamma </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">beta </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_reduction_axes </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s1">shape </span><span class="s2">= (</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">],)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">scale</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">gamma </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                <span class="s1">shape</span><span class="s2">=</span><span class="s1">shape</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;gamma&quot;</span><span class="s2">,</span>
+                <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_initializer</span><span class="s2">,</span>
+                <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_regularizer</span><span class="s2">,</span>
+                <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_constraint</span><span class="s2">,</span>
+                <span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+                <span class="s1">autocast</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">center</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">beta </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                <span class="s1">shape</span><span class="s2">=</span><span class="s1">shape</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;beta&quot;</span><span class="s2">,</span>
+                <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta_initializer</span><span class="s2">,</span>
+                <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta_regularizer</span><span class="s2">,</span>
+                <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta_constraint</span><span class="s2">,</span>
+                <span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+                <span class="s1">autocast</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">shape</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;moving_mean&quot;</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean_initializer</span><span class="s2">,</span>
+            <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s1">autocast</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">shape</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;moving_variance&quot;</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance_initializer</span><span class="s2">,</span>
+            <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s1">autocast</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s2">= </span><span class="s1">InputSpec</span><span class="s2">(</span>
+            <span class="s1">ndim</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">), </span><span class="s1">axes</span><span class="s2">={</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">: </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">]}</span>
+        <span class="s2">)</span>
+
+        <span class="s1">reduction_axes </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)))</span>
+        <span class="s0">del </span><span class="s1">reduction_axes</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">]</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_reduction_axes </span><span class="s2">= </span><span class="s1">reduction_axes</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">input_shape</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s6"># Check if the mask has one less dimension than the inputs.</span>
+        <span class="s0">if </span><span class="s1">mask </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) - </span><span class="s5">1</span><span class="s2">:</span>
+                <span class="s6"># Raise a value error</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;The mask provided should be one dimension less &quot;</span>
+                    <span class="s3">&quot;than the inputs. Received: &quot;</span>
+                    <span class="s3">f&quot;mask.shape=</span><span class="s0">{</span><span class="s1">mask</span><span class="s2">.</span><span class="s1">shape</span><span class="s0">}</span><span class="s3">, inputs.shape=</span><span class="s0">{</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s1">input_dtype </span><span class="s2">= </span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">input_dtype </span><span class="s0">in </span><span class="s2">(</span><span class="s3">&quot;float16&quot;</span><span class="s2">, </span><span class="s3">&quot;bfloat16&quot;</span><span class="s2">):</span>
+            <span class="s6"># BN is prone to overflowing for float16/bfloat16 inputs, so we opt</span>
+            <span class="s6"># out BN for mixed precision.</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span><span class="s2">)</span>
+
+        <span class="s1">moving_mean </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s1">moving_variance </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">training </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">trainable</span><span class="s2">:</span>
+            <span class="s1">mean</span><span class="s2">, </span><span class="s1">variance </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_moments</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">)</span>
+
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span>
+                <span class="s1">moving_mean </span><span class="s2">* </span><span class="s1">self</span><span class="s2">.</span><span class="s1">momentum </span><span class="s2">+ </span><span class="s1">mean </span><span class="s2">* (</span><span class="s5">1.0 </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">momentum</span><span class="s2">)</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span>
+                <span class="s1">moving_variance </span><span class="s2">* </span><span class="s1">self</span><span class="s2">.</span><span class="s1">momentum</span>
+                <span class="s2">+ </span><span class="s1">variance </span><span class="s2">* (</span><span class="s5">1.0 </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">momentum</span><span class="s2">)</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">mean </span><span class="s2">= </span><span class="s1">moving_mean</span>
+            <span class="s1">variance </span><span class="s2">= </span><span class="s1">moving_variance</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">scale</span><span class="s2">:</span>
+            <span class="s1">gamma </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">gamma </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">center</span><span class="s2">:</span>
+            <span class="s1">beta </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">beta </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">batch_normalization</span><span class="s2">(</span>
+            <span class="s1">x</span><span class="s2">=</span><span class="s1">inputs</span><span class="s2">,</span>
+            <span class="s1">mean</span><span class="s2">=</span><span class="s1">mean</span><span class="s2">,</span>
+            <span class="s1">variance</span><span class="s2">=</span><span class="s1">variance</span><span class="s2">,</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">,</span>
+            <span class="s1">offset</span><span class="s2">=</span><span class="s1">beta</span><span class="s2">,</span>
+            <span class="s1">scale</span><span class="s2">=</span><span class="s1">gamma</span><span class="s2">,</span>
+            <span class="s1">epsilon</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">input_dtype </span><span class="s0">in </span><span class="s2">(</span><span class="s3">&quot;float16&quot;</span><span class="s2">, </span><span class="s3">&quot;bfloat16&quot;</span><span class="s2">):</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">input_dtype</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">outputs</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s3">&quot;axis&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axis</span><span class="s2">,</span>
+            <span class="s3">&quot;momentum&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">momentum</span><span class="s2">,</span>
+            <span class="s3">&quot;epsilon&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">,</span>
+            <span class="s3">&quot;center&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">center</span><span class="s2">,</span>
+            <span class="s3">&quot;scale&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">scale</span><span class="s2">,</span>
+            <span class="s3">&quot;beta_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta_initializer</span><span class="s2">),</span>
+            <span class="s3">&quot;gamma_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_initializer</span><span class="s2">),</span>
+            <span class="s3">&quot;moving_mean_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_mean_initializer</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;moving_variance_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">moving_variance_initializer</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;beta_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta_regularizer</span><span class="s2">),</span>
+            <span class="s3">&quot;gamma_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_regularizer</span><span class="s2">),</span>
+            <span class="s3">&quot;beta_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">beta_constraint</span><span class="s2">),</span>
+            <span class="s3">&quot;gamma_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">gamma_constraint</span><span class="s2">),</span>
+            <span class="s3">&quot;synchronized&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">synchronized</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">_moments</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">mask </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">moments</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">,</span>
+                <span class="s1">axes</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_reduction_axes</span><span class="s2">,</span>
+                <span class="s1">synchronized</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">synchronized</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s1">mask_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span>
+            <span class="s1">mask</span><span class="s2">,</span>
+            <span class="s1">inputs</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">mask_weights_broadcasted </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+            <span class="s1">mask_weights</span><span class="s2">,</span>
+            <span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">weighted_inputs </span><span class="s2">= </span><span class="s1">mask_weights_broadcasted </span><span class="s2">* </span><span class="s1">inputs</span>
+
+        <span class="s1">weighted_input_sum </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span>
+            <span class="s1">weighted_inputs</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_reduction_axes</span><span class="s2">,</span>
+            <span class="s1">keepdims</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">sum_of_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span>
+            <span class="s1">mask_weights_broadcasted</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_reduction_axes</span><span class="s2">,</span>
+            <span class="s1">keepdims</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">mean </span><span class="s2">= </span><span class="s1">weighted_input_sum </span><span class="s2">/ (</span><span class="s1">sum_of_weights </span><span class="s2">+ </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">config</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">())</span>
+
+        <span class="s1">difference </span><span class="s2">= </span><span class="s1">weighted_inputs </span><span class="s2">- </span><span class="s1">mean</span>
+        <span class="s1">squared_difference </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">square</span><span class="s2">(</span><span class="s1">difference</span><span class="s2">)</span>
+        <span class="s1">weighted_distsq </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span>
+            <span class="s1">mask_weights_broadcasted </span><span class="s2">* </span><span class="s1">squared_difference</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_reduction_axes</span><span class="s2">,</span>
+            <span class="s1">keepdims</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">variance </span><span class="s2">= </span><span class="s1">weighted_distsq </span><span class="s2">/ (</span><span class="s1">sum_of_weights </span><span class="s2">+ </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">config</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">())</span>
+
+        <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">mean</span><span class="s2">), </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">variance</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

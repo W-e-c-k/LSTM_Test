@@ -1,0 +1,372 @@
+<html>
+<head>
+<title>_random.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_random.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Author: Arnaud Joly</span>
+<span class="s0">#</span>
+<span class="s0"># License: BSD 3 clause</span>
+<span class="s0">&quot;&quot;&quot;</span>
+<span class="s0">Random utility function</span>
+<span class="s0">=======================</span>
+<span class="s0">This module complements missing features of ``numpy.random``.</span>
+
+<span class="s0">The module contains:</span>
+    <span class="s0">* Several algorithms to sample integers without replacement.</span>
+    <span class="s0">* Fast rand_r alternative based on xor shifts</span>
+<span class="s0">&quot;&quot;&quot;</span>
+<span class="s0">import numpy as np</span>
+<span class="s0">from . import check_random_state</span>
+
+<span class="s0">from ._typedefs cimport intp_t</span>
+
+
+<span class="s0">cdef uint32_t DEFAULT_SEED = 1</span>
+
+
+<span class="s0"># Compatibility type to always accept the default int type used by NumPy, both</span>
+<span class="s0"># before and after NumPy 2. On Windows, `long` does not always match `inp_t`.</span>
+<span class="s0"># See the comments in the `sample_without_replacement` Python function for more</span>
+<span class="s0"># details.</span>
+<span class="s0">ctypedef fused default_int:</span>
+    <span class="s0">intp_t</span>
+    <span class="s0">long</span>
+
+
+<span class="s0">cpdef _sample_without_replacement_check_input(default_int n_population,</span>
+                                              <span class="s0">default_int n_samples):</span>
+    <span class="s0">&quot;&quot;&quot; Check that input are consistent for sample_without_replacement&quot;&quot;&quot;</span>
+    <span class="s0">if n_population &lt; 0:</span>
+        <span class="s0">raise ValueError('n_population should be greater than 0, got %s.'</span>
+                         <span class="s0">% n_population)</span>
+
+    <span class="s0">if n_samples &gt; n_population:</span>
+        <span class="s0">raise ValueError('n_population should be greater or equal than '</span>
+                         <span class="s0">'n_samples, got n_samples &gt; n_population (%s &gt; %s)'</span>
+                         <span class="s0">% (n_samples, n_population))</span>
+
+
+<span class="s0">cpdef _sample_without_replacement_with_tracking_selection(</span>
+        <span class="s0">default_int n_population,</span>
+        <span class="s0">default_int n_samples,</span>
+        <span class="s0">random_state=None):</span>
+    <span class="s0">r&quot;&quot;&quot;Sample integers without replacement.</span>
+
+    <span class="s0">Select n_samples integers from the set [0, n_population) without</span>
+    <span class="s0">replacement.</span>
+
+    <span class="s0">Time complexity:</span>
+        <span class="s0">- Worst-case: unbounded</span>
+        <span class="s0">- Average-case:</span>
+            <span class="s0">O(O(np.random.randint) * \sum_{i=1}^n_samples 1 /</span>
+                                              <span class="s0">(1 - i / n_population)))</span>
+            <span class="s0">&lt;= O(O(np.random.randint) *</span>
+                   <span class="s0">n_population * ln((n_population - 2)</span>
+                                     <span class="s0">/(n_population - 1 - n_samples)))</span>
+            <span class="s0">&lt;= O(O(np.random.randint) *</span>
+                 <span class="s0">n_population * 1 / (1 - n_samples / n_population))</span>
+
+    <span class="s0">Space complexity of O(n_samples) in a python set.</span>
+
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">n_population : int</span>
+        <span class="s0">The size of the set to sample from.</span>
+
+    <span class="s0">n_samples : int</span>
+        <span class="s0">The number of integer to sample.</span>
+
+    <span class="s0">random_state : int, RandomState instance or None, default=None</span>
+        <span class="s0">If int, random_state is the seed used by the random number generator;</span>
+        <span class="s0">If RandomState instance, random_state is the random number generator;</span>
+        <span class="s0">If None, the random number generator is the RandomState instance used</span>
+        <span class="s0">by `np.random`.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">out : ndarray of shape (n_samples,)</span>
+        <span class="s0">The sampled subsets of integer.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">_sample_without_replacement_check_input(n_population, n_samples)</span>
+
+    <span class="s0">cdef default_int i</span>
+    <span class="s0">cdef default_int j</span>
+    <span class="s0">cdef default_int[::1] out = np.empty((n_samples, ), dtype=int)</span>
+
+    <span class="s0">rng = check_random_state(random_state)</span>
+    <span class="s0">rng_randint = rng.randint</span>
+
+    <span class="s0"># The following line of code are heavily inspired from python core,</span>
+    <span class="s0"># more precisely of random.sample.</span>
+    <span class="s0">cdef set selected = set()</span>
+
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">j = rng_randint(n_population)</span>
+        <span class="s0">while j in selected:</span>
+            <span class="s0">j = rng_randint(n_population)</span>
+        <span class="s0">selected.add(j)</span>
+        <span class="s0">out[i] = j</span>
+
+    <span class="s0">return np.asarray(out)</span>
+
+
+<span class="s0">cpdef _sample_without_replacement_with_pool(default_int n_population,</span>
+                                            <span class="s0">default_int n_samples,</span>
+                                            <span class="s0">random_state=None):</span>
+    <span class="s0">&quot;&quot;&quot;Sample integers without replacement.</span>
+
+    <span class="s0">Select n_samples integers from the set [0, n_population) without</span>
+    <span class="s0">replacement.</span>
+
+    <span class="s0">Time complexity: O(n_population +  O(np.random.randint) * n_samples)</span>
+
+    <span class="s0">Space complexity of O(n_population + n_samples).</span>
+
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">n_population : int</span>
+        <span class="s0">The size of the set to sample from.</span>
+
+    <span class="s0">n_samples : int</span>
+        <span class="s0">The number of integer to sample.</span>
+
+    <span class="s0">random_state : int, RandomState instance or None, default=None</span>
+        <span class="s0">If int, random_state is the seed used by the random number generator;</span>
+        <span class="s0">If RandomState instance, random_state is the random number generator;</span>
+        <span class="s0">If None, the random number generator is the RandomState instance used</span>
+        <span class="s0">by `np.random`.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">out : ndarray of shape (n_samples,)</span>
+        <span class="s0">The sampled subsets of integer.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">_sample_without_replacement_check_input(n_population, n_samples)</span>
+
+    <span class="s0">cdef default_int i</span>
+    <span class="s0">cdef default_int j</span>
+    <span class="s0">cdef default_int[::1] out = np.empty((n_samples,), dtype=int)</span>
+    <span class="s0">cdef default_int[::1] pool = np.empty((n_population,), dtype=int)</span>
+
+    <span class="s0">rng = check_random_state(random_state)</span>
+    <span class="s0">rng_randint = rng.randint</span>
+
+    <span class="s0"># Initialize the pool</span>
+    <span class="s0">for i in range(n_population):</span>
+        <span class="s0">pool[i] = i</span>
+
+    <span class="s0"># The following line of code are heavily inspired from python core,</span>
+    <span class="s0"># more precisely of random.sample.</span>
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">j = rng_randint(n_population - i)  # invariant: non-selected at [0,n-i)</span>
+        <span class="s0">out[i] = pool[j]</span>
+        <span class="s0">pool[j] = pool[n_population - i - 1]  # move non-selected item into vacancy</span>
+
+    <span class="s0">return np.asarray(out)</span>
+
+
+<span class="s0">cpdef _sample_without_replacement_with_reservoir_sampling(</span>
+    <span class="s0">default_int n_population,</span>
+    <span class="s0">default_int n_samples,</span>
+    <span class="s0">random_state=None</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Sample integers without replacement.</span>
+
+    <span class="s0">Select n_samples integers from the set [0, n_population) without</span>
+    <span class="s0">replacement.</span>
+
+    <span class="s0">Time complexity of</span>
+        <span class="s0">O((n_population - n_samples) * O(np.random.randint) + n_samples)</span>
+    <span class="s0">Space complexity of O(n_samples)</span>
+
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">n_population : int</span>
+        <span class="s0">The size of the set to sample from.</span>
+
+    <span class="s0">n_samples : int</span>
+         <span class="s0">The number of integer to sample.</span>
+
+    <span class="s0">random_state : int, RandomState instance or None, default=None</span>
+        <span class="s0">If int, random_state is the seed used by the random number generator;</span>
+        <span class="s0">If RandomState instance, random_state is the random number generator;</span>
+        <span class="s0">If None, the random number generator is the RandomState instance used</span>
+        <span class="s0">by `np.random`.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">out : ndarray of shape (n_samples,)</span>
+        <span class="s0">The sampled subsets of integer. The order of the items is not</span>
+        <span class="s0">necessarily random. Use a random permutation of the array if the order</span>
+        <span class="s0">of the items has to be randomized.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">_sample_without_replacement_check_input(n_population, n_samples)</span>
+
+    <span class="s0">cdef default_int i</span>
+    <span class="s0">cdef default_int j</span>
+    <span class="s0">cdef default_int[::1] out = np.empty((n_samples, ), dtype=int)</span>
+
+    <span class="s0">rng = check_random_state(random_state)</span>
+    <span class="s0">rng_randint = rng.randint</span>
+
+    <span class="s0"># This cython implementation is based on the one of Robert Kern:</span>
+    <span class="s0"># http://mail.scipy.org/pipermail/numpy-discussion/2010-December/</span>
+    <span class="s0"># 054289.html</span>
+    <span class="s0">#</span>
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">out[i] = i</span>
+
+    <span class="s0">for i from n_samples &lt;= i &lt; n_population:</span>
+        <span class="s0">j = rng_randint(0, i + 1)</span>
+        <span class="s0">if j &lt; n_samples:</span>
+            <span class="s0">out[j] = i</span>
+
+    <span class="s0">return np.asarray(out)</span>
+
+
+<span class="s0">cdef _sample_without_replacement(default_int n_population,</span>
+                                 <span class="s0">default_int n_samples,</span>
+                                 <span class="s0">method=&quot;auto&quot;,</span>
+                                 <span class="s0">random_state=None):</span>
+    <span class="s0">&quot;&quot;&quot;Sample integers without replacement.</span>
+
+    <span class="s0">Private function for the implementation, see sample_without_replacement</span>
+    <span class="s0">documentation for more details.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">_sample_without_replacement_check_input(n_population, n_samples)</span>
+
+    <span class="s0">all_methods = (&quot;auto&quot;, &quot;tracking_selection&quot;, &quot;reservoir_sampling&quot;, &quot;pool&quot;)</span>
+
+    <span class="s0">ratio = &lt;double&gt; n_samples / n_population if n_population != 0.0 else 1.0</span>
+
+    <span class="s0"># Check ratio and use permutation unless ratio &lt; 0.01 or ratio &gt; 0.99</span>
+    <span class="s0">if method == &quot;auto&quot; and ratio &gt; 0.01 and ratio &lt; 0.99:</span>
+        <span class="s0">rng = check_random_state(random_state)</span>
+        <span class="s0">return rng.permutation(n_population)[:n_samples]</span>
+
+    <span class="s0">if method == &quot;auto&quot; or method == &quot;tracking_selection&quot;:</span>
+        <span class="s0"># TODO the pool based method can also be used.</span>
+        <span class="s0">#      however, it requires special benchmark to take into account</span>
+        <span class="s0">#      the memory requirement of the array vs the set.</span>
+
+        <span class="s0"># The value 0.2 has been determined through benchmarking.</span>
+        <span class="s0">if ratio &lt; 0.2:</span>
+            <span class="s0">return _sample_without_replacement_with_tracking_selection(</span>
+                <span class="s0">n_population, n_samples, random_state)</span>
+        <span class="s0">else:</span>
+            <span class="s0">return _sample_without_replacement_with_reservoir_sampling(</span>
+                <span class="s0">n_population, n_samples, random_state)</span>
+
+    <span class="s0">elif method == &quot;reservoir_sampling&quot;:</span>
+        <span class="s0">return _sample_without_replacement_with_reservoir_sampling(</span>
+            <span class="s0">n_population, n_samples, random_state)</span>
+
+    <span class="s0">elif method == &quot;pool&quot;:</span>
+        <span class="s0">return _sample_without_replacement_with_pool(n_population, n_samples,</span>
+                                                     <span class="s0">random_state)</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise ValueError('Expected a method name in %s, got %s. '</span>
+                         <span class="s0">% (all_methods, method))</span>
+
+
+<span class="s0">def sample_without_replacement(</span>
+        <span class="s0">object n_population, object n_samples, method=&quot;auto&quot;, random_state=None):</span>
+    <span class="s0">&quot;&quot;&quot;Sample integers without replacement.</span>
+
+    <span class="s0">Select n_samples integers from the set [0, n_population) without</span>
+    <span class="s0">replacement.</span>
+
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">n_population : int</span>
+        <span class="s0">The size of the set to sample from.</span>
+
+    <span class="s0">n_samples : int</span>
+        <span class="s0">The number of integer to sample.</span>
+
+    <span class="s0">random_state : int, RandomState instance or None, default=None</span>
+        <span class="s0">If int, random_state is the seed used by the random number generator;</span>
+        <span class="s0">If RandomState instance, random_state is the random number generator;</span>
+        <span class="s0">If None, the random number generator is the RandomState instance used</span>
+        <span class="s0">by `np.random`.</span>
+
+    <span class="s0">method : {&quot;auto&quot;, &quot;tracking_selection&quot;, &quot;reservoir_sampling&quot;, &quot;pool&quot;}, \</span>
+            <span class="s0">default='auto'</span>
+        <span class="s0">If method == &quot;auto&quot;, the ratio of n_samples / n_population is used</span>
+        <span class="s0">to determine which algorithm to use:</span>
+        <span class="s0">If ratio is between 0 and 0.01, tracking selection is used.</span>
+        <span class="s0">If ratio is between 0.01 and 0.99, numpy.random.permutation is used.</span>
+        <span class="s0">If ratio is greater than 0.99, reservoir sampling is used.</span>
+        <span class="s0">The order of the selected integers is undefined. If a random order is</span>
+        <span class="s0">desired, the selected subset should be shuffled.</span>
+
+        <span class="s0">If method ==&quot;tracking_selection&quot;, a set based implementation is used</span>
+        <span class="s0">which is suitable for `n_samples` &lt;&lt;&lt; `n_population`.</span>
+
+        <span class="s0">If method == &quot;reservoir_sampling&quot;, a reservoir sampling algorithm is</span>
+        <span class="s0">used which is suitable for high memory constraint or when</span>
+        <span class="s0">O(`n_samples`) ~ O(`n_population`).</span>
+        <span class="s0">The order of the selected integers is undefined. If a random order is</span>
+        <span class="s0">desired, the selected subset should be shuffled.</span>
+
+        <span class="s0">If method == &quot;pool&quot;, a pool based algorithm is particularly fast, even</span>
+        <span class="s0">faster than the tracking selection method. However, a vector containing</span>
+        <span class="s0">the entire population has to be initialized.</span>
+        <span class="s0">If n_samples ~ n_population, the reservoir sampling method is faster.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">out : ndarray of shape (n_samples,)</span>
+        <span class="s0">The sampled subsets of integer. The subset of selected integer might</span>
+        <span class="s0">not be randomized, see the method argument.</span>
+
+    <span class="s0">Examples</span>
+    <span class="s0">--------</span>
+    <span class="s0">&gt;&gt;&gt; from sklearn.utils.random import sample_without_replacement</span>
+    <span class="s0">&gt;&gt;&gt; sample_without_replacement(10, 5, random_state=42)</span>
+    <span class="s0">array([8, 1, 5, 0, 7])</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">intp_t n_pop_intp, n_samples_intp</span>
+        <span class="s0">long n_pop_long, n_samples_long</span>
+
+    <span class="s0"># On most platforms `np.int_ is np.intp`.  However, before NumPy 2 the</span>
+    <span class="s0"># default integer `np.int_` was a long which is 32bit on 64bit windows</span>
+    <span class="s0"># while `intp` is 64bit on 64bit platforms and 32bit on 32bit ones.</span>
+    <span class="s0">if np.int_ is np.intp:</span>
+        <span class="s0"># Branch always taken on NumPy &gt;=2 (or when not on 64bit windows).</span>
+        <span class="s0"># Cython has different rules for conversion of values to integers.</span>
+        <span class="s0"># For NumPy &lt;1.26.2 AND Cython 3, this first branch requires `int()`</span>
+        <span class="s0"># called explicitly to allow e.g. floats.</span>
+        <span class="s0">n_pop_intp = int(n_population)</span>
+        <span class="s0">n_samples_intp = int(n_samples)</span>
+        <span class="s0">return _sample_without_replacement(</span>
+                <span class="s0">n_pop_intp, n_samples_intp, method, random_state)</span>
+    <span class="s0">else:</span>
+        <span class="s0"># Branch taken on 64bit windows with Numpy&lt;2.0 where `long` is 32bit</span>
+        <span class="s0">n_pop_long = n_population</span>
+        <span class="s0">n_samples_long = n_samples</span>
+        <span class="s0">return _sample_without_replacement(</span>
+                <span class="s0">n_pop_long, n_samples_long, method, random_state)</span>
+
+
+<span class="s0">def _our_rand_r_py(seed):</span>
+    <span class="s0">&quot;&quot;&quot;Python utils to test the our_rand_r function&quot;&quot;&quot;</span>
+    <span class="s0">cdef uint32_t my_seed = seed</span>
+    <span class="s0">return our_rand_r(&amp;my_seed)</span>
+</pre>
+</body>
+</html>

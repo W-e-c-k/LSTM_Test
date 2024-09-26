@@ -1,0 +1,235 @@
+<html>
+<head>
+<title>_k_means_minibatch.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_k_means_minibatch.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0">from cython cimport floating</span>
+<span class="s0">from cython.parallel cimport parallel, prange</span>
+<span class="s0">from libc.stdlib cimport malloc, free</span>
+
+
+<span class="s0">def _minibatch_update_dense(</span>
+        <span class="s0">const floating[:, ::1] X,            # IN</span>
+        <span class="s0">const floating[::1] sample_weight,   # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,  # IN</span>
+        <span class="s0">floating[:, ::1] centers_new,        # OUT</span>
+        <span class="s0">floating[::1] weight_sums,           # INOUT</span>
+        <span class="s0">const int[::1] labels,               # IN</span>
+        <span class="s0">int n_threads):</span>
+    <span class="s0">&quot;&quot;&quot;Update of the centers for dense MiniBatchKMeans.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : ndarray of shape (n_samples, n_features), dtype=floating</span>
+        <span class="s0">The observations to cluster.</span>
+
+    <span class="s0">sample_weight : ndarray of shape (n_samples,), dtype=floating</span>
+        <span class="s0">The weights for each observation in X.</span>
+
+    <span class="s0">centers_old : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers before previous iteration, placeholder for the centers after</span>
+        <span class="s0">previous iteration.</span>
+
+    <span class="s0">centers_new : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers after previous iteration, placeholder for the new centers</span>
+        <span class="s0">computed during this iteration.</span>
+
+    <span class="s0">weight_sums : ndarray of shape (n_clusters,), dtype=floating</span>
+        <span class="s0">Current sums of the accumulated weights for each center.</span>
+
+    <span class="s0">labels : ndarray of shape (n_samples,), dtype=int</span>
+        <span class="s0">labels assignment.</span>
+
+    <span class="s0">n_threads : int</span>
+        <span class="s0">The number of threads to be used by openmp.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = X.shape[0]</span>
+        <span class="s0">int n_clusters = centers_old.shape[0]</span>
+        <span class="s0">int cluster_idx</span>
+
+        <span class="s0">int *indices</span>
+
+    <span class="s0">with nogil, parallel(num_threads=n_threads):</span>
+        <span class="s0">indices = &lt;int*&gt; malloc(n_samples * sizeof(int))</span>
+
+        <span class="s0">for cluster_idx in prange(n_clusters, schedule=&quot;static&quot;):</span>
+            <span class="s0">update_center_dense(cluster_idx, X, sample_weight,</span>
+                                <span class="s0">centers_old, centers_new, weight_sums, labels,</span>
+                                <span class="s0">indices)</span>
+
+        <span class="s0">free(indices)</span>
+
+
+<span class="s0">cdef void update_center_dense(</span>
+        <span class="s0">int cluster_idx,</span>
+        <span class="s0">const floating[:, ::1] X,            # IN</span>
+        <span class="s0">const floating[::1] sample_weight,   # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,  # IN</span>
+        <span class="s0">floating[:, ::1] centers_new,        # OUT</span>
+        <span class="s0">floating[::1] weight_sums,           # INOUT</span>
+        <span class="s0">const int[::1] labels,               # IN</span>
+        <span class="s0">int *indices) noexcept nogil:        # TMP</span>
+    <span class="s0">&quot;&quot;&quot;Update of a single center for dense MinibatchKMeans&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = sample_weight.shape[0]</span>
+        <span class="s0">int n_features = centers_old.shape[1]</span>
+        <span class="s0">floating alpha</span>
+        <span class="s0">int n_indices</span>
+        <span class="s0">int k, sample_idx, feature_idx</span>
+
+        <span class="s0">floating wsum = 0</span>
+
+    <span class="s0"># indices = np.where(labels == cluster_idx)[0]</span>
+    <span class="s0">k = 0</span>
+    <span class="s0">for sample_idx in range(n_samples):</span>
+        <span class="s0">if labels[sample_idx] == cluster_idx:</span>
+            <span class="s0">indices[k] = sample_idx</span>
+            <span class="s0">wsum += sample_weight[sample_idx]</span>
+            <span class="s0">k += 1</span>
+    <span class="s0">n_indices = k</span>
+
+    <span class="s0">if wsum &gt; 0:</span>
+        <span class="s0"># Undo the previous count-based scaling for this cluster center</span>
+        <span class="s0">for feature_idx in range(n_features):</span>
+            <span class="s0">centers_new[cluster_idx, feature_idx] = centers_old[cluster_idx, feature_idx] * weight_sums[cluster_idx]</span>
+
+        <span class="s0"># Update cluster with new point members</span>
+        <span class="s0">for k in range(n_indices):</span>
+            <span class="s0">sample_idx = indices[k]</span>
+            <span class="s0">for feature_idx in range(n_features):</span>
+                <span class="s0">centers_new[cluster_idx, feature_idx] += X[sample_idx, feature_idx] * sample_weight[sample_idx]</span>
+
+        <span class="s0"># Update the count statistics for this center</span>
+        <span class="s0">weight_sums[cluster_idx] += wsum</span>
+
+        <span class="s0"># Rescale to compute mean of all points (old and new)</span>
+        <span class="s0">alpha = 1 / weight_sums[cluster_idx]</span>
+        <span class="s0">for feature_idx in range(n_features):</span>
+            <span class="s0">centers_new[cluster_idx, feature_idx] *= alpha</span>
+    <span class="s0">else:</span>
+        <span class="s0"># No sample was assigned to this cluster in this batch of data</span>
+        <span class="s0">for feature_idx in range(n_features):</span>
+            <span class="s0">centers_new[cluster_idx, feature_idx] = centers_old[cluster_idx, feature_idx]</span>
+
+
+<span class="s0">def _minibatch_update_sparse(</span>
+        <span class="s0">X,                                   # IN</span>
+        <span class="s0">const floating[::1] sample_weight,   # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,  # IN</span>
+        <span class="s0">floating[:, ::1] centers_new,        # OUT</span>
+        <span class="s0">floating[::1] weight_sums,           # INOUT</span>
+        <span class="s0">const int[::1] labels,               # IN</span>
+        <span class="s0">int n_threads):</span>
+    <span class="s0">&quot;&quot;&quot;Update of the centers for sparse MiniBatchKMeans.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : sparse matrix of shape (n_samples, n_features), dtype=floating</span>
+        <span class="s0">The observations to cluster. Must be in CSR format.</span>
+
+    <span class="s0">sample_weight : ndarray of shape (n_samples,), dtype=floating</span>
+        <span class="s0">The weights for each observation in X.</span>
+
+    <span class="s0">centers_old : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers before previous iteration, placeholder for the centers after</span>
+        <span class="s0">previous iteration.</span>
+
+    <span class="s0">centers_new : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers after previous iteration, placeholder for the new centers</span>
+        <span class="s0">computed during this iteration.</span>
+
+    <span class="s0">weight_sums : ndarray of shape (n_clusters,), dtype=floating</span>
+        <span class="s0">Current sums of the accumulated weights for each center.</span>
+
+    <span class="s0">labels : ndarray of shape (n_samples,), dtype=int</span>
+        <span class="s0">labels assignment.</span>
+
+    <span class="s0">n_threads : int</span>
+        <span class="s0">The number of threads to be used by openmp.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">floating[::1] X_data = X.data</span>
+        <span class="s0">int[::1] X_indices = X.indices</span>
+        <span class="s0">int[::1] X_indptr = X.indptr</span>
+        <span class="s0">int n_samples = X.shape[0]</span>
+        <span class="s0">int n_clusters = centers_old.shape[0]</span>
+        <span class="s0">int cluster_idx</span>
+
+        <span class="s0">int *indices</span>
+
+    <span class="s0">with nogil, parallel(num_threads=n_threads):</span>
+        <span class="s0">indices = &lt;int*&gt; malloc(n_samples * sizeof(int))</span>
+
+        <span class="s0">for cluster_idx in prange(n_clusters, schedule=&quot;static&quot;):</span>
+            <span class="s0">update_center_sparse(cluster_idx, X_data, X_indices, X_indptr,</span>
+                                 <span class="s0">sample_weight, centers_old, centers_new,</span>
+                                 <span class="s0">weight_sums, labels, indices)</span>
+
+        <span class="s0">free(indices)</span>
+
+
+<span class="s0">cdef void update_center_sparse(</span>
+        <span class="s0">int cluster_idx,</span>
+        <span class="s0">const floating[::1] X_data,          # IN</span>
+        <span class="s0">const int[::1] X_indices,            # IN</span>
+        <span class="s0">const int[::1] X_indptr,             # IN</span>
+        <span class="s0">const floating[::1] sample_weight,   # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,  # IN</span>
+        <span class="s0">floating[:, ::1] centers_new,        # OUT</span>
+        <span class="s0">floating[::1] weight_sums,           # INOUT</span>
+        <span class="s0">const int[::1] labels,               # IN</span>
+        <span class="s0">int *indices) noexcept nogil:        # TMP</span>
+    <span class="s0">&quot;&quot;&quot;Update of a single center for sparse MinibatchKMeans&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = sample_weight.shape[0]</span>
+        <span class="s0">int n_features = centers_old.shape[1]</span>
+        <span class="s0">floating alpha</span>
+        <span class="s0">int n_indices</span>
+        <span class="s0">int k, sample_idx, feature_idx</span>
+
+        <span class="s0">floating wsum = 0</span>
+
+    <span class="s0"># indices = np.where(labels == cluster_idx)[0]</span>
+    <span class="s0">k = 0</span>
+    <span class="s0">for sample_idx in range(n_samples):</span>
+        <span class="s0">if labels[sample_idx] == cluster_idx:</span>
+            <span class="s0">indices[k] = sample_idx</span>
+            <span class="s0">wsum += sample_weight[sample_idx]</span>
+            <span class="s0">k += 1</span>
+    <span class="s0">n_indices = k</span>
+
+    <span class="s0">if wsum &gt; 0:</span>
+        <span class="s0"># Undo the previous count-based scaling for this cluster center:</span>
+        <span class="s0">for feature_idx in range(n_features):</span>
+            <span class="s0">centers_new[cluster_idx, feature_idx] = centers_old[cluster_idx, feature_idx] * weight_sums[cluster_idx]</span>
+
+        <span class="s0"># Update cluster with new point members</span>
+        <span class="s0">for k in range(n_indices):</span>
+            <span class="s0">sample_idx = indices[k]</span>
+            <span class="s0">for feature_idx in range(X_indptr[sample_idx], X_indptr[sample_idx + 1]):</span>
+                <span class="s0">centers_new[cluster_idx, X_indices[feature_idx]] += X_data[feature_idx] * sample_weight[sample_idx]</span>
+
+        <span class="s0"># Update the count statistics for this center</span>
+        <span class="s0">weight_sums[cluster_idx] += wsum</span>
+
+        <span class="s0"># Rescale to compute mean of all points (old and new)</span>
+        <span class="s0">alpha = 1 / weight_sums[cluster_idx]</span>
+        <span class="s0">for feature_idx in range(n_features):</span>
+            <span class="s0">centers_new[cluster_idx, feature_idx] *= alpha</span>
+    <span class="s0">else:</span>
+        <span class="s0"># No sample was assigned to this cluster in this batch of data</span>
+        <span class="s0">for feature_idx in range(n_features):</span>
+            <span class="s0">centers_new[cluster_idx, feature_idx] = centers_old[cluster_idx, feature_idx]</span>
+</pre>
+</body>
+</html>

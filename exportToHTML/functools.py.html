@@ -1,0 +1,197 @@
+<html>
+<head>
+<title>functools.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+functools.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2022-2024 MetaOPT Team. All Rights Reserved.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+<span class="s0"># ==============================================================================</span>
+<span class="s2">&quot;&quot;&quot;PyTree integration with :mod:`functools`.&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">annotations</span>
+
+<span class="s3">import </span><span class="s1">functools</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s4">, </span><span class="s1">Callable</span><span class="s4">, </span><span class="s1">ClassVar</span>
+<span class="s3">from </span><span class="s1">typing_extensions </span><span class="s3">import </span><span class="s1">Self  </span><span class="s0"># Python 3.11+</span>
+<span class="s3">from </span><span class="s1">typing_extensions </span><span class="s3">import </span><span class="s1">deprecated  </span><span class="s0"># Python 3.13+</span>
+
+<span class="s3">from </span><span class="s1">optree </span><span class="s3">import </span><span class="s1">registry</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">accessor </span><span class="s3">import </span><span class="s1">GetAttrEntry</span><span class="s4">, </span><span class="s1">PyTreeEntry</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">ops </span><span class="s3">import </span><span class="s1">tree_reduce </span><span class="s3">as </span><span class="s1">reduce</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">typing </span><span class="s3">import </span><span class="s1">CustomTreeNode</span><span class="s4">, </span><span class="s1">T</span>
+
+
+<span class="s1">__all__ </span><span class="s4">= [</span>
+    <span class="s5">'partial'</span><span class="s4">,</span>
+    <span class="s5">'reduce'</span><span class="s4">,</span>
+<span class="s4">]</span>
+
+
+<span class="s3">class </span><span class="s1">_HashablePartialShim</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Object that delegates :meth:`__call__`, :meth:`__eq__`, and :meth:`__hash__` to another object.&quot;&quot;&quot;</span>
+
+    <span class="s1">__slots__</span><span class="s4">: </span><span class="s1">ClassVar</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, ...]] = (</span><span class="s5">'partial_func'</span><span class="s4">, </span><span class="s5">'func'</span><span class="s4">, </span><span class="s5">'args'</span><span class="s4">, </span><span class="s5">'keywords'</span><span class="s4">)</span>
+
+    <span class="s1">func</span><span class="s4">: </span><span class="s1">Callable</span><span class="s4">[..., </span><span class="s1">Any</span><span class="s4">]</span>
+    <span class="s1">args</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">Any</span><span class="s4">, ...]</span>
+    <span class="s1">keywords</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">Any</span><span class="s4">]</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">partial_func</span><span class="s4">: </span><span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">partial_func</span><span class="s4">: </span><span class="s1">functools</span><span class="s4">.</span><span class="s1">partial </span><span class="s4">= </span><span class="s1">partial_func</span>
+
+    <span class="s3">def </span><span class="s1">__call__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">: </span><span class="s1">Any</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">Any</span><span class="s4">) </span><span class="s1">-&gt; Any</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">partial_func</span><span class="s4">(*</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__eq__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">other</span><span class="s4">: </span><span class="s1">object</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">_HashablePartialShim</span><span class="s4">):</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">partial_func </span><span class="s4">== </span><span class="s1">other</span><span class="s4">.</span><span class="s1">partial_func</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">partial_func </span><span class="s4">== </span><span class="s1">other</span>
+
+    <span class="s3">def </span><span class="s1">__hash__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; int</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">hash</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">partial_func</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">repr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">partial_func</span><span class="s4">)</span>
+
+
+<span class="s0"># pylint: disable-next=protected-access</span>
+<span class="s4">@</span><span class="s1">registry</span><span class="s4">.</span><span class="s1">register_pytree_node_class</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">=</span><span class="s1">registry</span><span class="s4">.</span><span class="s1">__GLOBAL_NAMESPACE</span><span class="s4">)</span>
+<span class="s3">class </span><span class="s1">partial</span><span class="s4">(  </span><span class="s0"># noqa: N801 # pylint: disable=invalid-name,too-few-public-methods</span>
+    <span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">,</span>
+    <span class="s1">CustomTreeNode</span><span class="s4">[</span><span class="s1">T</span><span class="s4">],</span>
+<span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;A version of :func:`functools.partial` that works in pytrees. 
+ 
+    Use it for partial function evaluation in a way that is compatible with transformations, 
+    e.g., ``partial(func, *args, **kwargs)``. 
+ 
+    (You need to explicitly opt-in to this behavior because we did not want to give 
+    :func:`functools.partial` different semantics than normal function closures.) 
+ 
+    For example, here is a basic usage of :class:`partial` in a manner similar to 
+    :func:`functools.partial`: 
+ 
+    &gt;&gt;&gt; import operator 
+    &gt;&gt;&gt; import torch 
+    &gt;&gt;&gt; add_one = partial(operator.add, torch.ones(())) 
+    &gt;&gt;&gt; add_one(torch.tensor([[1, 2], [3, 4]])) 
+    tensor([[2., 3.], 
+            [4., 5.]]) 
+ 
+    Pytree compatibility means that the resulting partial function can be passed as an argument 
+    within tree-map functions, which is not possible with a standard :func:`functools.partial` 
+    function: 
+ 
+    &gt;&gt;&gt; def call_func_on_cuda(f, *args, **kwargs): 
+    ...     f, args, kwargs = tree_map(lambda t: t.cuda(), (f, args, kwargs)) 
+    ...     return f(*args, **kwargs) 
+    ... 
+    &gt;&gt;&gt; # doctest: +SKIP 
+    &gt;&gt;&gt; tree_map(lambda t: t.cuda(), add_one) 
+    optree.functools.partial(&lt;built-in function add&gt;, tensor(1., device='cuda:0')) 
+    &gt;&gt;&gt; call_func_on_cuda(add_one, torch.tensor([[1, 2], [3, 4]])) 
+    tensor([[2., 3.], 
+            [4., 5.]], device='cuda:0') 
+ 
+    Passing zero arguments to :class:`partial` effectively wraps the original function, making it a 
+    valid argument in tree-map functions: 
+ 
+    &gt;&gt;&gt; # doctest: +SKIP 
+    &gt;&gt;&gt; call_func_on_cuda(partial(torch.add), torch.tensor(1), torch.tensor(2)) 
+    tensor(3, device='cuda:0') 
+ 
+    Had we passed :func:`operator.add` to ``call_func_on_cuda`` directly, it would have resulted in 
+    a :class:`TypeError` or :class:`AttributeError`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">__slots__</span><span class="s4">: </span><span class="s1">ClassVar</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[()]] = ()</span>
+
+    <span class="s1">func</span><span class="s4">: </span><span class="s1">Callable</span><span class="s4">[..., </span><span class="s1">Any</span><span class="s4">]</span>
+    <span class="s1">args</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...]</span>
+    <span class="s1">keywords</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">T</span><span class="s4">]</span>
+
+    <span class="s1">TREE_PATH_ENTRY_TYPE</span><span class="s4">: </span><span class="s1">ClassVar</span><span class="s4">[</span><span class="s1">type</span><span class="s4">[</span><span class="s1">PyTreeEntry</span><span class="s4">]] = </span><span class="s1">GetAttrEntry</span>
+
+    <span class="s3">def </span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">func</span><span class="s4">: </span><span class="s1">Callable</span><span class="s4">[..., </span><span class="s1">Any</span><span class="s4">], *</span><span class="s1">args</span><span class="s4">: </span><span class="s1">T</span><span class="s4">, **</span><span class="s1">keywords</span><span class="s4">: </span><span class="s1">T</span><span class="s4">) </span><span class="s1">-&gt; Self</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Create a new :class:`partial` instance.&quot;&quot;&quot;</span>
+        <span class="s0"># In Python 3.10+, if func is itself a functools.partial instance, functools.partial.__new__</span>
+        <span class="s0"># would merge the arguments of this partial instance with the arguments of the func. We box</span>
+        <span class="s0"># func in a class that does not (yet) have a `func` attribute to defeat this optimization,</span>
+        <span class="s0"># since we care exactly which arguments are considered part of the pytree.</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">func</span><span class="s4">, </span><span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">):</span>
+            <span class="s1">original_func </span><span class="s4">= </span><span class="s1">func</span>
+            <span class="s1">func </span><span class="s4">= </span><span class="s1">_HashablePartialShim</span><span class="s4">(</span><span class="s1">original_func</span><span class="s4">)</span>
+            <span class="s3">assert not </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">func</span><span class="s4">, </span><span class="s5">'func'</span><span class="s4">), </span><span class="s5">'shimmed function should not have a `func` attribute'</span>
+            <span class="s1">out </span><span class="s4">= </span><span class="s1">super</span><span class="s4">().</span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">func</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">keywords</span><span class="s4">)</span>
+            <span class="s1">func</span><span class="s4">.</span><span class="s1">func </span><span class="s4">= </span><span class="s1">original_func</span><span class="s4">.</span><span class="s1">func</span>
+            <span class="s1">func</span><span class="s4">.</span><span class="s1">args </span><span class="s4">= </span><span class="s1">original_func</span><span class="s4">.</span><span class="s1">args</span>
+            <span class="s1">func</span><span class="s4">.</span><span class="s1">keywords </span><span class="s4">= </span><span class="s1">original_func</span><span class="s4">.</span><span class="s1">keywords</span>
+            <span class="s3">return </span><span class="s1">out</span>
+
+        <span class="s3">return </span><span class="s1">super</span><span class="s4">().</span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">func</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">keywords</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Return a string representation of the :class:`partial` instance.&quot;&quot;&quot;</span>
+        <span class="s1">args </span><span class="s4">= [</span><span class="s1">repr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">func</span><span class="s4">)]</span>
+        <span class="s1">args</span><span class="s4">.</span><span class="s1">extend</span><span class="s4">(</span><span class="s1">repr</span><span class="s4">(</span><span class="s1">x</span><span class="s4">) </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">args</span><span class="s4">)</span>
+        <span class="s1">args</span><span class="s4">.</span><span class="s1">extend</span><span class="s4">(</span><span class="s5">f'</span><span class="s3">{</span><span class="s1">k</span><span class="s3">}</span><span class="s5">=</span><span class="s3">{</span><span class="s1">v</span><span class="s3">!r}</span><span class="s5">' </span><span class="s3">for </span><span class="s4">(</span><span class="s1">k</span><span class="s4">, </span><span class="s1">v</span><span class="s4">) </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">keywords</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+        <span class="s3">return </span><span class="s5">f'</span><span class="s3">{</span><span class="s1">self</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">.</span><span class="s1">__module__</span><span class="s3">}</span><span class="s5">.</span><span class="s3">{</span><span class="s1">self</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">.</span><span class="s1">__qualname__</span><span class="s3">}</span><span class="s5">(</span><span class="s3">{</span><span class="s5">&quot;, &quot;</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">args</span><span class="s4">)</span><span class="s3">}</span><span class="s5">)'</span>
+
+    <span class="s3">def </span><span class="s1">tree_flatten</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[  </span><span class="s0"># type: ignore[override]</span>
+        <span class="s1">tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...], </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">T</span><span class="s4">]],</span>
+        <span class="s1">Callable</span><span class="s4">[..., </span><span class="s1">Any</span><span class="s4">],</span>
+        <span class="s1">tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">str</span><span class="s4">],</span>
+    <span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Flatten the :class:`partial` instance to children and auxiliary data.&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">args</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">keywords</span><span class="s4">), </span><span class="s1">self</span><span class="s4">.</span><span class="s1">func</span><span class="s4">, (</span><span class="s5">'args'</span><span class="s4">, </span><span class="s5">'keywords'</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">classmethod</span>
+    <span class="s3">def </span><span class="s1">tree_unflatten</span><span class="s4">(  </span><span class="s0"># type: ignore[override]</span>
+        <span class="s1">cls</span><span class="s4">,</span>
+        <span class="s1">metadata</span><span class="s4">: </span><span class="s1">Callable</span><span class="s4">[..., </span><span class="s1">Any</span><span class="s4">],</span>
+        <span class="s1">children</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...], </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">T</span><span class="s4">]],</span>
+    <span class="s4">) </span><span class="s1">-&gt; Self</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Unflatten the children and auxiliary data into a :class:`partial` instance.&quot;&quot;&quot;</span>
+        <span class="s1">args</span><span class="s4">, </span><span class="s1">keywords </span><span class="s4">= </span><span class="s1">children</span>
+        <span class="s3">return </span><span class="s1">cls</span><span class="s4">(</span><span class="s1">metadata</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">keywords</span><span class="s4">)</span>
+
+
+<span class="s0"># pylint: disable-next=protected-access</span>
+<span class="s4">@</span><span class="s1">registry</span><span class="s4">.</span><span class="s1">register_pytree_node_class</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">=</span><span class="s1">registry</span><span class="s4">.</span><span class="s1">__GLOBAL_NAMESPACE</span><span class="s4">)</span>
+<span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+    <span class="s5">'The class `optree.Partial` is deprecated and will be removed in a future version. '</span>
+    <span class="s5">'Please use `optree.functools.partial` instead.'</span><span class="s4">,</span>
+    <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+<span class="s4">)</span>
+<span class="s3">class </span><span class="s1">Partial</span><span class="s4">(</span><span class="s1">partial</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Deprecated alias for :class:`partial`.&quot;&quot;&quot;</span>
+
+    <span class="s1">__slots__</span><span class="s4">: </span><span class="s1">ClassVar</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[()]] = ()</span>
+</pre>
+</body>
+</html>

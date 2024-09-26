@@ -1,0 +1,2162 @@
+<html>
+<head>
+<title>objectify.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+objectify.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># cython: binding=True</span>
+<span class="s0"># cython: auto_pickle=False</span>
+<span class="s0"># cython: language_level=3</span>
+
+<span class="s0">&quot;&quot;&quot;</span>
+<span class="s0">The ``lxml.objectify`` module implements a Python object API for XML.</span>
+<span class="s0">It is based on `lxml.etree`.</span>
+<span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cimport cython</span>
+
+<span class="s0">from lxml.includes.etreepublic cimport _Document, _Element, ElementBase, ElementClassLookup</span>
+<span class="s0">from lxml.includes.etreepublic cimport elementFactory, import_lxml__etree, textOf, pyunicode</span>
+<span class="s0">from lxml.includes.tree cimport const_xmlChar, _xcstr</span>
+<span class="s0">from lxml cimport python</span>
+<span class="s0">from lxml.includes cimport tree</span>
+
+<span class="s0">cimport lxml.includes.etreepublic as cetree</span>
+<span class="s0">cimport libc.string as cstring_h   # not to be confused with stdlib 'string'</span>
+<span class="s0">from libc.string cimport const_char</span>
+
+<span class="s0">__all__ = ['BoolElement', 'DataElement', 'E', 'Element', 'ElementMaker',</span>
+           <span class="s0">'FloatElement', 'IntElement', 'NoneElement',</span>
+           <span class="s0">'NumberElement', 'ObjectPath', 'ObjectifiedDataElement',</span>
+           <span class="s0">'ObjectifiedElement', 'ObjectifyElementClassLookup',</span>
+           <span class="s0">'PYTYPE_ATTRIBUTE', 'PyType', 'StringElement', 'SubElement',</span>
+           <span class="s0">'XML', 'annotate', 'deannotate', 'dump', 'enable_recursive_str',</span>
+           <span class="s0">'fromstring', 'getRegisteredTypes', 'makeparser', 'parse',</span>
+           <span class="s0">'pyannotate', 'pytypename', 'set_default_parser',</span>
+           <span class="s0">'set_pytype_attribute_tag', 'xsiannotate']</span>
+
+<span class="s0">cdef object etree</span>
+<span class="s0">from lxml import etree</span>
+<span class="s0"># initialize C-API of lxml.etree</span>
+<span class="s0">import_lxml__etree()</span>
+
+<span class="s0">__version__ = etree.__version__</span>
+
+<span class="s0">cdef object _float_is_inf, _float_is_nan</span>
+<span class="s0">from math import isinf as _float_is_inf, isnan as _float_is_nan</span>
+
+<span class="s0">cdef object re</span>
+<span class="s0">import re</span>
+
+<span class="s0">cdef tuple IGNORABLE_ERRORS = (ValueError, TypeError)</span>
+<span class="s0">cdef object is_special_method = re.compile('__.*__$').match</span>
+
+
+<span class="s0">cdef object _typename(object t):</span>
+    <span class="s0">cdef const_char* c_name</span>
+    <span class="s0">c_name = python._fqtypename(t)</span>
+    <span class="s0">s = cstring_h.strrchr(c_name, c'.')</span>
+    <span class="s0">if s is not NULL:</span>
+        <span class="s0">c_name = s + 1</span>
+    <span class="s0">return pyunicode(&lt;const_xmlChar*&gt;c_name)</span>
+
+
+<span class="s0"># namespace/name for &quot;pytype&quot; hint attribute</span>
+<span class="s0">cdef object PYTYPE_NAMESPACE</span>
+<span class="s0">cdef bytes PYTYPE_NAMESPACE_UTF8</span>
+<span class="s0">cdef const_xmlChar* _PYTYPE_NAMESPACE</span>
+
+<span class="s0">cdef object PYTYPE_ATTRIBUTE_NAME</span>
+<span class="s0">cdef bytes PYTYPE_ATTRIBUTE_NAME_UTF8</span>
+<span class="s0">cdef const_xmlChar* _PYTYPE_ATTRIBUTE_NAME</span>
+
+<span class="s0">PYTYPE_ATTRIBUTE = None</span>
+
+<span class="s0">cdef unicode TREE_PYTYPE_NAME = &quot;TREE&quot;</span>
+
+<span class="s0">cdef tuple _unicodeAndUtf8(s):</span>
+    <span class="s0">return s, python.PyUnicode_AsUTF8String(s)</span>
+
+<span class="s0">def set_pytype_attribute_tag(attribute_tag=None):</span>
+    <span class="s0">&quot;&quot;&quot;set_pytype_attribute_tag(attribute_tag=None)</span>
+    <span class="s0">Change name and namespace of the XML attribute that holds Python type</span>
+    <span class="s0">information.</span>
+
+    <span class="s0">Do not use this unless you know what you are doing.</span>
+
+    <span class="s0">Reset by calling without argument.</span>
+
+    <span class="s0">Default: &quot;{http://codespeak.net/lxml/objectify/pytype}pytype&quot;</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">global PYTYPE_ATTRIBUTE, _PYTYPE_NAMESPACE, _PYTYPE_ATTRIBUTE_NAME</span>
+    <span class="s0">global PYTYPE_NAMESPACE, PYTYPE_NAMESPACE_UTF8</span>
+    <span class="s0">global PYTYPE_ATTRIBUTE_NAME, PYTYPE_ATTRIBUTE_NAME_UTF8</span>
+    <span class="s0">if attribute_tag is None:</span>
+        <span class="s0">PYTYPE_NAMESPACE, PYTYPE_NAMESPACE_UTF8 = \</span>
+            <span class="s0">_unicodeAndUtf8(&quot;http://codespeak.net/lxml/objectify/pytype&quot;)</span>
+        <span class="s0">PYTYPE_ATTRIBUTE_NAME, PYTYPE_ATTRIBUTE_NAME_UTF8 = \</span>
+            <span class="s0">_unicodeAndUtf8(&quot;pytype&quot;)</span>
+    <span class="s0">else:</span>
+        <span class="s0">PYTYPE_NAMESPACE_UTF8, PYTYPE_ATTRIBUTE_NAME_UTF8 = \</span>
+            <span class="s0">cetree.getNsTag(attribute_tag)</span>
+        <span class="s0">PYTYPE_NAMESPACE = PYTYPE_NAMESPACE_UTF8.decode('utf8')</span>
+        <span class="s0">PYTYPE_ATTRIBUTE_NAME = PYTYPE_ATTRIBUTE_NAME_UTF8.decode('utf8')</span>
+
+    <span class="s0">_PYTYPE_NAMESPACE      = PYTYPE_NAMESPACE_UTF8</span>
+    <span class="s0">_PYTYPE_ATTRIBUTE_NAME = PYTYPE_ATTRIBUTE_NAME_UTF8</span>
+    <span class="s0">PYTYPE_ATTRIBUTE = cetree.namespacedNameFromNsName(</span>
+        <span class="s0">_PYTYPE_NAMESPACE, _PYTYPE_ATTRIBUTE_NAME)</span>
+
+<span class="s0">set_pytype_attribute_tag()</span>
+
+
+<span class="s0"># namespaces for XML Schema</span>
+<span class="s0">cdef object XML_SCHEMA_NS, XML_SCHEMA_NS_UTF8</span>
+<span class="s0">XML_SCHEMA_NS, XML_SCHEMA_NS_UTF8 = \</span>
+    <span class="s0">_unicodeAndUtf8(&quot;http://www.w3.org/2001/XMLSchema&quot;)</span>
+<span class="s0">cdef const_xmlChar* _XML_SCHEMA_NS = _xcstr(XML_SCHEMA_NS_UTF8)</span>
+
+<span class="s0">cdef object XML_SCHEMA_INSTANCE_NS, XML_SCHEMA_INSTANCE_NS_UTF8</span>
+<span class="s0">XML_SCHEMA_INSTANCE_NS, XML_SCHEMA_INSTANCE_NS_UTF8 = \</span>
+    <span class="s0">_unicodeAndUtf8(&quot;http://www.w3.org/2001/XMLSchema-instance&quot;)</span>
+<span class="s0">cdef const_xmlChar* _XML_SCHEMA_INSTANCE_NS = _xcstr(XML_SCHEMA_INSTANCE_NS_UTF8)</span>
+
+<span class="s0">cdef object XML_SCHEMA_INSTANCE_NIL_ATTR = &quot;{%s}nil&quot; % XML_SCHEMA_INSTANCE_NS</span>
+<span class="s0">cdef object XML_SCHEMA_INSTANCE_TYPE_ATTR = &quot;{%s}type&quot; % XML_SCHEMA_INSTANCE_NS</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Element class for the main API</span>
+
+<span class="s0">cdef class ObjectifiedElement(ElementBase):</span>
+    <span class="s0">&quot;&quot;&quot;Main XML Element class.</span>
+
+    <span class="s0">Element children are accessed as object attributes.  Multiple children</span>
+    <span class="s0">with the same name are available through a list index.  Example::</span>
+
+       <span class="s0">&gt;&gt;&gt; root = XML(&quot;&lt;root&gt;&lt;c1&gt;&lt;c2&gt;0&lt;/c2&gt;&lt;c2&gt;1&lt;/c2&gt;&lt;/c1&gt;&lt;/root&gt;&quot;)</span>
+       <span class="s0">&gt;&gt;&gt; second_c2 = root.c1.c2[1]</span>
+       <span class="s0">&gt;&gt;&gt; print(second_c2.text)</span>
+       <span class="s0">1</span>
+
+    <span class="s0">Note that you cannot (and must not) instantiate this class or its</span>
+    <span class="s0">subclasses.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Iterate over self and all siblings with the same tag.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">parent = self.getparent()</span>
+        <span class="s0">if parent is None:</span>
+            <span class="s0">return iter([self])</span>
+        <span class="s0">return etree.ElementChildIterator(parent, tag=self.tag)</span>
+
+    <span class="s0">def __str__(self):</span>
+        <span class="s0">if __RECURSIVE_STR:</span>
+            <span class="s0">return _dump(self, 0)</span>
+        <span class="s0">else:</span>
+            <span class="s0">return textOf(self._c_node) or ''</span>
+
+    <span class="s0"># pickle support for objectified Element</span>
+    <span class="s0">def __reduce__(self):</span>
+        <span class="s0">return fromstring, (etree.tostring(self),)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def text(self):</span>
+        <span class="s0">return textOf(self._c_node)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def __dict__(self):</span>
+        <span class="s0">&quot;&quot;&quot;A fake implementation for __dict__ to support dir() etc.</span>
+
+        <span class="s0">Note that this only considers the first child with a given name.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _Element child</span>
+        <span class="s0">cdef dict children</span>
+        <span class="s0">c_ns = tree._getNs(self._c_node)</span>
+        <span class="s0">tag = &quot;{%s}*&quot; % pyunicode(c_ns) if c_ns is not NULL else None</span>
+        <span class="s0">children = {}</span>
+        <span class="s0">for child in etree.ElementChildIterator(self, tag=tag):</span>
+            <span class="s0">if c_ns is NULL and tree._getNs(child._c_node) is not NULL:</span>
+                <span class="s0">continue</span>
+            <span class="s0">name = pyunicode(child._c_node.name)</span>
+            <span class="s0">if name not in children:</span>
+                <span class="s0">children[name] = child</span>
+        <span class="s0">return children</span>
+
+    <span class="s0">def __len__(self):</span>
+        <span class="s0">&quot;&quot;&quot;Count self and siblings with the same tag.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return _countSiblings(self._c_node)</span>
+
+    <span class="s0">def countchildren(self):</span>
+        <span class="s0">&quot;&quot;&quot;countchildren(self)</span>
+
+        <span class="s0">Return the number of children of this element, regardless of their</span>
+        <span class="s0">name.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0"># copied from etree</span>
+        <span class="s0">cdef Py_ssize_t c</span>
+        <span class="s0">cdef tree.xmlNode* c_node</span>
+        <span class="s0">c = 0</span>
+        <span class="s0">c_node = self._c_node.children</span>
+        <span class="s0">while c_node is not NULL:</span>
+            <span class="s0">if tree._isElement(c_node):</span>
+                <span class="s0">c += 1</span>
+            <span class="s0">c_node = c_node.next</span>
+        <span class="s0">return c</span>
+
+    <span class="s0">def getchildren(self):</span>
+        <span class="s0">&quot;&quot;&quot;getchildren(self)</span>
+
+        <span class="s0">Returns a sequence of all direct children.  The elements are</span>
+        <span class="s0">returned in document order.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef tree.xmlNode* c_node</span>
+        <span class="s0">result = []</span>
+        <span class="s0">c_node = self._c_node.children</span>
+        <span class="s0">while c_node is not NULL:</span>
+            <span class="s0">if tree._isElement(c_node):</span>
+                <span class="s0">result.append(cetree.elementFactory(self._doc, c_node))</span>
+            <span class="s0">c_node = c_node.next</span>
+        <span class="s0">return result</span>
+
+    <span class="s0">def __getattr__(self, tag):</span>
+        <span class="s0">&quot;&quot;&quot;Return the (first) child with the given tag name.  If no namespace</span>
+        <span class="s0">is provided, the child will be looked up in the same one as self.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return _lookupChildOrRaise(self, tag)</span>
+
+    <span class="s0">def __setattr__(self, tag, value):</span>
+        <span class="s0">&quot;&quot;&quot;Set the value of the (first) child with the given tag name.  If no</span>
+        <span class="s0">namespace is provided, the child will be looked up in the same one as</span>
+        <span class="s0">self.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _Element element</span>
+        <span class="s0"># properties are looked up /after/ __setattr__, so we must emulate them</span>
+        <span class="s0">if tag == 'text' or tag == 'pyval':</span>
+            <span class="s0"># read-only !</span>
+            <span class="s0">raise TypeError, f&quot;attribute '{tag}' of '{_typename(self)}' objects is not writable&quot;</span>
+        <span class="s0">elif tag == 'tail':</span>
+            <span class="s0">cetree.setTailText(self._c_node, value)</span>
+            <span class="s0">return</span>
+        <span class="s0">elif tag == 'tag':</span>
+            <span class="s0">ElementBase.tag.__set__(self, value)</span>
+            <span class="s0">return</span>
+        <span class="s0">elif tag == 'base':</span>
+            <span class="s0">ElementBase.base.__set__(self, value)</span>
+            <span class="s0">return</span>
+        <span class="s0">tag = _buildChildTag(self, tag)</span>
+        <span class="s0">element = _lookupChild(self, tag)</span>
+        <span class="s0">if element is None:</span>
+            <span class="s0">_appendValue(self, tag, value)</span>
+        <span class="s0">else:</span>
+            <span class="s0">_replaceElement(element, value)</span>
+
+    <span class="s0">def __delattr__(self, tag):</span>
+        <span class="s0">child = _lookupChildOrRaise(self, tag)</span>
+        <span class="s0">self.remove(child)</span>
+
+    <span class="s0">def addattr(self, tag, value):</span>
+        <span class="s0">&quot;&quot;&quot;addattr(self, tag, value)</span>
+
+        <span class="s0">Add a child value to the element.</span>
+
+        <span class="s0">As opposed to append(), it sets a data value, not an element.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">_appendValue(self, _buildChildTag(self, tag), value)</span>
+
+    <span class="s0">def __getitem__(self, key):</span>
+        <span class="s0">&quot;&quot;&quot;Return a sibling, counting from the first child of the parent.  The</span>
+        <span class="s0">method behaves like both a dict and a sequence.</span>
+
+        <span class="s0">* If argument is an integer, returns the sibling at that position.</span>
+
+        <span class="s0">* If argument is a string, does the same as getattr().  This can be</span>
+          <span class="s0">used to provide namespaces for element lookup, or to look up</span>
+          <span class="s0">children with special names (``text`` etc.).</span>
+
+        <span class="s0">* If argument is a slice object, returns the matching slice.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef tree.xmlNode* c_self_node</span>
+        <span class="s0">cdef tree.xmlNode* c_parent</span>
+        <span class="s0">cdef tree.xmlNode* c_node</span>
+        <span class="s0">cdef Py_ssize_t c_index</span>
+        <span class="s0">if python._isString(key):</span>
+            <span class="s0">return _lookupChildOrRaise(self, key)</span>
+        <span class="s0">elif isinstance(key, slice):</span>
+            <span class="s0">return list(self)[key]</span>
+        <span class="s0"># normal item access</span>
+        <span class="s0">c_index = key   # raises TypeError if necessary</span>
+        <span class="s0">c_self_node = self._c_node</span>
+        <span class="s0">c_parent = c_self_node.parent</span>
+        <span class="s0">if c_parent is NULL:</span>
+            <span class="s0">if c_index == 0 or c_index == -1:</span>
+                <span class="s0">return self</span>
+            <span class="s0">raise IndexError, unicode(key)</span>
+        <span class="s0">if c_index &lt; 0:</span>
+            <span class="s0">c_node = c_parent.last</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_node = c_parent.children</span>
+        <span class="s0">c_node = _findFollowingSibling(</span>
+            <span class="s0">c_node, tree._getNs(c_self_node), c_self_node.name, c_index)</span>
+        <span class="s0">if c_node is NULL:</span>
+            <span class="s0">raise IndexError, unicode(key)</span>
+        <span class="s0">return elementFactory(self._doc, c_node)</span>
+
+    <span class="s0">def __setitem__(self, key, value):</span>
+        <span class="s0">&quot;&quot;&quot;Set the value of a sibling, counting from the first child of the</span>
+        <span class="s0">parent.  Implements key assignment, item assignment and slice</span>
+        <span class="s0">assignment.</span>
+
+        <span class="s0">* If argument is an integer, sets the sibling at that position.</span>
+
+        <span class="s0">* If argument is a string, does the same as setattr().  This is used</span>
+          <span class="s0">to provide namespaces for element lookup.</span>
+
+        <span class="s0">* If argument is a sequence (list, tuple, etc.), assign the contained</span>
+          <span class="s0">items to the siblings.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _Element element</span>
+        <span class="s0">cdef tree.xmlNode* c_node</span>
+        <span class="s0">if python._isString(key):</span>
+            <span class="s0">key = _buildChildTag(self, key)</span>
+            <span class="s0">element = _lookupChild(self, key)</span>
+            <span class="s0">if element is None:</span>
+                <span class="s0">_appendValue(self, key, value)</span>
+            <span class="s0">else:</span>
+                <span class="s0">_replaceElement(element, value)</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if self._c_node.parent is NULL:</span>
+            <span class="s0"># the 'root[i] = ...' case</span>
+            <span class="s0">raise TypeError, &quot;assignment to root element is invalid&quot;</span>
+
+        <span class="s0">if isinstance(key, slice):</span>
+            <span class="s0"># slice assignment</span>
+            <span class="s0">_setSlice(key, self, value)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># normal index assignment</span>
+            <span class="s0">if key &lt; 0:</span>
+                <span class="s0">c_node = self._c_node.parent.last</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_node = self._c_node.parent.children</span>
+            <span class="s0">c_node = _findFollowingSibling(</span>
+                <span class="s0">c_node, tree._getNs(self._c_node), self._c_node.name, key)</span>
+            <span class="s0">if c_node is NULL:</span>
+                <span class="s0">raise IndexError, unicode(key)</span>
+            <span class="s0">element = elementFactory(self._doc, c_node)</span>
+            <span class="s0">_replaceElement(element, value)</span>
+
+    <span class="s0">def __delitem__(self, key):</span>
+        <span class="s0">parent = self.getparent()</span>
+        <span class="s0">if parent is None:</span>
+            <span class="s0">raise TypeError, &quot;deleting items not supported by root element&quot;</span>
+        <span class="s0">if isinstance(key, slice):</span>
+            <span class="s0"># slice deletion</span>
+            <span class="s0">del_items = list(self)[key]</span>
+            <span class="s0">remove = parent.remove</span>
+            <span class="s0">for el in del_items:</span>
+                <span class="s0">remove(el)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># normal index deletion</span>
+            <span class="s0">sibling = self.__getitem__(key)</span>
+            <span class="s0">parent.remove(sibling)</span>
+
+    <span class="s0">def descendantpaths(self, prefix=None):</span>
+        <span class="s0">&quot;&quot;&quot;descendantpaths(self, prefix=None)</span>
+
+        <span class="s0">Returns a list of object path expressions for all descendants.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if prefix is not None and not python._isString(prefix):</span>
+            <span class="s0">prefix = '.'.join(prefix)</span>
+        <span class="s0">return _build_descendant_paths(self._c_node, prefix)</span>
+
+
+<span class="s0">cdef inline bint _tagMatches(tree.xmlNode* c_node, const_xmlChar* c_href, const_xmlChar* c_name):</span>
+    <span class="s0">if c_node.name != c_name:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">if c_href == NULL:</span>
+        <span class="s0">return 1</span>
+    <span class="s0">c_node_href = tree._getNs(c_node)</span>
+    <span class="s0">if c_node_href == NULL:</span>
+        <span class="s0">return c_href[0] == c'\0'</span>
+    <span class="s0">return tree.xmlStrcmp(c_node_href, c_href) == 0</span>
+
+
+<span class="s0">cdef Py_ssize_t _countSiblings(tree.xmlNode* c_start_node):</span>
+    <span class="s0">cdef tree.xmlNode* c_node</span>
+    <span class="s0">cdef Py_ssize_t count</span>
+    <span class="s0">c_tag  = c_start_node.name</span>
+    <span class="s0">c_href = tree._getNs(c_start_node)</span>
+    <span class="s0">count = 1</span>
+    <span class="s0">c_node = c_start_node.next</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE and \</span>
+               <span class="s0">_tagMatches(c_node, c_href, c_tag):</span>
+            <span class="s0">count += 1</span>
+        <span class="s0">c_node = c_node.next</span>
+    <span class="s0">c_node = c_start_node.prev</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE and \</span>
+               <span class="s0">_tagMatches(c_node, c_href, c_tag):</span>
+            <span class="s0">count += 1</span>
+        <span class="s0">c_node = c_node.prev</span>
+    <span class="s0">return count</span>
+
+<span class="s0">cdef tree.xmlNode* _findFollowingSibling(tree.xmlNode* c_node,</span>
+                                         <span class="s0">const_xmlChar* href, const_xmlChar* name,</span>
+                                         <span class="s0">Py_ssize_t index):</span>
+    <span class="s0">cdef tree.xmlNode* (*next)(tree.xmlNode*)</span>
+    <span class="s0">if index &gt;= 0:</span>
+        <span class="s0">next = cetree.nextElement</span>
+    <span class="s0">else:</span>
+        <span class="s0">index = -1 - index</span>
+        <span class="s0">next = cetree.previousElement</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE and \</span>
+               <span class="s0">_tagMatches(c_node, href, name):</span>
+            <span class="s0">index = index - 1</span>
+            <span class="s0">if index &lt; 0:</span>
+                <span class="s0">return c_node</span>
+        <span class="s0">c_node = next(c_node)</span>
+    <span class="s0">return NULL</span>
+
+<span class="s0">cdef object _lookupChild(_Element parent, tag):</span>
+    <span class="s0">cdef tree.xmlNode* c_result</span>
+    <span class="s0">cdef tree.xmlNode* c_node</span>
+    <span class="s0">c_node = parent._c_node</span>
+    <span class="s0">ns, tag = cetree.getNsTagWithEmptyNs(tag)</span>
+    <span class="s0">c_tag = tree.xmlDictExists(</span>
+        <span class="s0">c_node.doc.dict, _xcstr(tag), python.PyBytes_GET_SIZE(tag))</span>
+    <span class="s0">if c_tag is NULL:</span>
+        <span class="s0">return None # not in the hash map =&gt; not in the tree</span>
+    <span class="s0">if ns is None:</span>
+        <span class="s0"># either inherit ns from parent or use empty (i.e. no) namespace</span>
+        <span class="s0">c_href = tree._getNs(c_node) or &lt;const_xmlChar*&gt;''</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_href = _xcstr(ns)</span>
+    <span class="s0">c_result = _findFollowingSibling(c_node.children, c_href, c_tag, 0)</span>
+    <span class="s0">if c_result is NULL:</span>
+        <span class="s0">return None</span>
+    <span class="s0">return elementFactory(parent._doc, c_result)</span>
+
+<span class="s0">cdef object _lookupChildOrRaise(_Element parent, tag):</span>
+    <span class="s0">element = _lookupChild(parent, tag)</span>
+    <span class="s0">if element is None:</span>
+        <span class="s0">raise AttributeError, &quot;no such child: &quot; + _buildChildTag(parent, tag)</span>
+    <span class="s0">return element</span>
+
+<span class="s0">cdef object _buildChildTag(_Element parent, tag):</span>
+    <span class="s0">ns, tag = cetree.getNsTag(tag)</span>
+    <span class="s0">c_tag = _xcstr(tag)</span>
+    <span class="s0">c_href = tree._getNs(parent._c_node) if ns is None else _xcstr(ns)</span>
+    <span class="s0">return cetree.namespacedNameFromNsName(c_href, c_tag)</span>
+
+<span class="s0">cdef _replaceElement(_Element element, value):</span>
+    <span class="s0">cdef _Element new_element</span>
+    <span class="s0">if isinstance(value, _Element):</span>
+        <span class="s0"># deep copy the new element</span>
+        <span class="s0">new_element = cetree.deepcopyNodeToDocument(</span>
+            <span class="s0">element._doc, (&lt;_Element&gt;value)._c_node)</span>
+        <span class="s0">new_element.tag = element.tag</span>
+    <span class="s0">elif isinstance(value, (list, tuple)):</span>
+        <span class="s0">element[:] = value</span>
+        <span class="s0">return</span>
+    <span class="s0">else:</span>
+        <span class="s0">new_element = element.makeelement(element.tag)</span>
+        <span class="s0">_setElementValue(new_element, value)</span>
+    <span class="s0">element.getparent().replace(element, new_element)</span>
+
+<span class="s0">cdef _appendValue(_Element parent, tag, value):</span>
+    <span class="s0">cdef _Element new_element</span>
+    <span class="s0">if isinstance(value, _Element):</span>
+        <span class="s0"># deep copy the new element</span>
+        <span class="s0">new_element = cetree.deepcopyNodeToDocument(</span>
+            <span class="s0">parent._doc, (&lt;_Element&gt;value)._c_node)</span>
+        <span class="s0">new_element.tag = tag</span>
+        <span class="s0">cetree.appendChildToElement(parent, new_element)</span>
+    <span class="s0">elif isinstance(value, (list, tuple)):</span>
+        <span class="s0">for item in value:</span>
+            <span class="s0">_appendValue(parent, tag, item)</span>
+    <span class="s0">else:</span>
+        <span class="s0">new_element = cetree.makeElement(</span>
+            <span class="s0">tag, parent._doc, None, None, None, None, None)</span>
+        <span class="s0">_setElementValue(new_element, value)</span>
+        <span class="s0">cetree.appendChildToElement(parent, new_element)</span>
+
+<span class="s0">cdef _setElementValue(_Element element, value):</span>
+    <span class="s0">if value is None:</span>
+        <span class="s0">cetree.setAttributeValue(</span>
+            <span class="s0">element, XML_SCHEMA_INSTANCE_NIL_ATTR, &quot;true&quot;)</span>
+    <span class="s0">elif isinstance(value, _Element):</span>
+        <span class="s0">_replaceElement(element, value)</span>
+        <span class="s0">return</span>
+    <span class="s0">else:</span>
+        <span class="s0">cetree.delAttributeFromNsName(</span>
+            <span class="s0">element._c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;&quot;nil&quot;)</span>
+        <span class="s0">if python._isString(value):</span>
+            <span class="s0">pytype_name = &quot;str&quot;</span>
+            <span class="s0">py_type = &lt;PyType&gt;_PYTYPE_DICT.get(pytype_name)</span>
+        <span class="s0">else:</span>
+            <span class="s0">pytype_name = _typename(value)</span>
+            <span class="s0">py_type = &lt;PyType&gt;_PYTYPE_DICT.get(pytype_name)</span>
+            <span class="s0">if py_type is not None:</span>
+                <span class="s0">value = py_type.stringify(value)</span>
+            <span class="s0">else:</span>
+                <span class="s0">value = unicode(value)</span>
+        <span class="s0">if py_type is not None:</span>
+            <span class="s0">cetree.setAttributeValue(element, PYTYPE_ATTRIBUTE, pytype_name)</span>
+        <span class="s0">else:</span>
+            <span class="s0">cetree.delAttributeFromNsName(</span>
+                <span class="s0">element._c_node, _PYTYPE_NAMESPACE, _PYTYPE_ATTRIBUTE_NAME)</span>
+    <span class="s0">cetree.setNodeText(element._c_node, value)</span>
+
+<span class="s0">cdef _setSlice(sliceobject, _Element target, items):</span>
+    <span class="s0">cdef _Element parent</span>
+    <span class="s0">cdef tree.xmlNode* c_node</span>
+    <span class="s0">cdef Py_ssize_t c_step, c_start, pos</span>
+    <span class="s0"># collect existing slice</span>
+    <span class="s0">if (&lt;slice&gt;sliceobject).step is None:</span>
+        <span class="s0">c_step = 1</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_step = (&lt;slice&gt;sliceobject).step</span>
+    <span class="s0">if c_step == 0:</span>
+        <span class="s0">raise ValueError, &quot;Invalid slice&quot;</span>
+    <span class="s0">cdef list del_items = target[sliceobject]</span>
+
+    <span class="s0"># collect new values</span>
+    <span class="s0">new_items = []</span>
+    <span class="s0">tag = target.tag</span>
+    <span class="s0">for item in items:</span>
+        <span class="s0">if isinstance(item, _Element):</span>
+            <span class="s0"># deep copy the new element</span>
+            <span class="s0">new_element = cetree.deepcopyNodeToDocument(</span>
+                <span class="s0">target._doc, (&lt;_Element&gt;item)._c_node)</span>
+            <span class="s0">new_element.tag = tag</span>
+        <span class="s0">else:</span>
+            <span class="s0">new_element = cetree.makeElement(</span>
+                <span class="s0">tag, target._doc, None, None, None, None, None)</span>
+            <span class="s0">_setElementValue(new_element, item)</span>
+        <span class="s0">new_items.append(new_element)</span>
+
+    <span class="s0"># sanity check - raise what a list would raise</span>
+    <span class="s0">if c_step != 1 and len(del_items) != len(new_items):</span>
+        <span class="s0">raise ValueError, \</span>
+            <span class="s0">f&quot;attempt to assign sequence of size {len(new_items)} to extended slice of size {len(del_items)}&quot;</span>
+
+    <span class="s0"># replace existing items</span>
+    <span class="s0">pos = 0</span>
+    <span class="s0">parent = target.getparent()</span>
+    <span class="s0">replace = parent.replace</span>
+    <span class="s0">while pos &lt; len(new_items) and pos &lt; len(del_items):</span>
+        <span class="s0">replace(del_items[pos], new_items[pos])</span>
+        <span class="s0">pos += 1</span>
+    <span class="s0"># remove leftover items</span>
+    <span class="s0">if pos &lt; len(del_items):</span>
+        <span class="s0">remove = parent.remove</span>
+        <span class="s0">while pos &lt; len(del_items):</span>
+            <span class="s0">remove(del_items[pos])</span>
+            <span class="s0">pos += 1</span>
+    <span class="s0"># append remaining new items</span>
+    <span class="s0">if pos &lt; len(new_items):</span>
+        <span class="s0"># the sanity check above guarantees (step == 1)</span>
+        <span class="s0">if pos &gt; 0:</span>
+            <span class="s0">item = new_items[pos-1]</span>
+        <span class="s0">else:</span>
+            <span class="s0">if (&lt;slice&gt;sliceobject).start &gt; 0:</span>
+                <span class="s0">c_node = parent._c_node.children</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_node = parent._c_node.last</span>
+            <span class="s0">c_node = _findFollowingSibling(</span>
+                <span class="s0">c_node, tree._getNs(target._c_node), target._c_node.name,</span>
+                <span class="s0">(&lt;slice&gt;sliceobject).start - 1)</span>
+            <span class="s0">if c_node is NULL:</span>
+                <span class="s0">while pos &lt; len(new_items):</span>
+                    <span class="s0">cetree.appendChildToElement(parent, new_items[pos])</span>
+                    <span class="s0">pos += 1</span>
+                <span class="s0">return</span>
+            <span class="s0">item = cetree.elementFactory(parent._doc, c_node)</span>
+        <span class="s0">while pos &lt; len(new_items):</span>
+            <span class="s0">add = item.addnext</span>
+            <span class="s0">item = new_items[pos]</span>
+            <span class="s0">add(item)</span>
+            <span class="s0">pos += 1</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Data type support in subclasses</span>
+
+<span class="s0">cdef class ObjectifiedDataElement(ObjectifiedElement):</span>
+    <span class="s0">&quot;&quot;&quot;This is the base class for all data type Elements.  Subclasses should</span>
+    <span class="s0">override the 'pyval' property and possibly the __str__ method.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">@property</span>
+    <span class="s0">def pyval(self):</span>
+        <span class="s0">return textOf(self._c_node)</span>
+
+    <span class="s0">def __str__(self):</span>
+        <span class="s0">return textOf(self._c_node) or ''</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return textOf(self._c_node) or ''</span>
+
+    <span class="s0">def _setText(self, s):</span>
+        <span class="s0">&quot;&quot;&quot;For use in subclasses only. Don't use unless you know what you are</span>
+        <span class="s0">doing.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cetree.setNodeText(self._c_node, s)</span>
+
+
+<span class="s0">cdef class NumberElement(ObjectifiedDataElement):</span>
+    <span class="s0">cdef object _parse_value</span>
+
+    <span class="s0">def _setValueParser(self, function):</span>
+        <span class="s0">&quot;&quot;&quot;Set the function that parses the Python value from a string.</span>
+
+        <span class="s0">Do not use this unless you know what you are doing.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._parse_value = function</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def pyval(self):</span>
+        <span class="s0">return _parseNumber(self)</span>
+
+    <span class="s0">def __int__(self):</span>
+        <span class="s0">return int(_parseNumber(self))</span>
+
+    <span class="s0">def __float__(self):</span>
+        <span class="s0">return float(_parseNumber(self))</span>
+
+    <span class="s0">def __complex__(self):</span>
+        <span class="s0">return complex(_parseNumber(self))</span>
+
+    <span class="s0">def __str__(self):</span>
+        <span class="s0">return unicode(_parseNumber(self))</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return repr(_parseNumber(self))</span>
+
+    <span class="s0">def __oct__(self):</span>
+        <span class="s0">return oct(_parseNumber(self))</span>
+
+    <span class="s0">def __hex__(self):</span>
+        <span class="s0">return hex(_parseNumber(self))</span>
+
+    <span class="s0">def __richcmp__(self, other, int op):</span>
+        <span class="s0">return _richcmpPyvals(self, other, op)</span>
+
+    <span class="s0">def __hash__(self):</span>
+        <span class="s0">return hash(_parseNumber(self))</span>
+
+    <span class="s0">def __add__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) + _numericValueOf(other)</span>
+
+    <span class="s0">def __radd__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) + _numericValueOf(self)</span>
+
+    <span class="s0">def __sub__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) - _numericValueOf(other)</span>
+
+    <span class="s0">def __rsub__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) - _numericValueOf(self)</span>
+
+    <span class="s0">def __mul__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) * _numericValueOf(other)</span>
+
+    <span class="s0">def __rmul__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) * _numericValueOf(self)</span>
+
+    <span class="s0">def __div__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) / _numericValueOf(other)</span>
+
+    <span class="s0">def __rdiv__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) / _numericValueOf(self)</span>
+
+    <span class="s0">def __truediv__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) / _numericValueOf(other)</span>
+
+    <span class="s0">def __rtruediv__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) / _numericValueOf(self)</span>
+
+    <span class="s0">def __floordiv__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) // _numericValueOf(other)</span>
+
+    <span class="s0">def __rfloordiv__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) // _numericValueOf(self)</span>
+
+    <span class="s0">def __mod__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) % _numericValueOf(other)</span>
+
+    <span class="s0">def __rmod__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) % _numericValueOf(self)</span>
+
+    <span class="s0">def __divmod__(self, other):</span>
+        <span class="s0">return divmod(_numericValueOf(self), _numericValueOf(other))</span>
+
+    <span class="s0">def __rdivmod__(self, other):</span>
+        <span class="s0">return divmod(_numericValueOf(other), _numericValueOf(self))</span>
+
+    <span class="s0">def __pow__(self, other, modulo):</span>
+        <span class="s0">if modulo is None:</span>
+            <span class="s0">return _numericValueOf(self) ** _numericValueOf(other)</span>
+        <span class="s0">else:</span>
+            <span class="s0">return pow(_numericValueOf(self), _numericValueOf(other), modulo)</span>
+
+    <span class="s0">def __rpow__(self, other, modulo):</span>
+        <span class="s0">if modulo is None:</span>
+            <span class="s0">return _numericValueOf(other) ** _numericValueOf(self)</span>
+        <span class="s0">else:</span>
+            <span class="s0">return pow(_numericValueOf(other), _numericValueOf(self), modulo)</span>
+
+    <span class="s0">def __neg__(self):</span>
+        <span class="s0">return - _numericValueOf(self)</span>
+
+    <span class="s0">def __pos__(self):</span>
+        <span class="s0">return + _numericValueOf(self)</span>
+
+    <span class="s0">def __abs__(self):</span>
+        <span class="s0">return abs( _numericValueOf(self) )</span>
+
+    <span class="s0">def __bool__(self):</span>
+        <span class="s0">return bool(_numericValueOf(self))</span>
+
+    <span class="s0">def __invert__(self):</span>
+        <span class="s0">return ~ _numericValueOf(self)</span>
+
+    <span class="s0">def __lshift__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) &lt;&lt; _numericValueOf(other)</span>
+
+    <span class="s0">def __rlshift__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) &lt;&lt; _numericValueOf(self)</span>
+
+    <span class="s0">def __rshift__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) &gt;&gt; _numericValueOf(other)</span>
+
+    <span class="s0">def __rrshift__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) &gt;&gt; _numericValueOf(self)</span>
+
+    <span class="s0">def __and__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) &amp; _numericValueOf(other)</span>
+
+    <span class="s0">def __rand__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) &amp; _numericValueOf(self)</span>
+
+    <span class="s0">def __or__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) | _numericValueOf(other)</span>
+
+    <span class="s0">def __ror__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) | _numericValueOf(self)</span>
+
+    <span class="s0">def __xor__(self, other):</span>
+        <span class="s0">return _numericValueOf(self) ^ _numericValueOf(other)</span>
+
+    <span class="s0">def __rxor__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) ^ _numericValueOf(self)</span>
+
+
+<span class="s0">cdef class IntElement(NumberElement):</span>
+    <span class="s0">def _init(self):</span>
+        <span class="s0">self._parse_value = int</span>
+
+    <span class="s0">def __index__(self):</span>
+        <span class="s0">return int(_parseNumber(self))</span>
+
+
+<span class="s0">cdef class FloatElement(NumberElement):</span>
+    <span class="s0">def _init(self):</span>
+        <span class="s0">self._parse_value = float</span>
+
+
+<span class="s0">cdef class StringElement(ObjectifiedDataElement):</span>
+    <span class="s0">&quot;&quot;&quot;String data class.</span>
+
+    <span class="s0">Note that this class does *not* support the sequence protocol of strings:</span>
+    <span class="s0">len(), iter(), str_attr[0], str_attr[0:1], etc. are *not* supported.</span>
+    <span class="s0">Instead, use the .text attribute to get a 'real' string.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">@property</span>
+    <span class="s0">def pyval(self):</span>
+        <span class="s0">return textOf(self._c_node) or ''</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return repr(textOf(self._c_node) or '')</span>
+
+    <span class="s0">def strlen(self):</span>
+        <span class="s0">text = textOf(self._c_node)</span>
+        <span class="s0">if text is None:</span>
+            <span class="s0">return 0</span>
+        <span class="s0">else:</span>
+            <span class="s0">return len(text)</span>
+
+    <span class="s0">def __bool__(self):</span>
+        <span class="s0">return bool(textOf(self._c_node))</span>
+
+    <span class="s0">def __richcmp__(self, other, int op):</span>
+        <span class="s0">return _richcmpPyvals(self, other, op)</span>
+
+    <span class="s0">def __hash__(self):</span>
+        <span class="s0">return hash(textOf(self._c_node) or '')</span>
+
+    <span class="s0">def __add__(self, other):</span>
+        <span class="s0">text  = _strValueOf(self)</span>
+        <span class="s0">other = _strValueOf(other)</span>
+        <span class="s0">return text + other</span>
+
+    <span class="s0">def __radd__(self, other):</span>
+        <span class="s0">text  = _strValueOf(self)</span>
+        <span class="s0">other = _strValueOf(other)</span>
+        <span class="s0">return other + text</span>
+
+    <span class="s0">def __mul__(self, other):</span>
+        <span class="s0">if isinstance(self, StringElement):</span>
+            <span class="s0">return (textOf((&lt;StringElement&gt;self)._c_node) or '') * _numericValueOf(other)</span>
+        <span class="s0">elif isinstance(other, StringElement):</span>
+            <span class="s0">return _numericValueOf(self) * (textOf((&lt;StringElement&gt;other)._c_node) or '')</span>
+        <span class="s0">else:</span>
+            <span class="s0">return NotImplemented</span>
+
+    <span class="s0">def __rmul__(self, other):</span>
+        <span class="s0">return _numericValueOf(other) * (textOf((&lt;StringElement&gt;self)._c_node) or '')</span>
+
+    <span class="s0">def __mod__(self, other):</span>
+        <span class="s0">return (_strValueOf(self) or '') % other</span>
+
+    <span class="s0">def __int__(self):</span>
+        <span class="s0">return int(textOf(self._c_node))</span>
+
+    <span class="s0">def __float__(self):</span>
+        <span class="s0">return float(textOf(self._c_node))</span>
+
+    <span class="s0">def __complex__(self):</span>
+        <span class="s0">return complex(textOf(self._c_node))</span>
+
+
+<span class="s0">cdef class NoneElement(ObjectifiedDataElement):</span>
+    <span class="s0">def __str__(self):</span>
+        <span class="s0">return &quot;None&quot;</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return &quot;None&quot;</span>
+
+    <span class="s0">def __bool__(self):</span>
+        <span class="s0">return False</span>
+
+    <span class="s0">def __richcmp__(self, other, int op):</span>
+        <span class="s0">if other is None or self is None:</span>
+            <span class="s0">return python.PyObject_RichCompare(None, None, op)</span>
+        <span class="s0">if isinstance(self, NoneElement):</span>
+            <span class="s0">return python.PyObject_RichCompare(None, other, op)</span>
+        <span class="s0">else:</span>
+            <span class="s0">return python.PyObject_RichCompare(self, None, op)</span>
+
+    <span class="s0">def __hash__(self):</span>
+        <span class="s0">return hash(None)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def pyval(self):</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">cdef class BoolElement(IntElement):</span>
+    <span class="s0">&quot;&quot;&quot;Boolean type base on string values: 'true' or 'false'.</span>
+
+    <span class="s0">Note that this inherits from IntElement to mimic the behaviour of</span>
+    <span class="s0">Python's bool type.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def _init(self):</span>
+        <span class="s0">self._parse_value = _parseBool  # wraps as Python callable</span>
+
+    <span class="s0">def __bool__(self):</span>
+        <span class="s0">return _parseBool(textOf(self._c_node))</span>
+
+    <span class="s0">def __int__(self):</span>
+        <span class="s0">return 0 + _parseBool(textOf(self._c_node))</span>
+
+    <span class="s0">def __float__(self):</span>
+        <span class="s0">return 0.0 + _parseBool(textOf(self._c_node))</span>
+
+    <span class="s0">def __richcmp__(self, other, int op):</span>
+        <span class="s0">return _richcmpPyvals(self, other, op)</span>
+
+    <span class="s0">def __hash__(self):</span>
+        <span class="s0">return hash(_parseBool(textOf(self._c_node)))</span>
+
+    <span class="s0">def __str__(self):</span>
+        <span class="s0">return unicode(_parseBool(textOf(self._c_node)))</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return repr(_parseBool(textOf(self._c_node)))</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def pyval(self):</span>
+        <span class="s0">return _parseBool(textOf(self._c_node))</span>
+
+
+<span class="s0">cdef _checkBool(s):</span>
+    <span class="s0">cdef int value = -1</span>
+    <span class="s0">if s is not None:</span>
+        <span class="s0">value = __parseBoolAsInt(s)</span>
+    <span class="s0">if value == -1:</span>
+        <span class="s0">raise ValueError</span>
+
+
+<span class="s0">cdef bint _parseBool(s) except -1:</span>
+    <span class="s0">cdef int value</span>
+    <span class="s0">if s is None:</span>
+        <span class="s0">return False</span>
+    <span class="s0">value = __parseBoolAsInt(s)</span>
+    <span class="s0">if value == -1:</span>
+        <span class="s0">raise ValueError, f&quot;Invalid boolean value: '{s}'&quot;</span>
+    <span class="s0">return value</span>
+
+
+<span class="s0">cdef inline int __parseBoolAsInt(text) except -2:</span>
+    <span class="s0">if text == 'false':</span>
+        <span class="s0">return 0</span>
+    <span class="s0">elif text == 'true':</span>
+        <span class="s0">return 1</span>
+    <span class="s0">elif text == '0':</span>
+        <span class="s0">return 0</span>
+    <span class="s0">elif text == '1':</span>
+        <span class="s0">return 1</span>
+    <span class="s0">return -1</span>
+
+
+<span class="s0">cdef object _parseNumber(NumberElement element):</span>
+    <span class="s0">return element._parse_value(textOf(element._c_node))</span>
+
+
+<span class="s0">cdef enum NumberParserState:</span>
+    <span class="s0">NPS_SPACE_PRE = 0</span>
+    <span class="s0">NPS_SIGN = 1</span>
+    <span class="s0">NPS_DIGITS = 2</span>
+    <span class="s0">NPS_POINT_LEAD = 3</span>
+    <span class="s0">NPS_POINT = 4</span>
+    <span class="s0">NPS_FRACTION = 5</span>
+    <span class="s0">NPS_EXP = 6</span>
+    <span class="s0">NPS_EXP_SIGN = 7</span>
+    <span class="s0">NPS_DIGITS_EXP = 8</span>
+    <span class="s0">NPS_SPACE_TAIL = 9</span>
+    <span class="s0">NPS_INF1 = 20</span>
+    <span class="s0">NPS_INF2 = 21</span>
+    <span class="s0">NPS_INF3 = 22</span>
+    <span class="s0">NPS_NAN1 = 23</span>
+    <span class="s0">NPS_NAN2 = 24</span>
+    <span class="s0">NPS_NAN3 = 25</span>
+    <span class="s0">NPS_ERROR = 99</span>
+
+
+<span class="s0">ctypedef fused bytes_unicode:</span>
+    <span class="s0">bytes</span>
+    <span class="s0">unicode</span>
+
+
+<span class="s0">cdef _checkNumber(bytes_unicode s, bint allow_float):</span>
+    <span class="s0">cdef Py_UCS4 c</span>
+    <span class="s0">cdef NumberParserState state = NPS_SPACE_PRE</span>
+
+    <span class="s0">for c in s:</span>
+        <span class="s0">if c in '0123456789':</span>
+            <span class="s0">if state in (NPS_DIGITS, NPS_FRACTION, NPS_DIGITS_EXP):</span>
+                <span class="s0">pass</span>
+            <span class="s0">elif state in (NPS_SPACE_PRE, NPS_SIGN):</span>
+                <span class="s0">state = NPS_DIGITS</span>
+            <span class="s0">elif state in (NPS_POINT_LEAD, NPS_POINT):</span>
+                <span class="s0">state = NPS_FRACTION</span>
+            <span class="s0">elif state in (NPS_EXP, NPS_EXP_SIGN):</span>
+                <span class="s0">state = NPS_DIGITS_EXP</span>
+            <span class="s0">else:</span>
+                <span class="s0">state = NPS_ERROR</span>
+        <span class="s0">else:</span>
+            <span class="s0">if c == '.':</span>
+                <span class="s0">if state in (NPS_SPACE_PRE, NPS_SIGN):</span>
+                    <span class="s0">state = NPS_POINT_LEAD</span>
+                <span class="s0">elif state == NPS_DIGITS:</span>
+                    <span class="s0">state = NPS_POINT</span>
+                <span class="s0">else:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+                <span class="s0">if not allow_float:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+            <span class="s0">elif c in '-+':</span>
+                <span class="s0">if state == NPS_SPACE_PRE:</span>
+                    <span class="s0">state = NPS_SIGN</span>
+                <span class="s0">elif state == NPS_EXP:</span>
+                    <span class="s0">state = NPS_EXP_SIGN</span>
+                <span class="s0">else:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+            <span class="s0">elif c == 'E':</span>
+                <span class="s0">if state in (NPS_DIGITS, NPS_POINT, NPS_FRACTION):</span>
+                    <span class="s0">state = NPS_EXP</span>
+                <span class="s0">else:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+                <span class="s0">if not allow_float:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+            <span class="s0"># Allow INF and NaN. XMLSchema requires case, we don't, like Python.</span>
+            <span class="s0">elif c in 'iI':</span>
+                <span class="s0">state = NPS_INF1 if allow_float and state in (NPS_SPACE_PRE, NPS_SIGN) else NPS_ERROR</span>
+            <span class="s0">elif c in 'fF':</span>
+                <span class="s0">state = NPS_INF3 if state == NPS_INF2 else NPS_ERROR</span>
+            <span class="s0">elif c in 'aA':</span>
+                <span class="s0">state = NPS_NAN2 if state == NPS_NAN1 else NPS_ERROR</span>
+            <span class="s0">elif c in 'nN':</span>
+                <span class="s0"># Python also allows [+-]NaN, so let's accept that.</span>
+                <span class="s0">if state in (NPS_SPACE_PRE, NPS_SIGN):</span>
+                    <span class="s0">state = NPS_NAN1 if allow_float else NPS_ERROR</span>
+                <span class="s0">elif state == NPS_NAN2:</span>
+                    <span class="s0">state = NPS_NAN3</span>
+                <span class="s0">elif state == NPS_INF1:</span>
+                    <span class="s0">state = NPS_INF2</span>
+                <span class="s0">else:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+            <span class="s0"># Allow spaces around text values.</span>
+            <span class="s0">else:</span>
+                <span class="s0">if c.isspace() if (bytes_unicode is unicode) else c in b'\x09\x0a\x0b\x0c\x0d\x20':</span>
+                    <span class="s0">if state in (NPS_SPACE_PRE, NPS_SPACE_TAIL):</span>
+                        <span class="s0">pass</span>
+                    <span class="s0">elif state in (NPS_DIGITS, NPS_POINT, NPS_FRACTION, NPS_DIGITS_EXP, NPS_INF3, NPS_NAN3):</span>
+                        <span class="s0">state = NPS_SPACE_TAIL</span>
+                    <span class="s0">else:</span>
+                        <span class="s0">state = NPS_ERROR</span>
+                <span class="s0">else:</span>
+                    <span class="s0">state = NPS_ERROR</span>
+
+            <span class="s0">if state == NPS_ERROR:</span>
+                <span class="s0">break</span>
+
+    <span class="s0">if state not in (NPS_DIGITS, NPS_FRACTION, NPS_POINT, NPS_DIGITS_EXP, NPS_INF3, NPS_NAN3, NPS_SPACE_TAIL):</span>
+        <span class="s0">raise ValueError</span>
+
+
+<span class="s0">cdef _checkInt(s):</span>
+    <span class="s0">return _checkNumber(&lt;unicode&gt;s, allow_float=False)</span>
+
+
+<span class="s0">cdef _checkFloat(s):</span>
+    <span class="s0">return _checkNumber(&lt;unicode&gt;s, allow_float=True)</span>
+
+
+<span class="s0">cdef object _strValueOf(obj):</span>
+    <span class="s0">if python._isString(obj):</span>
+        <span class="s0">return obj</span>
+    <span class="s0">if isinstance(obj, _Element):</span>
+        <span class="s0">return textOf((&lt;_Element&gt;obj)._c_node) or ''</span>
+    <span class="s0">if obj is None:</span>
+        <span class="s0">return ''</span>
+    <span class="s0">return unicode(obj)</span>
+
+
+<span class="s0">cdef object _numericValueOf(obj):</span>
+    <span class="s0">if isinstance(obj, NumberElement):</span>
+        <span class="s0">return _parseNumber(&lt;NumberElement&gt;obj)</span>
+    <span class="s0">try:</span>
+        <span class="s0"># not always numeric, but Python will raise the right exception</span>
+        <span class="s0">return obj.pyval</span>
+    <span class="s0">except AttributeError:</span>
+        <span class="s0">pass</span>
+    <span class="s0">return obj</span>
+
+
+<span class="s0">cdef _richcmpPyvals(left, right, int op):</span>
+    <span class="s0">left  = getattr(left,  'pyval', left)</span>
+    <span class="s0">right = getattr(right, 'pyval', right)</span>
+    <span class="s0">return python.PyObject_RichCompare(left, right, op)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Python type registry</span>
+
+<span class="s0">cdef class PyType:</span>
+    <span class="s0">&quot;&quot;&quot;PyType(self, name, type_check, type_class, stringify=None)</span>
+    <span class="s0">User defined type.</span>
+
+    <span class="s0">Named type that contains a type check function, a type class that</span>
+    <span class="s0">inherits from ObjectifiedDataElement and an optional &quot;stringification&quot;</span>
+    <span class="s0">function.  The type check must take a string as argument and raise</span>
+    <span class="s0">ValueError or TypeError if it cannot handle the string value.  It may be</span>
+    <span class="s0">None in which case it is not considered for type guessing.  For registered</span>
+    <span class="s0">named types, the 'stringify' function (or unicode() if None) is used to</span>
+    <span class="s0">convert a Python object with type name 'name' to the string representation</span>
+    <span class="s0">stored in the XML tree.</span>
+
+    <span class="s0">Example::</span>
+
+        <span class="s0">PyType('int', int, MyIntClass).register()</span>
+
+    <span class="s0">Note that the order in which types are registered matters.  The first</span>
+    <span class="s0">matching type will be used.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef readonly object name</span>
+    <span class="s0">cdef readonly object type_check</span>
+    <span class="s0">cdef readonly object stringify</span>
+    <span class="s0">cdef object _type</span>
+    <span class="s0">cdef list _schema_types</span>
+    <span class="s0">def __init__(self, name, type_check, type_class, stringify=None):</span>
+        <span class="s0">if isinstance(name, bytes):</span>
+            <span class="s0">name = (&lt;bytes&gt;name).decode('ascii')</span>
+        <span class="s0">elif not isinstance(name, unicode):</span>
+            <span class="s0">raise TypeError, &quot;Type name must be a string&quot;</span>
+        <span class="s0">if type_check is not None and not callable(type_check):</span>
+            <span class="s0">raise TypeError, &quot;Type check function must be callable (or None)&quot;</span>
+        <span class="s0">if name != TREE_PYTYPE_NAME and \</span>
+               <span class="s0">not issubclass(type_class, ObjectifiedDataElement):</span>
+            <span class="s0">raise TypeError, \</span>
+                <span class="s0">&quot;Data classes must inherit from ObjectifiedDataElement&quot;</span>
+        <span class="s0">self.name  = name</span>
+        <span class="s0">self._type = type_class</span>
+        <span class="s0">self.type_check = type_check</span>
+        <span class="s0">if stringify is None:</span>
+            <span class="s0">stringify = unicode</span>
+        <span class="s0">self.stringify = stringify</span>
+        <span class="s0">self._schema_types = []</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return &quot;PyType(%s, %s)&quot; % (self.name, self._type.__name__)</span>
+
+    <span class="s0">def register(self, before=None, after=None):</span>
+        <span class="s0">&quot;&quot;&quot;register(self, before=None, after=None)</span>
+
+        <span class="s0">Register the type.</span>
+
+        <span class="s0">The additional keyword arguments 'before' and 'after' accept a</span>
+        <span class="s0">sequence of type names that must appear before/after the new type in</span>
+        <span class="s0">the type list.  If any of them is not currently known, it is simply</span>
+        <span class="s0">ignored.  Raises ValueError if the dependencies cannot be fulfilled.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if self.name == TREE_PYTYPE_NAME:</span>
+            <span class="s0">raise ValueError, &quot;Cannot register tree type&quot;</span>
+        <span class="s0">if self.type_check is not None:</span>
+            <span class="s0">for item in _TYPE_CHECKS:</span>
+                <span class="s0">if item[0] is self.type_check:</span>
+                    <span class="s0">_TYPE_CHECKS.remove(item)</span>
+                    <span class="s0">break</span>
+            <span class="s0">entry = (self.type_check, self)</span>
+            <span class="s0">first_pos = 0</span>
+            <span class="s0">last_pos = -1</span>
+            <span class="s0">if before or after:</span>
+                <span class="s0">if before is None:</span>
+                    <span class="s0">before = ()</span>
+                <span class="s0">elif after is None:</span>
+                    <span class="s0">after = ()</span>
+                <span class="s0">for i, (check, pytype) in enumerate(_TYPE_CHECKS):</span>
+                    <span class="s0">if last_pos == -1 and pytype.name in before:</span>
+                        <span class="s0">last_pos = i</span>
+                    <span class="s0">if pytype.name in after:</span>
+                        <span class="s0">first_pos = i+1</span>
+            <span class="s0">if last_pos == -1:</span>
+                <span class="s0">_TYPE_CHECKS.append(entry)</span>
+            <span class="s0">elif first_pos &gt; last_pos:</span>
+                <span class="s0">raise ValueError, &quot;inconsistent before/after dependencies&quot;</span>
+            <span class="s0">else:</span>
+                <span class="s0">_TYPE_CHECKS.insert(last_pos, entry)</span>
+
+        <span class="s0">_PYTYPE_DICT[self.name] = self</span>
+        <span class="s0">for xs_type in self._schema_types:</span>
+            <span class="s0">_SCHEMA_TYPE_DICT[xs_type] = self</span>
+
+    <span class="s0">def unregister(self):</span>
+        <span class="s0">&quot;unregister(self)&quot;</span>
+        <span class="s0">if _PYTYPE_DICT.get(self.name) is self:</span>
+            <span class="s0">del _PYTYPE_DICT[self.name]</span>
+        <span class="s0">for xs_type, pytype in list(_SCHEMA_TYPE_DICT.items()):</span>
+            <span class="s0">if pytype is self:</span>
+                <span class="s0">del _SCHEMA_TYPE_DICT[xs_type]</span>
+        <span class="s0">if self.type_check is None:</span>
+            <span class="s0">return</span>
+        <span class="s0">try:</span>
+            <span class="s0">_TYPE_CHECKS.remove( (self.type_check, self) )</span>
+        <span class="s0">except ValueError:</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">property xmlSchemaTypes:</span>
+        <span class="s0">&quot;&quot;&quot;The list of XML Schema datatypes this Python type maps to.</span>
+
+        <span class="s0">Note that this must be set before registering the type!</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">return self._schema_types</span>
+        <span class="s0">def __set__(self, types):</span>
+            <span class="s0">self._schema_types = list(map(unicode, types))</span>
+
+
+<span class="s0">cdef dict _PYTYPE_DICT = {}</span>
+<span class="s0">cdef dict _SCHEMA_TYPE_DICT = {}</span>
+<span class="s0">cdef list _TYPE_CHECKS = []</span>
+
+<span class="s0">cdef unicode _xml_bool(value):</span>
+    <span class="s0">return &quot;true&quot; if value else &quot;false&quot;</span>
+
+<span class="s0">cdef unicode _xml_float(value):</span>
+    <span class="s0">if _float_is_inf(value):</span>
+        <span class="s0">if value &gt; 0:</span>
+            <span class="s0">return &quot;INF&quot;</span>
+        <span class="s0">return &quot;-INF&quot;</span>
+    <span class="s0">if _float_is_nan(value):</span>
+        <span class="s0">return &quot;NaN&quot;</span>
+    <span class="s0">return unicode(repr(value))</span>
+
+<span class="s0">cdef _pytypename(obj):</span>
+    <span class="s0">return &quot;str&quot; if python._isString(obj) else _typename(obj)</span>
+
+<span class="s0">def pytypename(obj):</span>
+    <span class="s0">&quot;&quot;&quot;pytypename(obj)</span>
+
+    <span class="s0">Find the name of the corresponding PyType for a Python object.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return _pytypename(obj)</span>
+
+<span class="s0">cdef _registerPyTypes():</span>
+    <span class="s0">pytype = PyType('int', _checkInt, IntElement)  # wraps functions for Python</span>
+    <span class="s0">pytype.xmlSchemaTypes = (&quot;integer&quot;, &quot;int&quot;, &quot;short&quot;, &quot;byte&quot;, &quot;unsignedShort&quot;,</span>
+                             <span class="s0">&quot;unsignedByte&quot;, &quot;nonPositiveInteger&quot;,</span>
+                             <span class="s0">&quot;negativeInteger&quot;, &quot;long&quot;, &quot;nonNegativeInteger&quot;,</span>
+                             <span class="s0">&quot;unsignedLong&quot;, &quot;unsignedInt&quot;, &quot;positiveInteger&quot;,)</span>
+    <span class="s0">pytype.register()</span>
+
+    <span class="s0"># 'long' type just for backwards compatibility</span>
+    <span class="s0">pytype = PyType('long', None, IntElement)</span>
+    <span class="s0">pytype.register()</span>
+
+    <span class="s0">pytype = PyType('float', _checkFloat, FloatElement, _xml_float)  # wraps functions for Python</span>
+    <span class="s0">pytype.xmlSchemaTypes = (&quot;double&quot;, &quot;float&quot;)</span>
+    <span class="s0">pytype.register()</span>
+
+    <span class="s0">pytype = PyType('bool', _checkBool, BoolElement, _xml_bool)  # wraps functions for Python</span>
+    <span class="s0">pytype.xmlSchemaTypes = (&quot;boolean&quot;,)</span>
+    <span class="s0">pytype.register()</span>
+
+    <span class="s0">pytype = PyType('str', None, StringElement)</span>
+    <span class="s0">pytype.xmlSchemaTypes = (&quot;string&quot;, &quot;normalizedString&quot;, &quot;token&quot;, &quot;language&quot;,</span>
+                             <span class="s0">&quot;Name&quot;, &quot;NCName&quot;, &quot;ID&quot;, &quot;IDREF&quot;, &quot;ENTITY&quot;,</span>
+                             <span class="s0">&quot;NMTOKEN&quot;, )</span>
+    <span class="s0">pytype.register()</span>
+
+    <span class="s0"># since lxml 2.0</span>
+    <span class="s0">pytype = PyType('NoneType', None, NoneElement)</span>
+    <span class="s0">pytype.register()</span>
+
+    <span class="s0"># backwards compatibility</span>
+    <span class="s0">pytype = PyType('none', None, NoneElement)</span>
+    <span class="s0">pytype.register()</span>
+
+<span class="s0"># non-registered PyType for inner tree elements</span>
+<span class="s0">cdef PyType TREE_PYTYPE = PyType(TREE_PYTYPE_NAME, None, ObjectifiedElement)</span>
+
+<span class="s0">_registerPyTypes()</span>
+
+<span class="s0">def getRegisteredTypes():</span>
+    <span class="s0">&quot;&quot;&quot;getRegisteredTypes()</span>
+
+    <span class="s0">Returns a list of the currently registered PyType objects.</span>
+
+    <span class="s0">To add a new type, retrieve this list and call unregister() for all</span>
+    <span class="s0">entries.  Then add the new type at a suitable position (possibly replacing</span>
+    <span class="s0">an existing one) and call register() for all entries.</span>
+
+    <span class="s0">This is necessary if the new type interferes with the type check functions</span>
+    <span class="s0">of existing ones (normally only int/float/bool) and must the tried before</span>
+    <span class="s0">other types.  To add a type that is not yet parsable by the current type</span>
+    <span class="s0">check functions, you can simply register() it, which will append it to the</span>
+    <span class="s0">end of the type list.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef list types = []</span>
+    <span class="s0">cdef set known = set()</span>
+    <span class="s0">for check, pytype in _TYPE_CHECKS:</span>
+        <span class="s0">name = pytype.name</span>
+        <span class="s0">if name not in known:</span>
+            <span class="s0">known.add(name)</span>
+            <span class="s0">types.append(pytype)</span>
+    <span class="s0">for pytype in _PYTYPE_DICT.values():</span>
+        <span class="s0">name = pytype.name</span>
+        <span class="s0">if name not in known:</span>
+            <span class="s0">known.add(name)</span>
+            <span class="s0">types.append(pytype)</span>
+    <span class="s0">return types</span>
+
+<span class="s0">cdef PyType _guessPyType(value, PyType defaulttype):</span>
+    <span class="s0">if value is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">for type_check, tested_pytype in _TYPE_CHECKS:</span>
+        <span class="s0">try:</span>
+            <span class="s0">type_check(value)</span>
+            <span class="s0">return &lt;PyType&gt;tested_pytype</span>
+        <span class="s0">except IGNORABLE_ERRORS:</span>
+            <span class="s0"># could not be parsed as the specified type =&gt; ignore</span>
+            <span class="s0">pass</span>
+    <span class="s0">return defaulttype</span>
+
+<span class="s0">cdef object _guessElementClass(tree.xmlNode* c_node):</span>
+    <span class="s0">value = textOf(c_node)</span>
+    <span class="s0">if value is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">if value == '':</span>
+        <span class="s0">return StringElement</span>
+    
+    <span class="s0">for type_check, pytype in _TYPE_CHECKS:</span>
+        <span class="s0">try:</span>
+            <span class="s0">type_check(value)</span>
+            <span class="s0">return (&lt;PyType&gt;pytype)._type</span>
+        <span class="s0">except IGNORABLE_ERRORS:</span>
+            <span class="s0">pass</span>
+    <span class="s0">return None</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># adapted ElementMaker supports registered PyTypes</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _ObjectifyElementMakerCaller:</span>
+    <span class="s0">cdef object _tag</span>
+    <span class="s0">cdef object _nsmap</span>
+    <span class="s0">cdef object _element_factory</span>
+    <span class="s0">cdef bint _annotate</span>
+
+    <span class="s0">def __call__(self, *children, **attrib):</span>
+        <span class="s0">&quot;__call__(self, *children, **attrib)&quot;</span>
+        <span class="s0">cdef _ObjectifyElementMakerCaller elementMaker</span>
+        <span class="s0">cdef _Element element</span>
+        <span class="s0">cdef _Element childElement</span>
+        <span class="s0">cdef bint has_children</span>
+        <span class="s0">cdef bint has_string_value</span>
+        <span class="s0">if self._element_factory is None:</span>
+            <span class="s0">element = _makeElement(self._tag, None, attrib, self._nsmap)</span>
+        <span class="s0">else:</span>
+            <span class="s0">element = self._element_factory(self._tag, attrib, self._nsmap)</span>
+
+        <span class="s0">pytype_name = None</span>
+        <span class="s0">has_children = False</span>
+        <span class="s0">has_string_value = False</span>
+        <span class="s0">for child in children:</span>
+            <span class="s0">if child is None:</span>
+                <span class="s0">if len(children) == 1:</span>
+                    <span class="s0">cetree.setAttributeValue(</span>
+                        <span class="s0">element, XML_SCHEMA_INSTANCE_NIL_ATTR, &quot;true&quot;)</span>
+            <span class="s0">elif python._isString(child):</span>
+                <span class="s0">_add_text(element, child)</span>
+                <span class="s0">has_string_value = True</span>
+            <span class="s0">elif isinstance(child, _Element):</span>
+                <span class="s0">cetree.appendChildToElement(element, &lt;_Element&gt;child)</span>
+                <span class="s0">has_children = True</span>
+            <span class="s0">elif isinstance(child, _ObjectifyElementMakerCaller):</span>
+                <span class="s0">elementMaker = &lt;_ObjectifyElementMakerCaller&gt;child</span>
+                <span class="s0">if elementMaker._element_factory is None:</span>
+                    <span class="s0">cetree.makeSubElement(element, elementMaker._tag,</span>
+                                          <span class="s0">None, None, None, None)</span>
+                <span class="s0">else:</span>
+                    <span class="s0">childElement = elementMaker._element_factory(</span>
+                        <span class="s0">elementMaker._tag)</span>
+                    <span class="s0">cetree.appendChildToElement(element, childElement)</span>
+                <span class="s0">has_children = True</span>
+            <span class="s0">elif isinstance(child, dict):</span>
+                <span class="s0">for name, value in child.items():</span>
+                    <span class="s0"># keyword arguments in attrib take precedence</span>
+                    <span class="s0">if name in attrib:</span>
+                        <span class="s0">continue</span>
+                    <span class="s0">pytype = _PYTYPE_DICT.get(_typename(value))</span>
+                    <span class="s0">if pytype is not None:</span>
+                        <span class="s0">value = (&lt;PyType&gt;pytype).stringify(value)</span>
+                    <span class="s0">elif not python._isString(value):</span>
+                        <span class="s0">value = unicode(value)</span>
+                    <span class="s0">cetree.setAttributeValue(element, name, value)</span>
+            <span class="s0">else:</span>
+                <span class="s0">if pytype_name is not None:</span>
+                    <span class="s0"># concatenation always makes the result a string</span>
+                    <span class="s0">has_string_value = True</span>
+                <span class="s0">pytype_name = _typename(child)</span>
+                <span class="s0">pytype = _PYTYPE_DICT.get(_typename(child))</span>
+                <span class="s0">if pytype is not None:</span>
+                    <span class="s0">_add_text(element, (&lt;PyType&gt;pytype).stringify(child))</span>
+                <span class="s0">else:</span>
+                    <span class="s0">has_string_value = True</span>
+                    <span class="s0">child = unicode(child)</span>
+                    <span class="s0">_add_text(element, child)</span>
+
+        <span class="s0">if self._annotate and not has_children:</span>
+            <span class="s0">if has_string_value:</span>
+                <span class="s0">cetree.setAttributeValue(element, PYTYPE_ATTRIBUTE, &quot;str&quot;)</span>
+            <span class="s0">elif pytype_name is not None:</span>
+                <span class="s0">cetree.setAttributeValue(element, PYTYPE_ATTRIBUTE, pytype_name)</span>
+
+        <span class="s0">return element</span>
+
+<span class="s0">cdef _add_text(_Element elem, text):</span>
+    <span class="s0"># add text to the tree in construction, either as element text or</span>
+    <span class="s0"># tail text, depending on the current tree state</span>
+    <span class="s0">cdef tree.xmlNode* c_child</span>
+    <span class="s0">c_child = cetree.findChildBackwards(elem._c_node, 0)</span>
+    <span class="s0">if c_child is not NULL:</span>
+        <span class="s0">old = cetree.tailOf(c_child)</span>
+        <span class="s0">if old is not None:</span>
+            <span class="s0">text = old + text</span>
+        <span class="s0">cetree.setTailText(c_child, text)</span>
+    <span class="s0">else:</span>
+        <span class="s0">old = cetree.textOf(elem._c_node)</span>
+        <span class="s0">if old is not None:</span>
+            <span class="s0">text = old + text</span>
+        <span class="s0">cetree.setNodeText(elem._c_node, text)</span>
+
+<span class="s0">cdef class ElementMaker:</span>
+    <span class="s0">&quot;&quot;&quot;ElementMaker(self, namespace=None, nsmap=None, annotate=True, makeelement=None)</span>
+
+    <span class="s0">An ElementMaker that can be used for constructing trees.</span>
+
+    <span class="s0">Example::</span>
+
+      <span class="s0">&gt;&gt;&gt; M = ElementMaker(annotate=False)</span>
+      <span class="s0">&gt;&gt;&gt; attributes = {'class': 'par'}</span>
+      <span class="s0">&gt;&gt;&gt; html = M.html( M.body( M.p('hello', attributes, M.br, 'objectify', style=&quot;font-weight: bold&quot;) ) )</span>
+
+      <span class="s0">&gt;&gt;&gt; from lxml.etree import tostring</span>
+      <span class="s0">&gt;&gt;&gt; print(tostring(html, method='html').decode('ascii'))</span>
+      <span class="s0">&lt;html&gt;&lt;body&gt;&lt;p style=&quot;font-weight: bold&quot; class=&quot;par&quot;&gt;hello&lt;br&gt;objectify&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</span>
+
+    <span class="s0">To create tags that are not valid Python identifiers, call the factory</span>
+    <span class="s0">directly and pass the tag name as first argument::</span>
+
+      <span class="s0">&gt;&gt;&gt; root = M('tricky-tag', 'some text')</span>
+      <span class="s0">&gt;&gt;&gt; print(root.tag)</span>
+      <span class="s0">tricky-tag</span>
+      <span class="s0">&gt;&gt;&gt; print(root.text)</span>
+      <span class="s0">some text</span>
+
+    <span class="s0">Note that this module has a predefined ElementMaker instance called ``E``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef object _makeelement</span>
+    <span class="s0">cdef object _namespace</span>
+    <span class="s0">cdef object _nsmap</span>
+    <span class="s0">cdef bint _annotate</span>
+    <span class="s0">cdef dict _cache</span>
+    <span class="s0">def __init__(self, *, namespace=None, nsmap=None, annotate=True,</span>
+                 <span class="s0">makeelement=None):</span>
+        <span class="s0">if nsmap is None:</span>
+            <span class="s0">nsmap = _DEFAULT_NSMAP if annotate else {}</span>
+        <span class="s0">self._nsmap = nsmap</span>
+        <span class="s0">self._namespace = None if namespace is None else &quot;{%s}&quot; % namespace</span>
+        <span class="s0">self._annotate = annotate</span>
+        <span class="s0">if makeelement is not None:</span>
+            <span class="s0">if not callable(makeelement):</span>
+                <span class="s0">raise TypeError(</span>
+                    <span class="s0">f&quot;argument of 'makeelement' parameter must be callable, got {type(makeelement)}&quot;)</span>
+            <span class="s0">self._makeelement = makeelement</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._makeelement = None</span>
+        <span class="s0">self._cache = {}</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _build_element_maker(self, tag, bint caching):</span>
+        <span class="s0">cdef _ObjectifyElementMakerCaller element_maker</span>
+        <span class="s0">element_maker = _ObjectifyElementMakerCaller.__new__(_ObjectifyElementMakerCaller)</span>
+        <span class="s0">if self._namespace is not None and tag[0] != &quot;{&quot;:</span>
+            <span class="s0">element_maker._tag = self._namespace + tag</span>
+        <span class="s0">else:</span>
+            <span class="s0">element_maker._tag = tag</span>
+        <span class="s0">element_maker._nsmap = self._nsmap</span>
+        <span class="s0">element_maker._annotate = self._annotate</span>
+        <span class="s0">element_maker._element_factory = self._makeelement</span>
+        <span class="s0">if caching:</span>
+            <span class="s0">if len(self._cache) &gt; 200:</span>
+                <span class="s0">self._cache.clear()</span>
+            <span class="s0">self._cache[tag] = element_maker</span>
+        <span class="s0">return element_maker</span>
+
+    <span class="s0">def __getattr__(self, tag):</span>
+        <span class="s0">element_maker = self._cache.get(tag)</span>
+        <span class="s0">if element_maker is None:</span>
+            <span class="s0">return self._build_element_maker(tag, caching=True)</span>
+        <span class="s0">return element_maker</span>
+
+    <span class="s0">def __call__(self, tag, *args, **kwargs):</span>
+        <span class="s0">element_maker = self._cache.get(tag)</span>
+        <span class="s0">if element_maker is None:</span>
+            <span class="s0">element_maker = self._build_element_maker(</span>
+                <span class="s0">tag, caching=not is_special_method(tag))</span>
+        <span class="s0">return element_maker(*args, **kwargs)</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Recursive element dumping</span>
+
+<span class="s0">cdef bint __RECURSIVE_STR = 0 # default: off</span>
+
+<span class="s0">def enable_recursive_str(on=True):</span>
+    <span class="s0">&quot;&quot;&quot;enable_recursive_str(on=True)</span>
+
+    <span class="s0">Enable a recursively generated tree representation for str(element),</span>
+    <span class="s0">based on objectify.dump(element).</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">global __RECURSIVE_STR</span>
+    <span class="s0">__RECURSIVE_STR = on</span>
+
+<span class="s0">def dump(_Element element not None):</span>
+    <span class="s0">&quot;&quot;&quot;dump(_Element element not None)</span>
+
+    <span class="s0">Return a recursively generated string representation of an element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return _dump(element, 0)</span>
+
+<span class="s0">cdef object _dump(_Element element, int indent):</span>
+    <span class="s0">indentstr = &quot;    &quot; * indent</span>
+    <span class="s0">if isinstance(element, ObjectifiedDataElement):</span>
+        <span class="s0">value = repr(element)</span>
+    <span class="s0">else:</span>
+        <span class="s0">value = textOf(element._c_node)</span>
+        <span class="s0">if value is not None:</span>
+            <span class="s0">if not value.strip():</span>
+                <span class="s0">value = None</span>
+            <span class="s0">else:</span>
+                <span class="s0">value = repr(value)</span>
+    <span class="s0">result = f&quot;{indentstr}{element.tag} = {value} [{_typename(element)}]\n&quot;</span>
+    <span class="s0">xsi_ns    = &quot;{%s}&quot; % XML_SCHEMA_INSTANCE_NS</span>
+    <span class="s0">pytype_ns = &quot;{%s}&quot; % PYTYPE_NAMESPACE</span>
+    <span class="s0">for name, value in sorted(cetree.iterattributes(element, 3)):</span>
+        <span class="s0">if '{' in name:</span>
+            <span class="s0">if name == PYTYPE_ATTRIBUTE:</span>
+                <span class="s0">if value == TREE_PYTYPE_NAME:</span>
+                    <span class="s0">continue</span>
+                <span class="s0">else:</span>
+                    <span class="s0">name = name.replace(pytype_ns, 'py:')</span>
+            <span class="s0">name = name.replace(xsi_ns, 'xsi:')</span>
+        <span class="s0">result += f&quot;{indentstr}  * {name} = {value!r}\n&quot;</span>
+
+    <span class="s0">indent += 1</span>
+    <span class="s0">for child in element.iterchildren():</span>
+        <span class="s0">result += _dump(child, indent)</span>
+    <span class="s0">if indent == 1:</span>
+        <span class="s0">return result[:-1] # strip last '\n'</span>
+    <span class="s0">else:</span>
+        <span class="s0">return result</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Pickle support for objectified ElementTree</span>
+
+<span class="s0">def __unpickleElementTree(data):</span>
+    <span class="s0">return etree.ElementTree(fromstring(data))</span>
+
+<span class="s0">cdef _setupPickle(elementTreeReduceFunction):</span>
+    <span class="s0">import copyreg</span>
+    <span class="s0">copyreg.pickle(etree._ElementTree,</span>
+                   <span class="s0">elementTreeReduceFunction, __unpickleElementTree)</span>
+
+<span class="s0">def pickleReduceElementTree(obj):</span>
+    <span class="s0">return __unpickleElementTree, (etree.tostring(obj),)</span>
+
+<span class="s0">_setupPickle(pickleReduceElementTree)</span>
+<span class="s0">del pickleReduceElementTree</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Element class lookup</span>
+
+<span class="s0">cdef class ObjectifyElementClassLookup(ElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;ObjectifyElementClassLookup(self, tree_class=None, empty_data_class=None)</span>
+    <span class="s0">Element class lookup method that uses the objectify classes.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef object empty_data_class</span>
+    <span class="s0">cdef object tree_class</span>
+    <span class="s0">def __init__(self, tree_class=None, empty_data_class=None):</span>
+        <span class="s0">&quot;&quot;&quot;Lookup mechanism for objectify.</span>
+
+        <span class="s0">The default Element classes can be replaced by passing subclasses of</span>
+        <span class="s0">ObjectifiedElement and ObjectifiedDataElement as keyword arguments.</span>
+        <span class="s0">'tree_class' defines inner tree classes (defaults to</span>
+        <span class="s0">ObjectifiedElement), 'empty_data_class' defines the default class for</span>
+        <span class="s0">empty data elements (defaults to StringElement).</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._lookup_function = _lookupElementClass</span>
+        <span class="s0">if tree_class is None:</span>
+            <span class="s0">tree_class = ObjectifiedElement</span>
+        <span class="s0">self.tree_class = tree_class</span>
+        <span class="s0">if empty_data_class is None:</span>
+            <span class="s0">empty_data_class = StringElement</span>
+        <span class="s0">self.empty_data_class = empty_data_class</span>
+
+<span class="s0">cdef object _lookupElementClass(state, _Document doc, tree.xmlNode* c_node):</span>
+    <span class="s0">cdef ObjectifyElementClassLookup lookup</span>
+    <span class="s0">lookup = &lt;ObjectifyElementClassLookup&gt;state</span>
+    <span class="s0"># if element has children =&gt; no data class</span>
+    <span class="s0">if cetree.hasChild(c_node):</span>
+        <span class="s0">return lookup.tree_class</span>
+
+    <span class="s0"># if element is defined as xsi:nil, return NoneElement class</span>
+    <span class="s0">if &quot;true&quot; == cetree.attributeValueFromNsName(</span>
+        <span class="s0">c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;&quot;nil&quot;):</span>
+        <span class="s0">return NoneElement</span>
+
+    <span class="s0"># check for Python type hint</span>
+    <span class="s0">value = cetree.attributeValueFromNsName(</span>
+        <span class="s0">c_node, _PYTYPE_NAMESPACE, _PYTYPE_ATTRIBUTE_NAME)</span>
+    <span class="s0">if value is not None:</span>
+        <span class="s0">if value == TREE_PYTYPE_NAME:</span>
+            <span class="s0">return lookup.tree_class</span>
+        <span class="s0">py_type = &lt;PyType&gt;_PYTYPE_DICT.get(value)</span>
+        <span class="s0">if py_type is not None:</span>
+            <span class="s0">return py_type._type</span>
+        <span class="s0"># unknown 'pyval' =&gt; try to figure it out ourself, just go on</span>
+
+    <span class="s0"># check for XML Schema type hint</span>
+    <span class="s0">value = cetree.attributeValueFromNsName(</span>
+        <span class="s0">c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;&quot;type&quot;)</span>
+
+    <span class="s0">if value is not None:</span>
+        <span class="s0">schema_type = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(value)</span>
+        <span class="s0">if schema_type is None and ':' in value:</span>
+            <span class="s0">prefix, value = value.split(':', 1)</span>
+            <span class="s0">schema_type = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(value)</span>
+        <span class="s0">if schema_type is not None:</span>
+            <span class="s0">return schema_type._type</span>
+
+    <span class="s0"># otherwise determine class based on text content type</span>
+    <span class="s0">el_class = _guessElementClass(c_node)</span>
+    <span class="s0">if el_class is not None:</span>
+        <span class="s0">return el_class</span>
+
+    <span class="s0"># if element is a root node =&gt; default to tree node</span>
+    <span class="s0">if c_node.parent is NULL or not tree._isElement(c_node.parent):</span>
+        <span class="s0">return lookup.tree_class</span>
+
+    <span class="s0">return lookup.empty_data_class</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Type annotations</span>
+
+<span class="s0">cdef PyType _check_type(tree.xmlNode* c_node, PyType pytype):</span>
+    <span class="s0">if pytype is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">value = textOf(c_node)</span>
+    <span class="s0">try:</span>
+        <span class="s0">pytype.type_check(value)</span>
+        <span class="s0">return pytype</span>
+    <span class="s0">except IGNORABLE_ERRORS:</span>
+        <span class="s0"># could not be parsed as the specified type =&gt; ignore</span>
+        <span class="s0">pass</span>
+    <span class="s0">return None</span>
+
+<span class="s0">def pyannotate(element_or_tree, *, ignore_old=False, ignore_xsi=False,</span>
+             <span class="s0">empty_pytype=None):</span>
+    <span class="s0">&quot;&quot;&quot;pyannotate(element_or_tree, ignore_old=False, ignore_xsi=False, empty_pytype=None)</span>
+
+    <span class="s0">Recursively annotates the elements of an XML tree with 'pytype'</span>
+    <span class="s0">attributes.</span>
+
+    <span class="s0">If the 'ignore_old' keyword argument is True (the default), current 'pytype'</span>
+    <span class="s0">attributes will be ignored and replaced.  Otherwise, they will be checked</span>
+    <span class="s0">and only replaced if they no longer fit the current text value.</span>
+
+    <span class="s0">Setting the keyword argument ``ignore_xsi`` to True makes the function</span>
+    <span class="s0">additionally ignore existing ``xsi:type`` annotations.  The default is to</span>
+    <span class="s0">use them as a type hint.</span>
+
+    <span class="s0">The default annotation of empty elements can be set with the</span>
+    <span class="s0">``empty_pytype`` keyword argument.  The default is not to annotate empty</span>
+    <span class="s0">elements.  Pass 'str', for example, to make string values the default.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Element  element</span>
+    <span class="s0">element = cetree.rootNodeOrRaise(element_or_tree)</span>
+    <span class="s0">_annotate(element, 0, 1, ignore_xsi, ignore_old, None, empty_pytype)</span>
+
+<span class="s0">def xsiannotate(element_or_tree, *, ignore_old=False, ignore_pytype=False,</span>
+                <span class="s0">empty_type=None):</span>
+    <span class="s0">&quot;&quot;&quot;xsiannotate(element_or_tree, ignore_old=False, ignore_pytype=False, empty_type=None)</span>
+
+    <span class="s0">Recursively annotates the elements of an XML tree with 'xsi:type'</span>
+    <span class="s0">attributes.</span>
+
+    <span class="s0">If the 'ignore_old' keyword argument is True (the default), current</span>
+    <span class="s0">'xsi:type' attributes will be ignored and replaced.  Otherwise, they will be</span>
+    <span class="s0">checked and only replaced if they no longer fit the current text value.</span>
+
+    <span class="s0">Note that the mapping from Python types to XSI types is usually ambiguous.</span>
+    <span class="s0">Currently, only the first XSI type name in the corresponding PyType</span>
+    <span class="s0">definition will be used for annotation.  Thus, you should consider naming</span>
+    <span class="s0">the widest type first if you define additional types.</span>
+
+    <span class="s0">Setting the keyword argument ``ignore_pytype`` to True makes the function</span>
+    <span class="s0">additionally ignore existing ``pytype`` annotations.  The default is to</span>
+    <span class="s0">use them as a type hint.</span>
+
+    <span class="s0">The default annotation of empty elements can be set with the</span>
+    <span class="s0">``empty_type`` keyword argument.  The default is not to annotate empty</span>
+    <span class="s0">elements.  Pass 'string', for example, to make string values the default.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Element  element</span>
+    <span class="s0">element = cetree.rootNodeOrRaise(element_or_tree)</span>
+    <span class="s0">_annotate(element, 1, 0, ignore_old, ignore_pytype, empty_type, None)</span>
+
+<span class="s0">def annotate(element_or_tree, *, ignore_old=True, ignore_xsi=False,</span>
+             <span class="s0">empty_pytype=None, empty_type=None, annotate_xsi=0,</span>
+             <span class="s0">annotate_pytype=1):</span>
+    <span class="s0">&quot;&quot;&quot;annotate(element_or_tree, ignore_old=True, ignore_xsi=False, empty_pytype=None, empty_type=None, annotate_xsi=0, annotate_pytype=1)</span>
+
+    <span class="s0">Recursively annotates the elements of an XML tree with 'xsi:type'</span>
+    <span class="s0">and/or 'py:pytype' attributes.</span>
+
+    <span class="s0">If the 'ignore_old' keyword argument is True (the default), current</span>
+    <span class="s0">'py:pytype' attributes will be ignored for the type annotation. Set to False</span>
+    <span class="s0">if you want reuse existing 'py:pytype' information (iff appropriate for the</span>
+    <span class="s0">element text value).</span>
+
+    <span class="s0">If the 'ignore_xsi' keyword argument is False (the default), existing</span>
+    <span class="s0">'xsi:type' attributes will be used for the type annotation, if they fit the</span>
+    <span class="s0">element text values. </span>
+    
+    <span class="s0">Note that the mapping from Python types to XSI types is usually ambiguous.</span>
+    <span class="s0">Currently, only the first XSI type name in the corresponding PyType</span>
+    <span class="s0">definition will be used for annotation.  Thus, you should consider naming</span>
+    <span class="s0">the widest type first if you define additional types.</span>
+
+    <span class="s0">The default 'py:pytype' annotation of empty elements can be set with the</span>
+    <span class="s0">``empty_pytype`` keyword argument. Pass 'str', for example, to make</span>
+    <span class="s0">string values the default.</span>
+
+    <span class="s0">The default 'xsi:type' annotation of empty elements can be set with the</span>
+    <span class="s0">``empty_type`` keyword argument.  The default is not to annotate empty</span>
+    <span class="s0">elements.  Pass 'string', for example, to make string values the default.</span>
+
+    <span class="s0">The keyword arguments 'annotate_xsi' (default: 0) and 'annotate_pytype'</span>
+    <span class="s0">(default: 1) control which kind(s) of annotation to use. </span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Element  element</span>
+    <span class="s0">element = cetree.rootNodeOrRaise(element_or_tree)</span>
+    <span class="s0">_annotate(element, annotate_xsi, annotate_pytype, ignore_xsi,</span>
+              <span class="s0">ignore_old, empty_type, empty_pytype)</span>
+
+
+<span class="s0">cdef _annotate(_Element element, bint annotate_xsi, bint annotate_pytype,</span>
+               <span class="s0">bint ignore_xsi, bint ignore_pytype,</span>
+               <span class="s0">empty_type_name, empty_pytype_name):</span>
+    <span class="s0">cdef _Document doc</span>
+    <span class="s0">cdef tree.xmlNode* c_node</span>
+    <span class="s0">cdef PyType empty_pytype, StrType, NoneType</span>
+
+    <span class="s0">if not annotate_xsi and not annotate_pytype:</span>
+        <span class="s0">return</span>
+
+    <span class="s0">if empty_type_name is not None:</span>
+        <span class="s0">if isinstance(empty_type_name, bytes):</span>
+            <span class="s0">empty_type_name = (&lt;bytes&gt;empty_type_name).decode(&quot;ascii&quot;)</span>
+        <span class="s0">empty_pytype = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(empty_type_name)</span>
+    <span class="s0">elif empty_pytype_name is not None:</span>
+        <span class="s0">if isinstance(empty_pytype_name, bytes):</span>
+            <span class="s0">empty_pytype_name = (&lt;bytes&gt;empty_pytype_name).decode(&quot;ascii&quot;)</span>
+        <span class="s0">empty_pytype = &lt;PyType&gt;_PYTYPE_DICT.get(empty_pytype_name)</span>
+    <span class="s0">else:</span>
+        <span class="s0">empty_pytype = None</span>
+
+    <span class="s0">StrType  = &lt;PyType&gt;_PYTYPE_DICT.get('str')</span>
+    <span class="s0">NoneType = &lt;PyType&gt;_PYTYPE_DICT.get('NoneType')</span>
+
+    <span class="s0">doc = element._doc</span>
+    <span class="s0">c_node = element._c_node</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_ELEMENT_FROM(c_node, c_node, 1)</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">_annotate_element(c_node, doc, annotate_xsi, annotate_pytype,</span>
+                          <span class="s0">ignore_xsi, ignore_pytype,</span>
+                          <span class="s0">empty_type_name, empty_pytype, StrType, NoneType)</span>
+    <span class="s0">tree.END_FOR_EACH_ELEMENT_FROM(c_node)</span>
+
+<span class="s0">cdef int _annotate_element(tree.xmlNode* c_node, _Document doc,</span>
+                           <span class="s0">bint annotate_xsi, bint annotate_pytype,</span>
+                           <span class="s0">bint ignore_xsi, bint ignore_pytype,</span>
+                           <span class="s0">empty_type_name, PyType empty_pytype,</span>
+                           <span class="s0">PyType StrType, PyType NoneType) except -1:</span>
+    <span class="s0">cdef tree.xmlNs*   c_ns</span>
+    <span class="s0">cdef PyType pytype = None</span>
+    <span class="s0">typename = None</span>
+    <span class="s0">istree = 0</span>
+
+    <span class="s0"># if element is defined as xsi:nil, represent it as None</span>
+    <span class="s0">if cetree.attributeValueFromNsName(</span>
+        <span class="s0">c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;&quot;nil&quot;) == &quot;true&quot;:</span>
+        <span class="s0">pytype = NoneType</span>
+
+    <span class="s0">if pytype is None and not ignore_xsi:</span>
+        <span class="s0"># check that old xsi type value is valid</span>
+        <span class="s0">typename = cetree.attributeValueFromNsName(</span>
+            <span class="s0">c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;&quot;type&quot;)</span>
+        <span class="s0">if typename is not None:</span>
+            <span class="s0">pytype = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(typename)</span>
+            <span class="s0">if pytype is None and ':' in typename:</span>
+                <span class="s0">prefix, typename = typename.split(':', 1)</span>
+                <span class="s0">pytype = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(typename)</span>
+            <span class="s0">if pytype is not None and pytype is not StrType:</span>
+                <span class="s0"># StrType does not have a typecheck but is the default</span>
+                <span class="s0"># anyway, so just accept it if given as type</span>
+                <span class="s0"># information</span>
+                <span class="s0">pytype = _check_type(c_node, pytype)</span>
+                <span class="s0">if pytype is None:</span>
+                    <span class="s0">typename = None</span>
+
+    <span class="s0">if pytype is None and not ignore_pytype:</span>
+        <span class="s0"># check that old pytype value is valid</span>
+        <span class="s0">old_pytypename = cetree.attributeValueFromNsName(</span>
+            <span class="s0">c_node, _PYTYPE_NAMESPACE, _PYTYPE_ATTRIBUTE_NAME)</span>
+        <span class="s0">if old_pytypename is not None:</span>
+            <span class="s0">if old_pytypename == TREE_PYTYPE_NAME:</span>
+                <span class="s0">if not cetree.hasChild(c_node):</span>
+                    <span class="s0"># only case where we should keep it,</span>
+                    <span class="s0"># everything else is clear enough</span>
+                    <span class="s0">pytype = TREE_PYTYPE</span>
+            <span class="s0">else:</span>
+                <span class="s0">if old_pytypename == 'none':</span>
+                    <span class="s0"># transition from lxml 1.x</span>
+                    <span class="s0">old_pytypename = &quot;NoneType&quot;</span>
+                <span class="s0">pytype = &lt;PyType&gt;_PYTYPE_DICT.get(old_pytypename)</span>
+                <span class="s0">if pytype is not None and pytype is not StrType:</span>
+                    <span class="s0"># StrType does not have a typecheck but is the</span>
+                    <span class="s0"># default anyway, so just accept it if given as</span>
+                    <span class="s0"># type information</span>
+                    <span class="s0">pytype = _check_type(c_node, pytype)</span>
+
+    <span class="s0">if pytype is None:</span>
+        <span class="s0"># try to guess type</span>
+        <span class="s0">if not cetree.hasChild(c_node):</span>
+            <span class="s0"># element has no children =&gt; data class</span>
+            <span class="s0">pytype = _guessPyType(textOf(c_node), StrType)</span>
+        <span class="s0">else:</span>
+            <span class="s0">istree = 1</span>
+
+    <span class="s0">if pytype is None:</span>
+        <span class="s0"># use default type for empty elements</span>
+        <span class="s0">if cetree.hasText(c_node):</span>
+            <span class="s0">pytype = StrType</span>
+        <span class="s0">else:</span>
+            <span class="s0">pytype = empty_pytype</span>
+            <span class="s0">if typename is None:</span>
+                <span class="s0">typename = empty_type_name</span>
+
+    <span class="s0">if pytype is not None:</span>
+        <span class="s0">if typename is None:</span>
+            <span class="s0">if not istree:</span>
+                <span class="s0">if pytype._schema_types:</span>
+                    <span class="s0"># pytype-&gt;xsi:type is a 1:n mapping</span>
+                    <span class="s0"># simply take the first</span>
+                    <span class="s0">typename = pytype._schema_types[0]</span>
+        <span class="s0">elif typename not in pytype._schema_types:</span>
+            <span class="s0">typename = pytype._schema_types[0]</span>
+
+    <span class="s0">if annotate_xsi:</span>
+        <span class="s0">if typename is None or istree:</span>
+            <span class="s0">cetree.delAttributeFromNsName(</span>
+                <span class="s0">c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;&quot;type&quot;)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># update or create attribute</span>
+            <span class="s0">typename_utf8 = cetree.utf8(typename)</span>
+            <span class="s0">c_ns = cetree.findOrBuildNodeNsPrefix(</span>
+                <span class="s0">doc, c_node, _XML_SCHEMA_NS, &lt;unsigned char*&gt;'xsd')</span>
+            <span class="s0">if c_ns is not NULL:</span>
+                <span class="s0">if b':' in typename_utf8:</span>
+                    <span class="s0">prefix, name = typename_utf8.split(b':', 1)</span>
+                    <span class="s0">if c_ns.prefix is NULL or c_ns.prefix[0] == c'\0':</span>
+                        <span class="s0">typename_utf8 = name</span>
+                    <span class="s0">elif tree.xmlStrcmp(_xcstr(prefix), c_ns.prefix) != 0:</span>
+                        <span class="s0">typename_utf8 = (&lt;unsigned char*&gt;c_ns.prefix) + b':' + name</span>
+                <span class="s0">elif c_ns.prefix is not NULL and c_ns.prefix[0] != c'\0':</span>
+                    <span class="s0">typename_utf8 = (&lt;unsigned char*&gt;c_ns.prefix) + b':' + typename_utf8</span>
+            <span class="s0">c_ns = cetree.findOrBuildNodeNsPrefix(</span>
+                <span class="s0">doc, c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;'xsi')</span>
+            <span class="s0">tree.xmlSetNsProp(c_node, c_ns, &lt;unsigned char*&gt;&quot;type&quot;, _xcstr(typename_utf8))</span>
+
+    <span class="s0">if annotate_pytype:</span>
+        <span class="s0">if pytype is None:</span>
+            <span class="s0"># delete attribute if it exists</span>
+            <span class="s0">cetree.delAttributeFromNsName(</span>
+                <span class="s0">c_node, _PYTYPE_NAMESPACE, _PYTYPE_ATTRIBUTE_NAME)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># update or create attribute</span>
+            <span class="s0">c_ns = cetree.findOrBuildNodeNsPrefix(</span>
+                <span class="s0">doc, c_node, _PYTYPE_NAMESPACE, &lt;unsigned char*&gt;'py')</span>
+            <span class="s0">pytype_name = cetree.utf8(pytype.name)</span>
+            <span class="s0">tree.xmlSetNsProp(c_node, c_ns, _PYTYPE_ATTRIBUTE_NAME,</span>
+                              <span class="s0">_xcstr(pytype_name))</span>
+            <span class="s0">if pytype is NoneType:</span>
+                <span class="s0">c_ns = cetree.findOrBuildNodeNsPrefix(</span>
+                    <span class="s0">doc, c_node, _XML_SCHEMA_INSTANCE_NS, &lt;unsigned char*&gt;'xsi')</span>
+                <span class="s0">tree.xmlSetNsProp(c_node, c_ns, &lt;unsigned char*&gt;&quot;nil&quot;, &lt;unsigned char*&gt;&quot;true&quot;)</span>
+
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef object _strip_attributes = etree.strip_attributes</span>
+<span class="s0">cdef object _cleanup_namespaces = etree.cleanup_namespaces</span>
+
+<span class="s0">def deannotate(element_or_tree, *, bint pytype=True, bint xsi=True,</span>
+               <span class="s0">bint xsi_nil=False, bint cleanup_namespaces=False):</span>
+    <span class="s0">&quot;&quot;&quot;deannotate(element_or_tree, pytype=True, xsi=True, xsi_nil=False, cleanup_namespaces=False)</span>
+
+    <span class="s0">Recursively de-annotate the elements of an XML tree by removing 'py:pytype'</span>
+    <span class="s0">and/or 'xsi:type' attributes and/or 'xsi:nil' attributes.</span>
+
+    <span class="s0">If the 'pytype' keyword argument is True (the default), 'py:pytype'</span>
+    <span class="s0">attributes will be removed. If the 'xsi' keyword argument is True (the </span>
+    <span class="s0">default), 'xsi:type' attributes will be removed.</span>
+    <span class="s0">If the 'xsi_nil' keyword argument is True (default: False), 'xsi:nil'</span>
+    <span class="s0">attributes will be removed.</span>
+
+    <span class="s0">Note that this does not touch the namespace declarations by</span>
+    <span class="s0">default.  If you want to remove unused namespace declarations from</span>
+    <span class="s0">the tree, pass the option ``cleanup_namespaces=True``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef list attribute_names = []</span>
+
+    <span class="s0">if pytype:</span>
+        <span class="s0">attribute_names.append(PYTYPE_ATTRIBUTE)</span>
+    <span class="s0">if xsi:</span>
+        <span class="s0">attribute_names.append(XML_SCHEMA_INSTANCE_TYPE_ATTR)</span>
+    <span class="s0">if xsi_nil:</span>
+        <span class="s0">attribute_names.append(XML_SCHEMA_INSTANCE_NIL_ATTR)</span>
+
+    <span class="s0">_strip_attributes(element_or_tree, *attribute_names)</span>
+    <span class="s0">if cleanup_namespaces:</span>
+        <span class="s0">_cleanup_namespaces(element_or_tree)</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Module level parser setup</span>
+
+<span class="s0">cdef object __DEFAULT_PARSER</span>
+<span class="s0">__DEFAULT_PARSER = etree.XMLParser(remove_blank_text=True)</span>
+<span class="s0">__DEFAULT_PARSER.set_element_class_lookup( ObjectifyElementClassLookup() )</span>
+
+<span class="s0">cdef object objectify_parser</span>
+<span class="s0">objectify_parser = __DEFAULT_PARSER</span>
+
+<span class="s0">def set_default_parser(new_parser = None):</span>
+    <span class="s0">&quot;&quot;&quot;set_default_parser(new_parser = None)</span>
+
+    <span class="s0">Replace the default parser used by objectify's Element() and</span>
+    <span class="s0">fromstring() functions.</span>
+
+    <span class="s0">The new parser must be an etree.XMLParser.</span>
+
+    <span class="s0">Call without arguments to reset to the original parser.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">global objectify_parser</span>
+    <span class="s0">if new_parser is None:</span>
+        <span class="s0">objectify_parser = __DEFAULT_PARSER</span>
+    <span class="s0">elif isinstance(new_parser, etree.XMLParser):</span>
+        <span class="s0">objectify_parser = new_parser</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError, &quot;parser must inherit from lxml.etree.XMLParser&quot;</span>
+
+<span class="s0">def makeparser(**kw):</span>
+    <span class="s0">&quot;&quot;&quot;makeparser(remove_blank_text=True, **kw)</span>
+
+    <span class="s0">Create a new XML parser for objectify trees.</span>
+
+    <span class="s0">You can pass all keyword arguments that are supported by</span>
+    <span class="s0">``etree.XMLParser()``.  Note that this parser defaults to removing</span>
+    <span class="s0">blank text.  You can disable this by passing the</span>
+    <span class="s0">``remove_blank_text`` boolean keyword option yourself.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if 'remove_blank_text' not in kw:</span>
+        <span class="s0">kw['remove_blank_text'] = True</span>
+    <span class="s0">parser = etree.XMLParser(**kw)</span>
+    <span class="s0">parser.set_element_class_lookup( ObjectifyElementClassLookup() )</span>
+    <span class="s0">return parser</span>
+
+<span class="s0">cdef _Element _makeElement(tag, text, attrib, nsmap):</span>
+    <span class="s0">return cetree.makeElement(tag, None, objectify_parser, text, None, attrib, nsmap)</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Module level factory functions</span>
+
+<span class="s0">cdef object _fromstring</span>
+<span class="s0">_fromstring = etree.fromstring</span>
+
+<span class="s0">SubElement = etree.SubElement</span>
+
+<span class="s0">def fromstring(xml, parser=None, *, base_url=None):</span>
+    <span class="s0">&quot;&quot;&quot;fromstring(xml, parser=None, base_url=None)</span>
+
+    <span class="s0">Objectify specific version of the lxml.etree fromstring() function</span>
+    <span class="s0">that uses the objectify parser.</span>
+
+    <span class="s0">You can pass a different parser as second argument.</span>
+
+    <span class="s0">The ``base_url`` keyword argument allows to set the original base URL of</span>
+    <span class="s0">the document to support relative Paths when looking up external entities</span>
+    <span class="s0">(DTD, XInclude, ...).</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = objectify_parser</span>
+    <span class="s0">return _fromstring(xml, parser, base_url=base_url)</span>
+
+<span class="s0">def XML(xml, parser=None, *, base_url=None):</span>
+    <span class="s0">&quot;&quot;&quot;XML(xml, parser=None, base_url=None)</span>
+
+    <span class="s0">Objectify specific version of the lxml.etree XML() literal factory</span>
+    <span class="s0">that uses the objectify parser.</span>
+
+    <span class="s0">You can pass a different parser as second argument.</span>
+
+    <span class="s0">The ``base_url`` keyword argument allows to set the original base URL of</span>
+    <span class="s0">the document to support relative Paths when looking up external entities</span>
+    <span class="s0">(DTD, XInclude, ...).</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = objectify_parser</span>
+    <span class="s0">return _fromstring(xml, parser, base_url=base_url)</span>
+
+<span class="s0">cdef object _parse</span>
+<span class="s0">_parse = etree.parse</span>
+
+<span class="s0">def parse(f, parser=None, *, base_url=None):</span>
+    <span class="s0">&quot;&quot;&quot;parse(f, parser=None, base_url=None)</span>
+
+    <span class="s0">Parse a file or file-like object with the objectify parser.</span>
+
+    <span class="s0">You can pass a different parser as second argument.</span>
+
+    <span class="s0">The ``base_url`` keyword allows setting a URL for the document</span>
+    <span class="s0">when parsing from a file-like object.  This is needed when looking</span>
+    <span class="s0">up external entities (DTD, XInclude, ...) with relative paths.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if parser is None:</span>
+        <span class="s0">parser = objectify_parser</span>
+    <span class="s0">return _parse(f, parser, base_url=base_url)</span>
+
+<span class="s0">cdef dict _DEFAULT_NSMAP = {</span>
+    <span class="s0">&quot;py&quot;  : PYTYPE_NAMESPACE,</span>
+    <span class="s0">&quot;xsi&quot; : XML_SCHEMA_INSTANCE_NS,</span>
+    <span class="s0">&quot;xsd&quot; : XML_SCHEMA_NS</span>
+<span class="s0">}</span>
+
+<span class="s0">E = ElementMaker()</span>
+
+<span class="s0">def Element(_tag, attrib=None, nsmap=None, *, _pytype=None, **_attributes):</span>
+    <span class="s0">&quot;&quot;&quot;Element(_tag, attrib=None, nsmap=None, _pytype=None, **_attributes)</span>
+
+    <span class="s0">Objectify specific version of the lxml.etree Element() factory that</span>
+    <span class="s0">always creates a structural (tree) element.</span>
+
+    <span class="s0">NOTE: requires parser based element class lookup activated in lxml.etree!</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if attrib is not None:</span>
+        <span class="s0">if _attributes:</span>
+            <span class="s0">attrib = dict(attrib)</span>
+            <span class="s0">attrib.update(_attributes)</span>
+        <span class="s0">_attributes = attrib</span>
+    <span class="s0">if _pytype is None:</span>
+        <span class="s0">_pytype = TREE_PYTYPE_NAME</span>
+    <span class="s0">if nsmap is None:</span>
+        <span class="s0">nsmap = _DEFAULT_NSMAP</span>
+    <span class="s0">_attributes[PYTYPE_ATTRIBUTE] = _pytype</span>
+    <span class="s0">return _makeElement(_tag, None, _attributes, nsmap)</span>
+
+<span class="s0">def DataElement(_value, attrib=None, nsmap=None, *, _pytype=None, _xsi=None,</span>
+                <span class="s0">**_attributes):</span>
+    <span class="s0">&quot;&quot;&quot;DataElement(_value, attrib=None, nsmap=None, _pytype=None, _xsi=None, **_attributes)</span>
+
+    <span class="s0">Create a new element from a Python value and XML attributes taken from</span>
+    <span class="s0">keyword arguments or a dictionary passed as second argument.</span>
+
+    <span class="s0">Automatically adds a 'pytype' attribute for the Python type of the value,</span>
+    <span class="s0">if the type can be identified.  If '_pytype' or '_xsi' are among the</span>
+    <span class="s0">keyword arguments, they will be used instead.</span>
+
+    <span class="s0">If the _value argument is an ObjectifiedDataElement instance, its py:pytype,</span>
+    <span class="s0">xsi:type and other attributes and nsmap are reused unless they are redefined</span>
+    <span class="s0">in attrib and/or keyword arguments.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if nsmap is None:</span>
+        <span class="s0">nsmap = _DEFAULT_NSMAP</span>
+    <span class="s0">if attrib is not None and attrib:</span>
+        <span class="s0">if _attributes:</span>
+            <span class="s0">attrib = dict(attrib)</span>
+            <span class="s0">attrib.update(_attributes)</span>
+        <span class="s0">_attributes = attrib</span>
+    <span class="s0">if isinstance(_value, ObjectifiedElement):</span>
+        <span class="s0">if _pytype is None:</span>
+            <span class="s0">if _xsi is None and not _attributes and nsmap is _DEFAULT_NSMAP:</span>
+                <span class="s0"># special case: no change!</span>
+                <span class="s0">return _value.__copy__()</span>
+    <span class="s0">if isinstance(_value, ObjectifiedDataElement):</span>
+        <span class="s0"># reuse existing nsmap unless redefined in nsmap parameter</span>
+        <span class="s0">temp = _value.nsmap</span>
+        <span class="s0">if temp is not None and temp:</span>
+            <span class="s0">temp = dict(temp)</span>
+            <span class="s0">temp.update(nsmap)</span>
+            <span class="s0">nsmap = temp</span>
+        <span class="s0"># reuse existing attributes unless redefined in attrib/_attributes</span>
+        <span class="s0">temp = _value.attrib</span>
+        <span class="s0">if temp is not None and temp:</span>
+            <span class="s0">temp = dict(temp)</span>
+            <span class="s0">temp.update(_attributes)</span>
+            <span class="s0">_attributes = temp</span>
+        <span class="s0"># reuse existing xsi:type or py:pytype attributes, unless provided as</span>
+        <span class="s0"># arguments</span>
+        <span class="s0">if _xsi is None and _pytype is None:</span>
+            <span class="s0">_xsi = _attributes.get(XML_SCHEMA_INSTANCE_TYPE_ATTR)</span>
+            <span class="s0">_pytype = _attributes.get(PYTYPE_ATTRIBUTE)</span>
+
+    <span class="s0">if _xsi is not None:</span>
+        <span class="s0">if ':' in _xsi:</span>
+            <span class="s0">prefix, name = _xsi.split(':', 1)</span>
+            <span class="s0">ns = nsmap.get(prefix)</span>
+            <span class="s0">if ns != XML_SCHEMA_NS:</span>
+                <span class="s0">raise ValueError, &quot;XSD types require the XSD namespace&quot;</span>
+        <span class="s0">elif nsmap is _DEFAULT_NSMAP:</span>
+            <span class="s0">name = _xsi</span>
+            <span class="s0">_xsi = 'xsd:' + _xsi</span>
+        <span class="s0">else:</span>
+            <span class="s0">name = _xsi</span>
+            <span class="s0">for prefix, ns in nsmap.items():</span>
+                <span class="s0">if ns == XML_SCHEMA_NS:</span>
+                    <span class="s0">if prefix is not None and prefix:</span>
+                        <span class="s0">_xsi = prefix + ':' + _xsi</span>
+                    <span class="s0">break</span>
+            <span class="s0">else:</span>
+                <span class="s0">raise ValueError, &quot;XSD types require the XSD namespace&quot;</span>
+        <span class="s0">_attributes[XML_SCHEMA_INSTANCE_TYPE_ATTR] = _xsi</span>
+        <span class="s0">if _pytype is None:</span>
+            <span class="s0"># allow using unregistered or even wrong xsi:type names</span>
+            <span class="s0">py_type = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(_xsi)</span>
+            <span class="s0">if py_type is None:</span>
+                <span class="s0">py_type = &lt;PyType&gt;_SCHEMA_TYPE_DICT.get(name)</span>
+            <span class="s0">if py_type is not None:</span>
+                <span class="s0">_pytype = py_type.name</span>
+
+    <span class="s0">if _pytype is None:</span>
+        <span class="s0">_pytype = _pytypename(_value)</span>
+
+    <span class="s0">if _value is None and _pytype != &quot;str&quot;:</span>
+        <span class="s0">_pytype = _pytype or &quot;NoneType&quot;</span>
+        <span class="s0">strval = None</span>
+    <span class="s0">elif python._isString(_value):</span>
+        <span class="s0">strval = _value</span>
+    <span class="s0">elif isinstance(_value, bool):</span>
+        <span class="s0">if _value:</span>
+            <span class="s0">strval = &quot;true&quot;</span>
+        <span class="s0">else:</span>
+            <span class="s0">strval = &quot;false&quot;</span>
+    <span class="s0">else:</span>
+        <span class="s0">py_type = &lt;PyType&gt;_PYTYPE_DICT.get(_pytype)</span>
+        <span class="s0">stringify = unicode if py_type is None else py_type.stringify</span>
+        <span class="s0">strval = stringify(_value)</span>
+
+    <span class="s0">if _pytype is not None: </span>
+        <span class="s0">if _pytype == &quot;NoneType&quot; or _pytype == &quot;none&quot;:</span>
+            <span class="s0">strval = None</span>
+            <span class="s0">_attributes[XML_SCHEMA_INSTANCE_NIL_ATTR] = &quot;true&quot;</span>
+        <span class="s0">else:</span>
+            <span class="s0"># check if type information from arguments is valid</span>
+            <span class="s0">py_type = &lt;PyType&gt;_PYTYPE_DICT.get(_pytype)</span>
+            <span class="s0">if py_type is not None:</span>
+                <span class="s0">if py_type.type_check is not None:</span>
+                    <span class="s0">py_type.type_check(strval)</span>
+                <span class="s0">_attributes[PYTYPE_ATTRIBUTE] = _pytype</span>
+
+    <span class="s0">return _makeElement(&quot;value&quot;, strval, _attributes, nsmap)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># ObjectPath</span>
+
+<span class="s0">include &quot;objectpath.pxi&quot;</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,597 @@
+<html>
+<head>
+<title>classlookup.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+classlookup.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># Configurable Element class lookup</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Custom Element classes</span>
+
+<span class="s0">cdef public class ElementBase(_Element) [ type LxmlElementBaseType,</span>
+                                          <span class="s0">object LxmlElementBase ]:</span>
+    <span class="s0">&quot;&quot;&quot;ElementBase(*children, attrib=None, nsmap=None, **_extra)</span>
+
+    <span class="s0">The public Element class.  All custom Element classes must inherit</span>
+    <span class="s0">from this one.  To create an Element, use the `Element()` factory.</span>
+
+    <span class="s0">BIG FAT WARNING: Subclasses *must not* override __init__ or</span>
+    <span class="s0">__new__ as it is absolutely undefined when these objects will be</span>
+    <span class="s0">created or destroyed.  All persistent state of Elements must be</span>
+    <span class="s0">stored in the underlying XML.  If you really need to initialize</span>
+    <span class="s0">the object after creation, you can implement an ``_init(self)``</span>
+    <span class="s0">method that will be called directly after object creation.</span>
+
+    <span class="s0">Subclasses of this class can be instantiated to create a new</span>
+    <span class="s0">Element.  By default, the tag name will be the class name and the</span>
+    <span class="s0">namespace will be empty.  You can modify this with the following</span>
+    <span class="s0">class attributes:</span>
+
+    <span class="s0">* TAG - the tag name, possibly containing a namespace in Clark</span>
+      <span class="s0">notation</span>
+
+    <span class="s0">* NAMESPACE - the default namespace URI, unless provided as part</span>
+      <span class="s0">of the TAG attribute.</span>
+
+    <span class="s0">* HTML - flag if the class is an HTML tag, as opposed to an XML</span>
+      <span class="s0">tag.  This only applies to un-namespaced tags and defaults to</span>
+      <span class="s0">false (i.e. XML).</span>
+
+    <span class="s0">* PARSER - the parser that provides the configuration for the</span>
+      <span class="s0">newly created document.  Providing an HTML parser here will</span>
+      <span class="s0">default to creating an HTML element.</span>
+
+    <span class="s0">In user code, the latter three are commonly inherited in class</span>
+    <span class="s0">hierarchies that implement a common namespace.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, *children, attrib=None, nsmap=None, **_extra):</span>
+        <span class="s0">&quot;&quot;&quot;ElementBase(*children, attrib=None, nsmap=None, **_extra)</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef bint is_html = 0</span>
+        <span class="s0">cdef _BaseParser parser</span>
+        <span class="s0">cdef _Element last_child</span>
+        <span class="s0"># don't use normal attribute access as it might be overridden</span>
+        <span class="s0">_getattr = object.__getattribute__</span>
+        <span class="s0">try:</span>
+            <span class="s0">namespace = _utf8(_getattr(self, 'NAMESPACE'))</span>
+        <span class="s0">except AttributeError:</span>
+            <span class="s0">namespace = None</span>
+        <span class="s0">try:</span>
+            <span class="s0">ns, tag = _getNsTag(_getattr(self, 'TAG'))</span>
+            <span class="s0">if ns is not None:</span>
+                <span class="s0">namespace = ns</span>
+        <span class="s0">except AttributeError:</span>
+            <span class="s0">tag = _utf8(_getattr(_getattr(self, '__class__'), '__name__'))</span>
+            <span class="s0">if b'.' in tag:</span>
+                <span class="s0">tag = tag.split(b'.')[-1]</span>
+        <span class="s0">try:</span>
+            <span class="s0">parser = _getattr(self, 'PARSER')</span>
+        <span class="s0">except AttributeError:</span>
+            <span class="s0">parser = None</span>
+            <span class="s0">for child in children:</span>
+                <span class="s0">if isinstance(child, _Element):</span>
+                    <span class="s0">parser = (&lt;_Element&gt;child)._doc._parser</span>
+                    <span class="s0">break</span>
+        <span class="s0">if isinstance(parser, HTMLParser):</span>
+            <span class="s0">is_html = 1</span>
+        <span class="s0">if namespace is None:</span>
+            <span class="s0">try:</span>
+                <span class="s0">is_html = _getattr(self, 'HTML')</span>
+            <span class="s0">except AttributeError:</span>
+                <span class="s0">pass</span>
+        <span class="s0">_initNewElement(self, is_html, tag, namespace, parser,</span>
+                        <span class="s0">attrib, nsmap, _extra)</span>
+        <span class="s0">last_child = None</span>
+        <span class="s0">for child in children:</span>
+            <span class="s0">if _isString(child):</span>
+                <span class="s0">if last_child is None:</span>
+                    <span class="s0">_setNodeText(self._c_node,</span>
+                                 <span class="s0">(_collectText(self._c_node.children) or '') + child)</span>
+                <span class="s0">else:</span>
+                    <span class="s0">_setTailText(last_child._c_node,</span>
+                                 <span class="s0">(_collectText(last_child._c_node.next) or '') + child)</span>
+            <span class="s0">elif isinstance(child, _Element):</span>
+                <span class="s0">last_child = child</span>
+                <span class="s0">_appendChild(self, last_child)</span>
+            <span class="s0">elif isinstance(child, type) and issubclass(child, ElementBase):</span>
+                <span class="s0">last_child = child()</span>
+                <span class="s0">_appendChild(self, last_child)</span>
+            <span class="s0">else:</span>
+                <span class="s0">raise TypeError, f&quot;Invalid child type: {type(child)!r}&quot;</span>
+
+<span class="s0">cdef class CommentBase(_Comment):</span>
+    <span class="s0">&quot;&quot;&quot;All custom Comment classes must inherit from this one.</span>
+
+    <span class="s0">To create an XML Comment instance, use the ``Comment()`` factory.</span>
+
+    <span class="s0">Subclasses *must not* override __init__ or __new__ as it is</span>
+    <span class="s0">absolutely undefined when these objects will be created or</span>
+    <span class="s0">destroyed.  All persistent state of Comments must be stored in the</span>
+    <span class="s0">underlying XML.  If you really need to initialize the object after</span>
+    <span class="s0">creation, you can implement an ``_init(self)`` method that will be</span>
+    <span class="s0">called after object creation.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, text):</span>
+        <span class="s0"># copied from Comment() factory</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef xmlDoc*   c_doc</span>
+        <span class="s0">if text is None:</span>
+            <span class="s0">text = b''</span>
+        <span class="s0">else:</span>
+            <span class="s0">text = _utf8(text)</span>
+        <span class="s0">c_doc = _newXMLDoc()</span>
+        <span class="s0">doc = _documentFactory(c_doc, None)</span>
+        <span class="s0">self._c_node = _createComment(c_doc, _xcstr(text))</span>
+        <span class="s0">if self._c_node is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">tree.xmlAddChild(&lt;xmlNode*&gt;c_doc, self._c_node)</span>
+        <span class="s0">_registerProxy(self, doc, self._c_node)</span>
+        <span class="s0">self._init()</span>
+
+<span class="s0">cdef class PIBase(_ProcessingInstruction):</span>
+    <span class="s0">&quot;&quot;&quot;All custom Processing Instruction classes must inherit from this one.</span>
+
+    <span class="s0">To create an XML ProcessingInstruction instance, use the ``PI()``</span>
+    <span class="s0">factory.</span>
+
+    <span class="s0">Subclasses *must not* override __init__ or __new__ as it is</span>
+    <span class="s0">absolutely undefined when these objects will be created or</span>
+    <span class="s0">destroyed.  All persistent state of PIs must be stored in the</span>
+    <span class="s0">underlying XML.  If you really need to initialize the object after</span>
+    <span class="s0">creation, you can implement an ``_init(self)`` method that will be</span>
+    <span class="s0">called after object creation.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, target, text=None):</span>
+        <span class="s0"># copied from PI() factory</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef xmlDoc*   c_doc</span>
+        <span class="s0">target = _utf8(target)</span>
+        <span class="s0">if text is None:</span>
+            <span class="s0">text = b''</span>
+        <span class="s0">else:</span>
+            <span class="s0">text = _utf8(text)</span>
+        <span class="s0">c_doc = _newXMLDoc()</span>
+        <span class="s0">doc = _documentFactory(c_doc, None)</span>
+        <span class="s0">self._c_node = _createPI(c_doc, _xcstr(target), _xcstr(text))</span>
+        <span class="s0">if self._c_node is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">tree.xmlAddChild(&lt;xmlNode*&gt;c_doc, self._c_node)</span>
+        <span class="s0">_registerProxy(self, doc, self._c_node)</span>
+        <span class="s0">self._init()</span>
+
+<span class="s0">cdef class EntityBase(_Entity):</span>
+    <span class="s0">&quot;&quot;&quot;All custom Entity classes must inherit from this one.</span>
+
+    <span class="s0">To create an XML Entity instance, use the ``Entity()`` factory.</span>
+
+    <span class="s0">Subclasses *must not* override __init__ or __new__ as it is</span>
+    <span class="s0">absolutely undefined when these objects will be created or</span>
+    <span class="s0">destroyed.  All persistent state of Entities must be stored in the</span>
+    <span class="s0">underlying XML.  If you really need to initialize the object after</span>
+    <span class="s0">creation, you can implement an ``_init(self)`` method that will be</span>
+    <span class="s0">called after object creation.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, name):</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef xmlDoc*   c_doc</span>
+        <span class="s0">name_utf = _utf8(name)</span>
+        <span class="s0">c_name = _xcstr(name_utf)</span>
+        <span class="s0">if c_name[0] == c'#':</span>
+            <span class="s0">if not _characterReferenceIsValid(c_name + 1):</span>
+                <span class="s0">raise ValueError, f&quot;Invalid character reference: '{name}'&quot;</span>
+        <span class="s0">elif not _xmlNameIsValid(c_name):</span>
+            <span class="s0">raise ValueError, f&quot;Invalid entity reference: '{name}'&quot;</span>
+        <span class="s0">c_doc = _newXMLDoc()</span>
+        <span class="s0">doc = _documentFactory(c_doc, None)</span>
+        <span class="s0">self._c_node = _createEntity(c_doc, c_name)</span>
+        <span class="s0">if self._c_node is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">tree.xmlAddChild(&lt;xmlNode*&gt;c_doc, self._c_node)</span>
+        <span class="s0">_registerProxy(self, doc, self._c_node)</span>
+        <span class="s0">self._init()</span>
+
+
+<span class="s0">cdef int _validateNodeClass(xmlNode* c_node, cls) except -1:</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">expected = ElementBase</span>
+    <span class="s0">elif c_node.type == tree.XML_COMMENT_NODE:</span>
+        <span class="s0">expected = CommentBase</span>
+    <span class="s0">elif c_node.type == tree.XML_ENTITY_REF_NODE:</span>
+        <span class="s0">expected = EntityBase</span>
+    <span class="s0">elif c_node.type == tree.XML_PI_NODE:</span>
+        <span class="s0">expected = PIBase</span>
+    <span class="s0">else:</span>
+        <span class="s0">assert False, f&quot;Unknown node type: {c_node.type}&quot;</span>
+
+    <span class="s0">if not (isinstance(cls, type) and issubclass(cls, expected)):</span>
+        <span class="s0">raise TypeError(</span>
+            <span class="s0">f&quot;result of class lookup must be subclass of {type(expected)}, got {type(cls)}&quot;)</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Element class lookup</span>
+
+<span class="s0">ctypedef public object (*_element_class_lookup_function)(object, _Document, xmlNode*)</span>
+
+<span class="s0"># class to store element class lookup functions</span>
+<span class="s0">cdef public class ElementClassLookup [ type LxmlElementClassLookupType,</span>
+                                       <span class="s0">object LxmlElementClassLookup ]:</span>
+    <span class="s0">&quot;&quot;&quot;ElementClassLookup(self)</span>
+    <span class="s0">Superclass of Element class lookups.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _element_class_lookup_function _lookup_function</span>
+
+
+<span class="s0">cdef public class FallbackElementClassLookup(ElementClassLookup) \</span>
+         <span class="s0">[ type LxmlFallbackElementClassLookupType,</span>
+           <span class="s0">object LxmlFallbackElementClassLookup ]:</span>
+    <span class="s0">&quot;&quot;&quot;FallbackElementClassLookup(self, fallback=None)</span>
+
+    <span class="s0">Superclass of Element class lookups with additional fallback.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef readonly ElementClassLookup fallback</span>
+    <span class="s0">cdef _element_class_lookup_function _fallback_function</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0"># fall back to default lookup</span>
+        <span class="s0">self._fallback_function = _lookupDefaultElementClass</span>
+
+    <span class="s0">def __init__(self, ElementClassLookup fallback=None):</span>
+        <span class="s0">if fallback is not None:</span>
+            <span class="s0">self._setFallback(fallback)</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._fallback_function = _lookupDefaultElementClass</span>
+
+    <span class="s0">cdef void _setFallback(self, ElementClassLookup lookup):</span>
+        <span class="s0">&quot;&quot;&quot;Sets the fallback scheme for this lookup method.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self.fallback = lookup</span>
+        <span class="s0">self._fallback_function = lookup._lookup_function</span>
+        <span class="s0">if self._fallback_function is NULL:</span>
+            <span class="s0">self._fallback_function = _lookupDefaultElementClass</span>
+
+    <span class="s0">def set_fallback(self, ElementClassLookup lookup not None):</span>
+        <span class="s0">&quot;&quot;&quot;set_fallback(self, lookup)</span>
+
+        <span class="s0">Sets the fallback scheme for this lookup method.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">self._setFallback(lookup)</span>
+
+<span class="s0">cdef inline object _callLookupFallback(FallbackElementClassLookup lookup,</span>
+                                       <span class="s0">_Document doc, xmlNode* c_node):</span>
+    <span class="s0">return lookup._fallback_function(lookup.fallback, doc, c_node)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># default lookup scheme</span>
+
+<span class="s0">cdef class ElementDefaultClassLookup(ElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;ElementDefaultClassLookup(self, element=None, comment=None, pi=None, entity=None)</span>
+    <span class="s0">Element class lookup scheme that always returns the default Element</span>
+    <span class="s0">class.</span>
+
+    <span class="s0">The keyword arguments ``element``, ``comment``, ``pi`` and ``entity``</span>
+    <span class="s0">accept the respective Element classes.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef readonly object element_class</span>
+    <span class="s0">cdef readonly object comment_class</span>
+    <span class="s0">cdef readonly object pi_class</span>
+    <span class="s0">cdef readonly object entity_class</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._lookup_function = _lookupDefaultElementClass</span>
+
+    <span class="s0">def __init__(self, element=None, comment=None, pi=None, entity=None):</span>
+        <span class="s0">if element is None:</span>
+            <span class="s0">self.element_class = _Element</span>
+        <span class="s0">elif issubclass(element, ElementBase):</span>
+            <span class="s0">self.element_class = element</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError, &quot;element class must be subclass of ElementBase&quot;</span>
+
+        <span class="s0">if comment is None:</span>
+            <span class="s0">self.comment_class = _Comment</span>
+        <span class="s0">elif issubclass(comment, CommentBase):</span>
+            <span class="s0">self.comment_class = comment</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError, &quot;comment class must be subclass of CommentBase&quot;</span>
+
+        <span class="s0">if entity is None:</span>
+            <span class="s0">self.entity_class = _Entity</span>
+        <span class="s0">elif issubclass(entity, EntityBase):</span>
+            <span class="s0">self.entity_class = entity</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError, &quot;Entity class must be subclass of EntityBase&quot;</span>
+
+        <span class="s0">if pi is None:</span>
+            <span class="s0">self.pi_class = None # special case, see below</span>
+        <span class="s0">elif issubclass(pi, PIBase):</span>
+            <span class="s0">self.pi_class = pi</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise TypeError, &quot;PI class must be subclass of PIBase&quot;</span>
+
+<span class="s0">cdef object _lookupDefaultElementClass(state, _Document _doc, xmlNode* c_node):</span>
+    <span class="s0">&quot;Trivial class lookup function that always returns the default class.&quot;</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">if state is not None:</span>
+            <span class="s0">return (&lt;ElementDefaultClassLookup&gt;state).element_class</span>
+        <span class="s0">else:</span>
+            <span class="s0">return _Element</span>
+    <span class="s0">elif c_node.type == tree.XML_COMMENT_NODE:</span>
+        <span class="s0">if state is not None:</span>
+            <span class="s0">return (&lt;ElementDefaultClassLookup&gt;state).comment_class</span>
+        <span class="s0">else:</span>
+            <span class="s0">return _Comment</span>
+    <span class="s0">elif c_node.type == tree.XML_ENTITY_REF_NODE:</span>
+        <span class="s0">if state is not None:</span>
+            <span class="s0">return (&lt;ElementDefaultClassLookup&gt;state).entity_class</span>
+        <span class="s0">else:</span>
+            <span class="s0">return _Entity</span>
+    <span class="s0">elif c_node.type == tree.XML_PI_NODE:</span>
+        <span class="s0">if state is None or (&lt;ElementDefaultClassLookup&gt;state).pi_class is None:</span>
+            <span class="s0"># special case XSLT-PI</span>
+            <span class="s0">if c_node.name is not NULL and c_node.content is not NULL:</span>
+                <span class="s0">if tree.xmlStrcmp(c_node.name, &lt;unsigned char*&gt;&quot;xml-stylesheet&quot;) == 0:</span>
+                    <span class="s0">if tree.xmlStrstr(c_node.content, &lt;unsigned char*&gt;&quot;text/xsl&quot;) is not NULL or \</span>
+                           <span class="s0">tree.xmlStrstr(c_node.content, &lt;unsigned char*&gt;&quot;text/xml&quot;) is not NULL:</span>
+                        <span class="s0">return _XSLTProcessingInstruction</span>
+            <span class="s0">return _ProcessingInstruction</span>
+        <span class="s0">else:</span>
+            <span class="s0">return (&lt;ElementDefaultClassLookup&gt;state).pi_class</span>
+    <span class="s0">else:</span>
+        <span class="s0">assert False, f&quot;Unknown node type: {c_node.type}&quot;</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># attribute based lookup scheme</span>
+
+<span class="s0">cdef class AttributeBasedElementClassLookup(FallbackElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;AttributeBasedElementClassLookup(self, attribute_name, class_mapping, fallback=None)</span>
+    <span class="s0">Checks an attribute of an Element and looks up the value in a</span>
+    <span class="s0">class dictionary.</span>
+
+    <span class="s0">Arguments:</span>
+      <span class="s0">- attribute name - '{ns}name' style string</span>
+      <span class="s0">- class mapping  - Python dict mapping attribute values to Element classes</span>
+      <span class="s0">- fallback       - optional fallback lookup mechanism</span>
+
+    <span class="s0">A None key in the class mapping will be checked if the attribute is</span>
+    <span class="s0">missing.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef object _class_mapping</span>
+    <span class="s0">cdef tuple _pytag</span>
+    <span class="s0">cdef const_xmlChar* _c_ns</span>
+    <span class="s0">cdef const_xmlChar* _c_name</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._lookup_function = _attribute_class_lookup</span>
+
+    <span class="s0">def __init__(self, attribute_name, class_mapping,</span>
+                 <span class="s0">ElementClassLookup fallback=None):</span>
+        <span class="s0">self._pytag = _getNsTag(attribute_name)</span>
+        <span class="s0">ns, name = self._pytag</span>
+        <span class="s0">if ns is None:</span>
+            <span class="s0">self._c_ns = NULL</span>
+        <span class="s0">else:</span>
+            <span class="s0">self._c_ns = _xcstr(ns)</span>
+        <span class="s0">self._c_name = _xcstr(name)</span>
+        <span class="s0">self._class_mapping = dict(class_mapping)</span>
+
+        <span class="s0">FallbackElementClassLookup.__init__(self, fallback)</span>
+
+<span class="s0">cdef object _attribute_class_lookup(state, _Document doc, xmlNode* c_node):</span>
+    <span class="s0">cdef AttributeBasedElementClassLookup lookup</span>
+    <span class="s0">cdef python.PyObject* dict_result</span>
+
+    <span class="s0">lookup = &lt;AttributeBasedElementClassLookup&gt;state</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">value = _attributeValueFromNsName(</span>
+            <span class="s0">c_node, lookup._c_ns, lookup._c_name)</span>
+        <span class="s0">dict_result = python.PyDict_GetItem(lookup._class_mapping, value)</span>
+        <span class="s0">if dict_result is not NULL:</span>
+            <span class="s0">cls = &lt;object&gt;dict_result</span>
+            <span class="s0">_validateNodeClass(c_node, cls)</span>
+            <span class="s0">return cls</span>
+    <span class="s0">return _callLookupFallback(lookup, doc, c_node)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0">#  per-parser lookup scheme</span>
+
+<span class="s0">cdef class ParserBasedElementClassLookup(FallbackElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;ParserBasedElementClassLookup(self, fallback=None)</span>
+    <span class="s0">Element class lookup based on the XML parser.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._lookup_function = _parser_class_lookup</span>
+
+<span class="s0">cdef object _parser_class_lookup(state, _Document doc, xmlNode* c_node):</span>
+    <span class="s0">if doc._parser._class_lookup is not None:</span>
+        <span class="s0">return doc._parser._class_lookup._lookup_function(</span>
+            <span class="s0">doc._parser._class_lookup, doc, c_node)</span>
+    <span class="s0">return _callLookupFallback(&lt;FallbackElementClassLookup&gt;state, doc, c_node)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0">#  custom class lookup based on node type, namespace, name</span>
+
+<span class="s0">cdef class CustomElementClassLookup(FallbackElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;CustomElementClassLookup(self, fallback=None)</span>
+    <span class="s0">Element class lookup based on a subclass method.</span>
+
+    <span class="s0">You can inherit from this class and override the method::</span>
+
+        <span class="s0">lookup(self, type, doc, namespace, name)</span>
+
+    <span class="s0">to lookup the element class for a node. Arguments of the method:</span>
+    <span class="s0">* type:      one of 'element', 'comment', 'PI', 'entity'</span>
+    <span class="s0">* doc:       document that the node is in</span>
+    <span class="s0">* namespace: namespace URI of the node (or None for comments/PIs/entities)</span>
+    <span class="s0">* name:      name of the element/entity, None for comments, target for PIs</span>
+
+    <span class="s0">If you return None from this method, the fallback will be called.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._lookup_function = _custom_class_lookup</span>
+
+    <span class="s0">def lookup(self, type, doc, namespace, name):</span>
+        <span class="s0">&quot;lookup(self, type, doc, namespace, name)&quot;</span>
+        <span class="s0">return None</span>
+
+<span class="s0">cdef object _custom_class_lookup(state, _Document doc, xmlNode* c_node):</span>
+    <span class="s0">cdef CustomElementClassLookup lookup</span>
+
+    <span class="s0">lookup = &lt;CustomElementClassLookup&gt;state</span>
+
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">element_type = &quot;element&quot;</span>
+    <span class="s0">elif c_node.type == tree.XML_COMMENT_NODE:</span>
+        <span class="s0">element_type = &quot;comment&quot;</span>
+    <span class="s0">elif c_node.type == tree.XML_PI_NODE:</span>
+        <span class="s0">element_type = &quot;PI&quot;</span>
+    <span class="s0">elif c_node.type == tree.XML_ENTITY_REF_NODE:</span>
+        <span class="s0">element_type = &quot;entity&quot;</span>
+    <span class="s0">else:</span>
+        <span class="s0">element_type = &quot;element&quot;</span>
+    <span class="s0">if c_node.name is NULL:</span>
+        <span class="s0">name = None</span>
+    <span class="s0">else:</span>
+        <span class="s0">name = funicode(c_node.name)</span>
+    <span class="s0">c_str = tree._getNs(c_node)</span>
+    <span class="s0">ns = funicode(c_str) if c_str is not NULL else None</span>
+
+    <span class="s0">cls = lookup.lookup(element_type, doc, ns, name)</span>
+    <span class="s0">if cls is not None:</span>
+        <span class="s0">_validateNodeClass(c_node, cls)</span>
+        <span class="s0">return cls</span>
+    <span class="s0">return _callLookupFallback(lookup, doc, c_node)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># read-only tree based class lookup</span>
+
+<span class="s0">cdef class PythonElementClassLookup(FallbackElementClassLookup):</span>
+    <span class="s0">&quot;&quot;&quot;PythonElementClassLookup(self, fallback=None)</span>
+    <span class="s0">Element class lookup based on a subclass method.</span>
+
+    <span class="s0">This class lookup scheme allows access to the entire XML tree in</span>
+    <span class="s0">read-only mode.  To use it, re-implement the ``lookup(self, doc,</span>
+    <span class="s0">root)`` method in a subclass::</span>
+
+        <span class="s0">from lxml import etree, pyclasslookup</span>
+
+        <span class="s0">class MyElementClass(etree.ElementBase):</span>
+            <span class="s0">honkey = True</span>
+
+        <span class="s0">class MyLookup(pyclasslookup.PythonElementClassLookup):</span>
+            <span class="s0">def lookup(self, doc, root):</span>
+                <span class="s0">if root.tag == &quot;sometag&quot;:</span>
+                    <span class="s0">return MyElementClass</span>
+                <span class="s0">else:</span>
+                    <span class="s0">for child in root:</span>
+                        <span class="s0">if child.tag == &quot;someothertag&quot;:</span>
+                            <span class="s0">return MyElementClass</span>
+                <span class="s0"># delegate to default</span>
+                <span class="s0">return None</span>
+
+    <span class="s0">If you return None from this method, the fallback will be called.</span>
+
+    <span class="s0">The first argument is the opaque document instance that contains</span>
+    <span class="s0">the Element.  The second argument is a lightweight Element proxy</span>
+    <span class="s0">implementation that is only valid during the lookup.  Do not try</span>
+    <span class="s0">to keep a reference to it.  Once the lookup is done, the proxy</span>
+    <span class="s0">will be invalid.</span>
+
+    <span class="s0">Also, you cannot wrap such a read-only Element in an ElementTree,</span>
+    <span class="s0">and you must take care not to keep a reference to them outside of</span>
+    <span class="s0">the `lookup()` method.</span>
+
+    <span class="s0">Note that the API of the Element objects is not complete.  It is</span>
+    <span class="s0">purely read-only and does not support all features of the normal</span>
+    <span class="s0">`lxml.etree` API (such as XPath, extended slicing or some</span>
+    <span class="s0">iteration methods).</span>
+
+    <span class="s0">See https://lxml.de/element_classes.html</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._lookup_function = _python_class_lookup</span>
+
+    <span class="s0">def lookup(self, doc, element):</span>
+        <span class="s0">&quot;&quot;&quot;lookup(self, doc, element)</span>
+
+        <span class="s0">Override this method to implement your own lookup scheme.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return None</span>
+
+<span class="s0">cdef object _python_class_lookup(state, _Document doc, tree.xmlNode* c_node):</span>
+    <span class="s0">cdef PythonElementClassLookup lookup</span>
+    <span class="s0">cdef _ReadOnlyProxy proxy</span>
+    <span class="s0">lookup = &lt;PythonElementClassLookup&gt;state</span>
+
+    <span class="s0">proxy = _newReadOnlyProxy(None, c_node)</span>
+    <span class="s0">cls = lookup.lookup(doc, proxy)</span>
+    <span class="s0">_freeReadOnlyProxies(proxy)</span>
+
+    <span class="s0">if cls is not None:</span>
+        <span class="s0">_validateNodeClass(c_node, cls)</span>
+        <span class="s0">return cls</span>
+    <span class="s0">return _callLookupFallback(lookup, doc, c_node)</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Global setup</span>
+
+<span class="s0">cdef _element_class_lookup_function LOOKUP_ELEMENT_CLASS</span>
+<span class="s0">cdef object ELEMENT_CLASS_LOOKUP_STATE</span>
+
+<span class="s0">cdef void _setElementClassLookupFunction(</span>
+    <span class="s0">_element_class_lookup_function function, object state):</span>
+    <span class="s0">global LOOKUP_ELEMENT_CLASS, ELEMENT_CLASS_LOOKUP_STATE</span>
+    <span class="s0">if function is NULL:</span>
+        <span class="s0">state    = DEFAULT_ELEMENT_CLASS_LOOKUP</span>
+        <span class="s0">function = DEFAULT_ELEMENT_CLASS_LOOKUP._lookup_function</span>
+
+    <span class="s0">ELEMENT_CLASS_LOOKUP_STATE = state</span>
+    <span class="s0">LOOKUP_ELEMENT_CLASS = function</span>
+
+<span class="s0">def set_element_class_lookup(ElementClassLookup lookup = None):</span>
+    <span class="s0">&quot;&quot;&quot;set_element_class_lookup(lookup = None)</span>
+
+    <span class="s0">Set the global element class lookup method.</span>
+
+    <span class="s0">This defines the main entry point for looking up element implementations.</span>
+    <span class="s0">The standard implementation uses the :class:`ParserBasedElementClassLookup`</span>
+    <span class="s0">to delegate to different lookup schemes for each parser. </span>
+
+    <span class="s0">.. warning::</span>
+
+        <span class="s0">This should only be changed by applications, not by library packages.</span>
+        <span class="s0">In most cases, parser specific lookups should be preferred,</span>
+        <span class="s0">which can be configured via</span>
+        <span class="s0">:meth:`~lxml.etree.XMLParser.set_element_class_lookup`</span>
+        <span class="s0">(and the same for HTML parsers).</span>
+
+        <span class="s0">Globally replacing the element class lookup by something other than a</span>
+        <span class="s0">:class:`ParserBasedElementClassLookup` will prevent parser specific lookup</span>
+        <span class="s0">schemes from working. Several tools rely on parser specific lookups,</span>
+        <span class="s0">including :mod:`lxml.html` and :mod:`lxml.objectify`.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if lookup is None or lookup._lookup_function is NULL:</span>
+        <span class="s0">_setElementClassLookupFunction(NULL, None)</span>
+    <span class="s0">else:</span>
+        <span class="s0">_setElementClassLookupFunction(lookup._lookup_function, lookup)</span>
+
+<span class="s0"># default setup: parser delegation</span>
+<span class="s0">cdef ParserBasedElementClassLookup DEFAULT_ELEMENT_CLASS_LOOKUP</span>
+<span class="s0">DEFAULT_ELEMENT_CLASS_LOOKUP = ParserBasedElementClassLookup()</span>
+
+<span class="s0">set_element_class_lookup(DEFAULT_ELEMENT_CLASS_LOOKUP)</span>
+</pre>
+</body>
+</html>

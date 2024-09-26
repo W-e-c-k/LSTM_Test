@@ -1,0 +1,504 @@
+<html>
+<head>
+<title>xpath.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+xpath.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># XPath evaluation</span>
+
+<span class="s0">class XPathSyntaxError(LxmlSyntaxError, XPathError):</span>
+    <span class="s0">pass</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XPath</span>
+
+<span class="s0">cdef object _XPATH_SYNTAX_ERRORS = (</span>
+    <span class="s0">xmlerror.XML_XPATH_NUMBER_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_UNFINISHED_LITERAL_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_VARIABLE_REF_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_PREDICATE_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_UNCLOSED_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_CHAR_ERROR</span>
+<span class="s0">)</span>
+
+<span class="s0">cdef object _XPATH_EVAL_ERRORS = (</span>
+    <span class="s0">xmlerror.XML_XPATH_UNDEF_VARIABLE_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_UNDEF_PREFIX_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_UNKNOWN_FUNC_ERROR,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_OPERAND,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_TYPE,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_ARITY,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_CTXT_SIZE,</span>
+    <span class="s0">xmlerror.XML_XPATH_INVALID_CTXT_POSITION</span>
+<span class="s0">)</span>
+
+<span class="s0">cdef int _register_xpath_function(void* ctxt, name_utf, ns_utf) noexcept:</span>
+    <span class="s0">if ns_utf is None:</span>
+        <span class="s0">return xpath.xmlXPathRegisterFunc(</span>
+            <span class="s0">&lt;xpath.xmlXPathContext*&gt;ctxt, _xcstr(name_utf),</span>
+            <span class="s0">_xpath_function_call)</span>
+    <span class="s0">else:</span>
+        <span class="s0">return xpath.xmlXPathRegisterFuncNS(</span>
+            <span class="s0">&lt;xpath.xmlXPathContext*&gt;ctxt, _xcstr(name_utf), _xcstr(ns_utf),</span>
+            <span class="s0">_xpath_function_call)</span>
+
+<span class="s0">cdef int _unregister_xpath_function(void* ctxt, name_utf, ns_utf) noexcept:</span>
+    <span class="s0">if ns_utf is None:</span>
+        <span class="s0">return xpath.xmlXPathRegisterFunc(</span>
+            <span class="s0">&lt;xpath.xmlXPathContext*&gt;ctxt, _xcstr(name_utf), NULL)</span>
+    <span class="s0">else:</span>
+        <span class="s0">return xpath.xmlXPathRegisterFuncNS(</span>
+            <span class="s0">&lt;xpath.xmlXPathContext*&gt;ctxt, _xcstr(name_utf), _xcstr(ns_utf), NULL)</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _XPathContext(_BaseContext):</span>
+    <span class="s0">cdef object _variables</span>
+    <span class="s0">def __init__(self, namespaces, extensions, error_log, enable_regexp, variables,</span>
+                 <span class="s0">build_smart_strings):</span>
+        <span class="s0">self._variables = variables</span>
+        <span class="s0">_BaseContext.__init__(self, namespaces, extensions, error_log, enable_regexp,</span>
+                              <span class="s0">build_smart_strings)</span>
+
+    <span class="s0">cdef set_context(self, xpath.xmlXPathContext* xpathCtxt):</span>
+        <span class="s0">self._set_xpath_context(xpathCtxt)</span>
+        <span class="s0"># This would be a good place to set up the XPath parser dict, but</span>
+        <span class="s0"># we cannot use the current thread dict as we do not know which</span>
+        <span class="s0"># thread will execute the XPath evaluator - so, no dict for now.</span>
+        <span class="s0">self.registerLocalNamespaces()</span>
+        <span class="s0">self.registerLocalFunctions(xpathCtxt, _register_xpath_function)</span>
+
+    <span class="s0">cdef register_context(self, _Document doc):</span>
+        <span class="s0">self._register_context(doc)</span>
+        <span class="s0">self.registerGlobalNamespaces()</span>
+        <span class="s0">self.registerGlobalFunctions(self._xpathCtxt, _register_xpath_function)</span>
+        <span class="s0">self.registerExsltFunctions()</span>
+        <span class="s0">if self._variables is not None:</span>
+            <span class="s0">self.registerVariables(self._variables)</span>
+
+    <span class="s0">cdef unregister_context(self):</span>
+        <span class="s0">self.unregisterGlobalFunctions(</span>
+            <span class="s0">self._xpathCtxt, _unregister_xpath_function)</span>
+        <span class="s0">self.unregisterGlobalNamespaces()</span>
+        <span class="s0">xpath.xmlXPathRegisteredVariablesCleanup(self._xpathCtxt)</span>
+        <span class="s0">self._cleanup_context()</span>
+
+    <span class="s0">cdef void registerExsltFunctions(self) noexcept:</span>
+        <span class="s0">if xslt.LIBXSLT_VERSION &lt; 10125:</span>
+            <span class="s0"># we'd only execute dummy functions anyway</span>
+            <span class="s0">return</span>
+        <span class="s0">tree.xmlHashScan(</span>
+            <span class="s0">self._xpathCtxt.nsHash, _registerExsltFunctionsForNamespaces,</span>
+            <span class="s0">self._xpathCtxt)</span>
+
+    <span class="s0">cdef registerVariables(self, variable_dict):</span>
+        <span class="s0">for name, value in variable_dict.items():</span>
+            <span class="s0">name_utf = self._to_utf(name)</span>
+            <span class="s0">xpath.xmlXPathRegisterVariable(</span>
+                <span class="s0">self._xpathCtxt, _xcstr(name_utf), _wrapXPathObject(value, None, None))</span>
+
+    <span class="s0">cdef registerVariable(self, name, value):</span>
+        <span class="s0">name_utf = self._to_utf(name)</span>
+        <span class="s0">xpath.xmlXPathRegisterVariable(</span>
+            <span class="s0">self._xpathCtxt, _xcstr(name_utf), _wrapXPathObject(value, None, None))</span>
+
+
+<span class="s0">cdef void _registerExsltFunctionsForNamespaces(</span>
+        <span class="s0">void* _c_href, void* _ctxt, const_xmlChar* c_prefix) noexcept:</span>
+    <span class="s0">c_href = &lt;const_xmlChar*&gt; _c_href</span>
+    <span class="s0">ctxt = &lt;xpath.xmlXPathContext*&gt; _ctxt</span>
+
+    <span class="s0">if tree.xmlStrcmp(c_href, xslt.EXSLT_DATE_NAMESPACE) == 0:</span>
+        <span class="s0">xslt.exsltDateXpathCtxtRegister(ctxt, c_prefix)</span>
+    <span class="s0">elif tree.xmlStrcmp(c_href, xslt.EXSLT_SETS_NAMESPACE) == 0:</span>
+        <span class="s0">xslt.exsltSetsXpathCtxtRegister(ctxt, c_prefix)</span>
+    <span class="s0">elif tree.xmlStrcmp(c_href, xslt.EXSLT_MATH_NAMESPACE) == 0:</span>
+        <span class="s0">xslt.exsltMathXpathCtxtRegister(ctxt, c_prefix)</span>
+    <span class="s0">elif tree.xmlStrcmp(c_href, xslt.EXSLT_STRINGS_NAMESPACE) == 0:</span>
+        <span class="s0">xslt.exsltStrXpathCtxtRegister(ctxt, c_prefix)</span>
+
+
+<span class="s0">cdef class _XPathEvaluatorBase:</span>
+    <span class="s0">cdef xpath.xmlXPathContext* _xpathCtxt</span>
+    <span class="s0">cdef _XPathContext _context</span>
+    <span class="s0">cdef python.PyThread_type_lock _eval_lock</span>
+    <span class="s0">cdef _ErrorLog _error_log</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._xpathCtxt = NULL</span>
+        <span class="s0">if config.ENABLE_THREADING:</span>
+            <span class="s0">self._eval_lock = python.PyThread_allocate_lock()</span>
+            <span class="s0">if self._eval_lock is NULL:</span>
+                <span class="s0">raise MemoryError()</span>
+        <span class="s0">self._error_log = _ErrorLog()</span>
+
+    <span class="s0">def __init__(self, namespaces, extensions, enable_regexp,</span>
+                 <span class="s0">smart_strings):</span>
+        <span class="s0">self._context = _XPathContext(namespaces, extensions, self._error_log,</span>
+                                      <span class="s0">enable_regexp, None, smart_strings)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def error_log(self):</span>
+        <span class="s0">assert self._error_log is not None, &quot;XPath evaluator not initialised&quot;</span>
+        <span class="s0">return self._error_log.copy()</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if self._xpathCtxt is not NULL:</span>
+            <span class="s0">xpath.xmlXPathFreeContext(self._xpathCtxt)</span>
+        <span class="s0">if config.ENABLE_THREADING:</span>
+            <span class="s0">if self._eval_lock is not NULL:</span>
+                <span class="s0">python.PyThread_free_lock(self._eval_lock)</span>
+
+    <span class="s0">cdef set_context(self, xpath.xmlXPathContext* xpathCtxt):</span>
+        <span class="s0">self._xpathCtxt = xpathCtxt</span>
+        <span class="s0">self._context.set_context(xpathCtxt)</span>
+
+    <span class="s0">cdef bint _checkAbsolutePath(self, char* path) noexcept:</span>
+        <span class="s0">cdef char c</span>
+        <span class="s0">if path is NULL:</span>
+            <span class="s0">return 0</span>
+        <span class="s0">c = path[0]</span>
+        <span class="s0">while c == c' ' or c == c'\t':</span>
+            <span class="s0">path = path + 1</span>
+            <span class="s0">c = path[0]</span>
+        <span class="s0">return c == c'/'</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef int _lock(self) except -1:</span>
+        <span class="s0">cdef int result</span>
+        <span class="s0">if config.ENABLE_THREADING and self._eval_lock != NULL:</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">result = python.PyThread_acquire_lock(</span>
+                    <span class="s0">self._eval_lock, python.WAIT_LOCK)</span>
+            <span class="s0">if result == 0:</span>
+                <span class="s0">raise XPathError, &quot;XPath evaluator locking failed&quot;</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef void _unlock(self) noexcept:</span>
+        <span class="s0">if config.ENABLE_THREADING and self._eval_lock != NULL:</span>
+            <span class="s0">python.PyThread_release_lock(self._eval_lock)</span>
+
+    <span class="s0">cdef _build_parse_error(self):</span>
+        <span class="s0">cdef _BaseErrorLog entries</span>
+        <span class="s0">entries = self._error_log.filter_types(_XPATH_SYNTAX_ERRORS)</span>
+        <span class="s0">if entries:</span>
+            <span class="s0">message = entries._buildExceptionMessage(None)</span>
+            <span class="s0">if message is not None:</span>
+                <span class="s0">return XPathSyntaxError(message, self._error_log)</span>
+        <span class="s0">return XPathSyntaxError(</span>
+            <span class="s0">self._error_log._buildExceptionMessage(&quot;Error in xpath expression&quot;),</span>
+            <span class="s0">self._error_log)</span>
+
+    <span class="s0">cdef _build_eval_error(self):</span>
+        <span class="s0">cdef _BaseErrorLog entries</span>
+        <span class="s0">entries = self._error_log.filter_types(_XPATH_EVAL_ERRORS)</span>
+        <span class="s0">if not entries:</span>
+            <span class="s0">entries = self._error_log.filter_types(_XPATH_SYNTAX_ERRORS)</span>
+        <span class="s0">if entries:</span>
+            <span class="s0">message = entries._buildExceptionMessage(None)</span>
+            <span class="s0">if message is not None:</span>
+                <span class="s0">return XPathEvalError(message, self._error_log)</span>
+        <span class="s0">return XPathEvalError(</span>
+            <span class="s0">self._error_log._buildExceptionMessage(&quot;Error in xpath expression&quot;),</span>
+            <span class="s0">self._error_log)</span>
+
+    <span class="s0">cdef object _handle_result(self, xpath.xmlXPathObject* xpathObj, _Document doc):</span>
+        <span class="s0">if self._context._exc._has_raised():</span>
+            <span class="s0">if xpathObj is not NULL:</span>
+                <span class="s0">_freeXPathObject(xpathObj)</span>
+                <span class="s0">xpathObj = NULL</span>
+            <span class="s0">self._context._release_temp_refs()</span>
+            <span class="s0">self._context._exc._raise_if_stored()</span>
+
+        <span class="s0">if xpathObj is NULL:</span>
+            <span class="s0">self._context._release_temp_refs()</span>
+            <span class="s0">raise self._build_eval_error()</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">result = _unwrapXPathObject(xpathObj, doc, self._context)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">_freeXPathObject(xpathObj)</span>
+            <span class="s0">self._context._release_temp_refs()</span>
+
+        <span class="s0">return result</span>
+
+
+<span class="s0">cdef class XPathElementEvaluator(_XPathEvaluatorBase):</span>
+    <span class="s0">&quot;&quot;&quot;XPathElementEvaluator(self, element, namespaces=None, extensions=None, regexp=True, smart_strings=True)</span>
+    <span class="s0">Create an XPath evaluator for an element.</span>
+
+    <span class="s0">Absolute XPath expressions (starting with '/') will be evaluated against</span>
+    <span class="s0">the ElementTree as returned by getroottree().</span>
+
+    <span class="s0">Additional namespace declarations can be passed with the</span>
+    <span class="s0">'namespace' keyword argument.  EXSLT regular expression support</span>
+    <span class="s0">can be disabled with the 'regexp' boolean keyword (defaults to</span>
+    <span class="s0">True).  Smart strings will be returned for string results unless</span>
+    <span class="s0">you pass ``smart_strings=False``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Element _element</span>
+    <span class="s0">def __init__(self, _Element element not None, *, namespaces=None,</span>
+                 <span class="s0">extensions=None, regexp=True, smart_strings=True):</span>
+        <span class="s0">cdef xpath.xmlXPathContext* xpathCtxt</span>
+        <span class="s0">cdef int ns_register_status</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">_assertValidNode(element)</span>
+        <span class="s0">_assertValidDoc(element._doc)</span>
+        <span class="s0">self._element = element</span>
+        <span class="s0">doc = element._doc</span>
+        <span class="s0">_XPathEvaluatorBase.__init__(self, namespaces, extensions,</span>
+                                     <span class="s0">regexp, smart_strings)</span>
+        <span class="s0">xpathCtxt = xpath.xmlXPathNewContext(doc._c_doc)</span>
+        <span class="s0">if xpathCtxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">self.set_context(xpathCtxt)</span>
+
+    <span class="s0">def register_namespace(self, prefix, uri):</span>
+        <span class="s0">&quot;&quot;&quot;Register a namespace with the XPath context.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._xpathCtxt is not NULL, &quot;XPath context not initialised&quot;</span>
+        <span class="s0">self._context.addNamespace(prefix, uri)</span>
+
+    <span class="s0">def register_namespaces(self, namespaces):</span>
+        <span class="s0">&quot;&quot;&quot;Register a prefix -&gt; uri dict.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">assert self._xpathCtxt is not NULL, &quot;XPath context not initialised&quot;</span>
+        <span class="s0">for prefix, uri in namespaces.items():</span>
+            <span class="s0">self._context.addNamespace(prefix, uri)</span>
+
+    <span class="s0">def __call__(self, _path, **_variables):</span>
+        <span class="s0">&quot;&quot;&quot;__call__(self, _path, **_variables)</span>
+
+        <span class="s0">Evaluate an XPath expression on the document.</span>
+
+        <span class="s0">Variables may be provided as keyword arguments.  Note that namespaces</span>
+        <span class="s0">are currently not supported for variables.</span>
+
+        <span class="s0">Absolute XPath expressions (starting with '/') will be evaluated</span>
+        <span class="s0">against the ElementTree as returned by getroottree().</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xpath.xmlXPathObject*  xpathObj</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">assert self._xpathCtxt is not NULL, &quot;XPath context not initialised&quot;</span>
+        <span class="s0">path = _utf8(_path)</span>
+        <span class="s0">doc = self._element._doc</span>
+
+        <span class="s0">self._lock()</span>
+        <span class="s0">self._xpathCtxt.node = self._element._c_node</span>
+        <span class="s0">try:</span>
+            <span class="s0">self._context.register_context(doc)</span>
+            <span class="s0">self._context.registerVariables(_variables)</span>
+            <span class="s0">c_path = _xcstr(path)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">xpathObj = xpath.xmlXPathEvalExpression(</span>
+                    <span class="s0">c_path, self._xpathCtxt)</span>
+            <span class="s0">result = self._handle_result(xpathObj, doc)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">self._context.unregister_context()</span>
+            <span class="s0">self._unlock()</span>
+
+        <span class="s0">return result</span>
+
+
+<span class="s0">cdef class XPathDocumentEvaluator(XPathElementEvaluator):</span>
+    <span class="s0">&quot;&quot;&quot;XPathDocumentEvaluator(self, etree, namespaces=None, extensions=None, regexp=True, smart_strings=True)</span>
+    <span class="s0">Create an XPath evaluator for an ElementTree.</span>
+
+    <span class="s0">Additional namespace declarations can be passed with the</span>
+    <span class="s0">'namespace' keyword argument.  EXSLT regular expression support</span>
+    <span class="s0">can be disabled with the 'regexp' boolean keyword (defaults to</span>
+    <span class="s0">True).  Smart strings will be returned for string results unless</span>
+    <span class="s0">you pass ``smart_strings=False``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, _ElementTree etree not None, *, namespaces=None,</span>
+                 <span class="s0">extensions=None, regexp=True, smart_strings=True):</span>
+        <span class="s0">XPathElementEvaluator.__init__(</span>
+            <span class="s0">self, etree._context_node, namespaces=namespaces, </span>
+            <span class="s0">extensions=extensions, regexp=regexp,</span>
+            <span class="s0">smart_strings=smart_strings)</span>
+
+    <span class="s0">def __call__(self, _path, **_variables):</span>
+        <span class="s0">&quot;&quot;&quot;__call__(self, _path, **_variables)</span>
+
+        <span class="s0">Evaluate an XPath expression on the document.</span>
+
+        <span class="s0">Variables may be provided as keyword arguments.  Note that namespaces</span>
+        <span class="s0">are currently not supported for variables.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef xpath.xmlXPathObject*  xpathObj</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">assert self._xpathCtxt is not NULL, &quot;XPath context not initialised&quot;</span>
+        <span class="s0">path = _utf8(_path)</span>
+        <span class="s0">doc = self._element._doc</span>
+
+        <span class="s0">self._lock()</span>
+        <span class="s0">try:</span>
+            <span class="s0">self._context.register_context(doc)</span>
+            <span class="s0">c_doc = _fakeRootDoc(doc._c_doc, self._element._c_node)</span>
+            <span class="s0">try:</span>
+                <span class="s0">self._context.registerVariables(_variables)</span>
+                <span class="s0">c_path = _xcstr(path)</span>
+                <span class="s0">with nogil:</span>
+                    <span class="s0">self._xpathCtxt.doc  = c_doc</span>
+                    <span class="s0">self._xpathCtxt.node = tree.xmlDocGetRootElement(c_doc)</span>
+                    <span class="s0">xpathObj = xpath.xmlXPathEvalExpression(</span>
+                        <span class="s0">c_path, self._xpathCtxt)</span>
+                <span class="s0">result = self._handle_result(xpathObj, doc)</span>
+            <span class="s0">finally:</span>
+                <span class="s0">_destroyFakeDoc(doc._c_doc, c_doc)</span>
+                <span class="s0">self._context.unregister_context()</span>
+        <span class="s0">finally:</span>
+            <span class="s0">self._unlock()</span>
+
+        <span class="s0">return result</span>
+
+
+<span class="s0">def XPathEvaluator(etree_or_element, *, namespaces=None, extensions=None,</span>
+                   <span class="s0">regexp=True, smart_strings=True):</span>
+    <span class="s0">&quot;&quot;&quot;XPathEvaluator(etree_or_element, namespaces=None, extensions=None, regexp=True, smart_strings=True)</span>
+
+    <span class="s0">Creates an XPath evaluator for an ElementTree or an Element.</span>
+
+    <span class="s0">The resulting object can be called with an XPath expression as argument</span>
+    <span class="s0">and XPath variables provided as keyword arguments.</span>
+
+    <span class="s0">Additional namespace declarations can be passed with the</span>
+    <span class="s0">'namespace' keyword argument.  EXSLT regular expression support</span>
+    <span class="s0">can be disabled with the 'regexp' boolean keyword (defaults to</span>
+    <span class="s0">True).  Smart strings will be returned for string results unless</span>
+    <span class="s0">you pass ``smart_strings=False``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if isinstance(etree_or_element, _ElementTree):</span>
+        <span class="s0">return XPathDocumentEvaluator(</span>
+            <span class="s0">etree_or_element, namespaces=namespaces,</span>
+            <span class="s0">extensions=extensions, regexp=regexp, smart_strings=smart_strings)</span>
+    <span class="s0">else:</span>
+        <span class="s0">return XPathElementEvaluator(</span>
+            <span class="s0">etree_or_element, namespaces=namespaces,</span>
+            <span class="s0">extensions=extensions, regexp=regexp, smart_strings=smart_strings)</span>
+
+
+<span class="s0">cdef class XPath(_XPathEvaluatorBase):</span>
+    <span class="s0">&quot;&quot;&quot;XPath(self, path, namespaces=None, extensions=None, regexp=True, smart_strings=True)</span>
+    <span class="s0">A compiled XPath expression that can be called on Elements and ElementTrees.</span>
+
+    <span class="s0">Besides the XPath expression, you can pass prefix-namespace</span>
+    <span class="s0">mappings and extension functions to the constructor through the</span>
+    <span class="s0">keyword arguments ``namespaces`` and ``extensions``.  EXSLT</span>
+    <span class="s0">regular expression support can be disabled with the 'regexp'</span>
+    <span class="s0">boolean keyword (defaults to True).  Smart strings will be</span>
+    <span class="s0">returned for string results unless you pass</span>
+    <span class="s0">``smart_strings=False``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xpath.xmlXPathCompExpr* _xpath</span>
+    <span class="s0">cdef bytes _path</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._xpath = NULL</span>
+
+    <span class="s0">def __init__(self, path, *, namespaces=None, extensions=None,</span>
+                 <span class="s0">regexp=True, smart_strings=True):</span>
+        <span class="s0">cdef xpath.xmlXPathContext* xpathCtxt</span>
+        <span class="s0">_XPathEvaluatorBase.__init__(self, namespaces, extensions,</span>
+                                     <span class="s0">regexp, smart_strings)</span>
+        <span class="s0">self._path = _utf8(path)</span>
+        <span class="s0">xpathCtxt = xpath.xmlXPathNewContext(NULL)</span>
+        <span class="s0">if xpathCtxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">self.set_context(xpathCtxt)</span>
+        <span class="s0">self._xpath = xpath.xmlXPathCtxtCompile(xpathCtxt, _xcstr(self._path))</span>
+        <span class="s0">if self._xpath is NULL:</span>
+            <span class="s0">raise self._build_parse_error()</span>
+
+    <span class="s0">def __call__(self, _etree_or_element, **_variables):</span>
+        <span class="s0">&quot;__call__(self, _etree_or_element, **_variables)&quot;</span>
+        <span class="s0">cdef xpath.xmlXPathObject*  xpathObj</span>
+        <span class="s0">cdef _Document document</span>
+        <span class="s0">cdef _Element element</span>
+
+        <span class="s0">assert self._xpathCtxt is not NULL, &quot;XPath context not initialised&quot;</span>
+        <span class="s0">document = _documentOrRaise(_etree_or_element)</span>
+        <span class="s0">element  = _rootNodeOrRaise(_etree_or_element)</span>
+
+        <span class="s0">self._lock()</span>
+        <span class="s0">self._xpathCtxt.doc  = document._c_doc</span>
+        <span class="s0">self._xpathCtxt.node = element._c_node</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">self._context.register_context(document)</span>
+            <span class="s0">self._context.registerVariables(_variables)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">xpathObj = xpath.xmlXPathCompiledEval(</span>
+                    <span class="s0">self._xpath, self._xpathCtxt)</span>
+            <span class="s0">result = self._handle_result(xpathObj, document)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">self._context.unregister_context()</span>
+            <span class="s0">self._unlock()</span>
+        <span class="s0">return result</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def path(self):</span>
+        <span class="s0">&quot;&quot;&quot;The literal XPath expression.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return self._path.decode('UTF-8')</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if self._xpath is not NULL:</span>
+            <span class="s0">xpath.xmlXPathFreeCompExpr(self._xpath)</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return self.path</span>
+
+
+<span class="s0">cdef object _replace_strings = re.compile(b'(&quot;[^&quot;]*&quot;)|(\'[^\']*\')').sub</span>
+<span class="s0">cdef object _find_namespaces = re.compile(b'({[^}]+})').findall</span>
+
+<span class="s0">cdef class ETXPath(XPath):</span>
+    <span class="s0">&quot;&quot;&quot;ETXPath(self, path, extensions=None, regexp=True, smart_strings=True)</span>
+    <span class="s0">Special XPath class that supports the ElementTree {uri} notation for namespaces.</span>
+
+    <span class="s0">Note that this class does not accept the ``namespace`` keyword</span>
+    <span class="s0">argument. All namespaces must be passed as part of the path</span>
+    <span class="s0">string.  Smart strings will be returned for string results unless</span>
+    <span class="s0">you pass ``smart_strings=False``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">def __init__(self, path, *, extensions=None, regexp=True,</span>
+                 <span class="s0">smart_strings=True):</span>
+        <span class="s0">path, namespaces = self._nsextract_path(path)</span>
+        <span class="s0">XPath.__init__(self, path, namespaces=namespaces,</span>
+                       <span class="s0">extensions=extensions, regexp=regexp,</span>
+                       <span class="s0">smart_strings=smart_strings)</span>
+
+    <span class="s0">cdef _nsextract_path(self, path):</span>
+        <span class="s0"># replace {namespaces} by new prefixes</span>
+        <span class="s0">cdef dict namespaces = {}</span>
+        <span class="s0">cdef list namespace_defs = []</span>
+        <span class="s0">cdef int i</span>
+        <span class="s0">path_utf = _utf8(path)</span>
+        <span class="s0">stripped_path = _replace_strings(b'', path_utf) # remove string literals</span>
+        <span class="s0">i = 1</span>
+        <span class="s0">for namespace_def in _find_namespaces(stripped_path):</span>
+            <span class="s0">if namespace_def not in namespace_defs:</span>
+                <span class="s0">prefix = python.PyBytes_FromFormat(&quot;__xpp%02d&quot;, i)</span>
+                <span class="s0">i += 1</span>
+                <span class="s0">namespace_defs.append(namespace_def)</span>
+                <span class="s0">namespace = namespace_def[1:-1] # remove '{}'</span>
+                <span class="s0">namespace = (&lt;bytes&gt;namespace).decode('utf8')</span>
+                <span class="s0">namespaces[prefix.decode('utf8')] = namespace</span>
+                <span class="s0">prefix_str = prefix + b':'</span>
+                <span class="s0"># FIXME: this also replaces {namespaces} within strings!</span>
+                <span class="s0">path_utf = path_utf.replace(namespace_def, prefix_str)</span>
+        <span class="s0">path = path_utf.decode('utf8')</span>
+        <span class="s0">return path, namespaces</span>
+</pre>
+</body>
+</html>

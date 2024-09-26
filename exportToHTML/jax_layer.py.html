@@ -1,0 +1,700 @@
+<html>
+<head>
+<title>jax_layer.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+jax_layer.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">inspect</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">jax_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">tracking</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">jax</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.layers.JaxLayer&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">JaxLayer</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Keras Layer that wraps a JAX model. 
+ 
+    This layer enables the use of JAX components within Keras when using JAX as 
+    the backend for Keras. 
+ 
+    ## Model function 
+ 
+    This layer accepts JAX models in the form of a function, `call_fn`, which 
+    must take the following arguments with these exact names: 
+ 
+    - `params`: trainable parameters of the model. 
+    - `state` (*optional*): non-trainable state of the model. Can be omitted if 
+        the model has no non-trainable state. 
+    - `rng` (*optional*): a `jax.random.PRNGKey` instance. Can be omitted if the 
+        model does not need RNGs, neither during training nor during inference. 
+    - `inputs`: inputs to the model, a JAX array or a `PyTree` of arrays. 
+    - `training` (*optional*): an argument specifying if we're in training mode 
+        or inference mode, `True` is passed in training mode. Can be omitted if 
+        the model behaves the same in training mode and inference mode. 
+ 
+    The `inputs` argument is mandatory. Inputs to the model must be provided via 
+    a single argument. If the JAX model takes multiple inputs as separate 
+    arguments, they must be combined into a single structure, for instance in a 
+    `tuple` or a `dict`. 
+ 
+    ## Model weights initialization 
+ 
+    The initialization of the `params` and `state` of the model can be handled 
+    by this layer, in which case the `init_fn` argument must be provided. This 
+    allows the model to be initialized dynamically with the right shape. 
+    Alternatively, and if the shape is known, the `params` argument and 
+    optionally the `state` argument can be used to create an already initialized 
+    model. 
+ 
+    The `init_fn` function, if provided, must take the following arguments with 
+    these exact names: 
+ 
+    - `rng`: a `jax.random.PRNGKey` instance. 
+    - `inputs`: a JAX array or a `PyTree` of arrays with placeholder values to 
+        provide the shape of the inputs. 
+    - `training` (*optional*): an argument specifying if we're in training mode 
+        or inference mode. `True` is always passed to `init_fn`. Can be omitted 
+        regardless of whether `call_fn` has a `training` argument. 
+ 
+    ## Models with non-trainable state 
+ 
+    For JAX models that have non-trainable state: 
+ 
+    - `call_fn` must have a `state` argument 
+    - `call_fn` must return a `tuple` containing the outputs of the model and 
+        the new non-trainable state of the model 
+    - `init_fn` must return a `tuple` containing the initial trainable params of 
+        the model and the initial non-trainable state of the model. 
+ 
+    This code shows a possible combination of `call_fn` and `init_fn` signatures 
+    for a model with non-trainable state. In this example, the model has a 
+    `training` argument and an `rng` argument in `call_fn`. 
+ 
+    ```python 
+    def stateful_call(params, state, rng, inputs, training): 
+        outputs = ... 
+        new_state = ... 
+        return outputs, new_state 
+ 
+    def stateful_init(rng, inputs): 
+        initial_params = ... 
+        initial_state = ... 
+        return initial_params, initial_state 
+    ``` 
+ 
+    ## Models without non-trainable state 
+ 
+    For JAX models with no non-trainable state: 
+ 
+    - `call_fn` must not have a `state` argument 
+    - `call_fn` must return only the outputs of the model 
+    - `init_fn` must return only the initial trainable params of the model. 
+ 
+    This code shows a possible combination of `call_fn` and `init_fn` signatures 
+    for a model without non-trainable state. In this example, the model does not 
+    have a `training` argument and does not have an `rng` argument in `call_fn`. 
+ 
+    ```python 
+    def stateless_call(params, inputs): 
+        outputs = ... 
+        return outputs 
+ 
+    def stateless_init(rng, inputs): 
+        initial_params = ... 
+        return initial_params 
+    ``` 
+ 
+    ## Conforming to the required signature 
+ 
+    If a model has a different signature than the one required by `JaxLayer`, 
+    one can easily write a wrapper method to adapt the arguments. This example 
+    shows a model that has multiple inputs as separate arguments, expects 
+    multiple RNGs in a `dict`, and has a `deterministic` argument with the 
+    opposite meaning of `training`. To conform, the inputs are combined in a 
+    single structure using a `tuple`, the RNG is split and used the populate the 
+    expected `dict`, and the Boolean flag is negated: 
+ 
+    ```python 
+    def my_model_fn(params, rngs, input1, input2, deterministic): 
+        ... 
+        if not deterministic: 
+            dropout_rng = rngs[&quot;dropout&quot;] 
+            keep = jax.random.bernoulli(dropout_rng, dropout_rate, x.shape) 
+            x = jax.numpy.where(keep, x / dropout_rate, 0) 
+            ... 
+        ... 
+        return outputs 
+ 
+    def my_model_wrapper_fn(params, rng, inputs, training): 
+        input1, input2 = inputs 
+        rng1, rng2 = jax.random.split(rng) 
+        rngs = {&quot;dropout&quot;: rng1, &quot;preprocessing&quot;: rng2} 
+        deterministic = not training 
+        return my_model_fn(params, rngs, input1, input2, deterministic) 
+ 
+    keras_layer = JaxLayer(my_model_wrapper_fn, params=initial_params) 
+    ``` 
+ 
+    ## Usage with Haiku modules 
+ 
+    `JaxLayer` enables the use of [Haiku](https://dm-haiku.readthedocs.io) 
+    components in the form of 
+    [`haiku.Module`](https://dm-haiku.readthedocs.io/en/latest/api.html#module). 
+    This is achieved by transforming the module per the Haiku pattern and then 
+    passing `module.apply` in the `call_fn` parameter and `module.init` in the 
+    `init_fn` parameter if needed. 
+ 
+    If the model has non-trainable state, it should be transformed with 
+    [`haiku.transform_with_state`]( 
+      https://dm-haiku.readthedocs.io/en/latest/api.html#haiku.transform_with_state). 
+    If the model has no non-trainable state, it should be transformed with 
+    [`haiku.transform`]( 
+      https://dm-haiku.readthedocs.io/en/latest/api.html#haiku.transform). 
+    Additionally, and optionally, if the module does not use RNGs in &quot;apply&quot;, it 
+    can be transformed with 
+    [`haiku.without_apply_rng`]( 
+      https://dm-haiku.readthedocs.io/en/latest/api.html#without-apply-rng). 
+ 
+    The following example shows how to create a `JaxLayer` from a Haiku module 
+    that uses random number generators via `hk.next_rng_key()` and takes a 
+    training positional argument: 
+ 
+    ```python 
+    class MyHaikuModule(hk.Module): 
+        def __call__(self, x, training): 
+            x = hk.Conv2D(32, (3, 3))(x) 
+            x = jax.nn.relu(x) 
+            x = hk.AvgPool((1, 2, 2, 1), (1, 2, 2, 1), &quot;VALID&quot;)(x) 
+            x = hk.Flatten()(x) 
+            x = hk.Linear(200)(x) 
+            if training: 
+                x = hk.dropout(rng=hk.next_rng_key(), rate=0.3, x=x) 
+            x = jax.nn.relu(x) 
+            x = hk.Linear(10)(x) 
+            x = jax.nn.softmax(x) 
+            return x 
+ 
+    def my_haiku_module_fn(inputs, training): 
+        module = MyHaikuModule() 
+        return module(inputs, training) 
+ 
+    transformed_module = hk.transform(my_haiku_module_fn) 
+ 
+    keras_layer = JaxLayer( 
+        call_fn=transformed_module.apply, 
+        init_fn=transformed_module.init, 
+    ) 
+    ``` 
+ 
+    Args: 
+        call_fn: The function to call the model. See description above for the 
+            list of arguments it takes and the outputs it returns. 
+        init_fn: the function to call to initialize the model. See description 
+            above for the list of arguments it takes and the ouputs it returns. 
+            If `None`, then `params` and/or `state` must be provided. 
+      params: A `PyTree` containing all the model trainable parameters. This 
+            allows passing trained parameters or controlling the initialization. 
+            If both `params` and `state` are `None`, `init_fn` is called at 
+            build time to initialize the trainable parameters of the model. 
+      state: A `PyTree` containing all the model non-trainable state. This 
+            allows passing learned state or controlling the initialization. If 
+            both `params` and `state` are `None`, and `call_fn` takes a `state` 
+            argument, then `init_fn` is called at build time to initialize the 
+            non-trainable state of the model. 
+      seed: Seed for random number generator. Optional. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">call_fn</span><span class="s2">,</span>
+        <span class="s1">init_fn</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">params</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">state</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;jax&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;JaxLayer is only supported with the JAX backend. Current &quot;</span>
+                <span class="s3">f&quot;backend: </span><span class="s0">{</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">()</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">init_fn </span><span class="s0">is None and </span><span class="s1">params </span><span class="s0">is None and </span><span class="s1">state </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`init_fn`, `params` and `state` cannot all be `None`.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(**</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn </span><span class="s2">= </span><span class="s1">call_fn</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">init_fn </span><span class="s2">= </span><span class="s1">init_fn</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">SeedGenerator</span><span class="s2">(</span><span class="s1">seed</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">tracked_params </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_create_variables</span><span class="s2">(</span><span class="s1">params</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">tracked_state </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_create_variables</span><span class="s2">(</span><span class="s1">state</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">params </span><span class="s0">is not None or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">state </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn_arguments </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_validate_signature</span><span class="s2">(</span>
+            <span class="s1">call_fn</span><span class="s2">,</span>
+            <span class="s3">&quot;call_fn&quot;</span><span class="s2">,</span>
+            <span class="s2">{</span><span class="s3">&quot;params&quot;</span><span class="s2">, </span><span class="s3">&quot;state&quot;</span><span class="s2">, </span><span class="s3">&quot;rng&quot;</span><span class="s2">, </span><span class="s3">&quot;inputs&quot;</span><span class="s2">, </span><span class="s3">&quot;training&quot;</span><span class="s2">},</span>
+            <span class="s2">{</span><span class="s3">&quot;inputs&quot;</span><span class="s2">},</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">has_state </span><span class="s2">= </span><span class="s3">&quot;state&quot; </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn_arguments</span>
+
+        <span class="s0">if </span><span class="s1">init_fn</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">init_fn_arguments </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_validate_signature</span><span class="s2">(</span>
+                <span class="s1">init_fn</span><span class="s2">, </span><span class="s3">&quot;init_fn&quot;</span><span class="s2">, {</span><span class="s3">&quot;rng&quot;</span><span class="s2">, </span><span class="s3">&quot;inputs&quot;</span><span class="s2">, </span><span class="s3">&quot;training&quot;</span><span class="s2">}, {</span><span class="s3">&quot;inputs&quot;</span><span class="s2">}</span>
+            <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_validate_signature</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">fn</span><span class="s2">, </span><span class="s1">fn_name</span><span class="s2">, </span><span class="s1">allowed</span><span class="s2">, </span><span class="s1">required</span><span class="s2">):</span>
+        <span class="s1">fn_parameters </span><span class="s2">= </span><span class="s1">inspect</span><span class="s2">.</span><span class="s1">signature</span><span class="s2">(</span><span class="s1">fn</span><span class="s2">).</span><span class="s1">parameters</span>
+        <span class="s0">for </span><span class="s1">parameter_name </span><span class="s0">in </span><span class="s1">required</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">parameter_name </span><span class="s0">not in </span><span class="s1">fn_parameters</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">f&quot;Missing required argument in `</span><span class="s0">{</span><span class="s1">fn_name</span><span class="s0">}</span><span class="s3">`: &quot;</span>
+                    <span class="s3">f&quot;`</span><span class="s0">{</span><span class="s1">parameter_name</span><span class="s0">}</span><span class="s3">`&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s1">parameter_names </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">parameter </span><span class="s0">in </span><span class="s1">fn_parameters</span><span class="s2">.</span><span class="s1">values</span><span class="s2">():</span>
+            <span class="s0">if </span><span class="s1">parameter</span><span class="s2">.</span><span class="s1">name </span><span class="s0">not in </span><span class="s1">allowed</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">f&quot;Unsupported argument in `</span><span class="s0">{</span><span class="s1">fn_name</span><span class="s0">}</span><span class="s3">`: `</span><span class="s0">{</span><span class="s1">parameter</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">`, &quot;</span>
+                    <span class="s3">f&quot;supported arguments are `</span><span class="s0">{</span><span class="s3">'`, `'</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">allowed</span><span class="s2">)</span><span class="s0">}</span><span class="s3">`&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">parameter_names</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">parameter</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">parameter_names</span>
+
+    <span class="s2">@</span><span class="s1">tracking</span><span class="s2">.</span><span class="s1">no_automatic_dependency_tracking</span>
+    <span class="s0">def </span><span class="s1">_create_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Create a structure of variables from a structure of JAX arrays. 
+ 
+        `values` is traversed via JAX's `tree_map`. When a leaf is a JAX array 
+        or a tensor-like object, a corresponding variable is created with it as 
+        the initial value. The resulting structure of variables is assigned to 
+        `self.params` or `self.state` depending on `trainable`. Then, a 
+        flattened version of the variables is returned for tracking. 
+        `self.params` or `self.state` are intentionally not tracked because 
+        structures like `TrackedList` interfere with `jax.tree_utils`. 
+        Note that leaf objects that are not JAX arrays and not tensor-like are 
+        left intact as they are assumed to be configuration used by the model. 
+ 
+        Args: 
+            values: the structure of values to traverse. 
+            trainable: whether to create trainable variables. 
+ 
+        Returns: 
+            flat list of variables initialized with `values` for tracking. 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">def </span><span class="s1">create_variable</span><span class="s2">(</span><span class="s1">value</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">value</span><span class="s2">) </span><span class="s0">or </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+                <span class="s1">variable </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                    <span class="s1">value</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s1">trainable</span>
+                <span class="s2">)</span>
+                <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">value</span><span class="s2">)</span>
+                <span class="s0">return </span><span class="s1">variable</span>
+            <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, (</span><span class="s1">np</span><span class="s2">.</span><span class="s1">generic</span><span class="s2">, </span><span class="s1">int</span><span class="s2">, </span><span class="s1">float</span><span class="s2">)):</span>
+                <span class="s1">variable </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                    <span class="s2">(), </span><span class="s1">initializer</span><span class="s2">=</span><span class="s3">&quot;zeros&quot;</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s1">trainable</span>
+                <span class="s2">)</span>
+                <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">value</span><span class="s2">)</span>
+                <span class="s0">return </span><span class="s1">variable</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">return </span><span class="s1">value</span>
+
+        <span class="s5"># Use JAX's tree_map as it understands registered classes.</span>
+        <span class="s1">variables </span><span class="s2">= </span><span class="s1">jax</span><span class="s2">.</span><span class="s1">tree_util</span><span class="s2">.</span><span class="s1">tree_map</span><span class="s2">(</span><span class="s1">create_variable</span><span class="s2">, </span><span class="s1">values</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">trainable</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">params </span><span class="s2">= </span><span class="s1">variables</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">state </span><span class="s2">= </span><span class="s1">variables</span>
+
+        <span class="s1">flat_variables</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">jax</span><span class="s2">.</span><span class="s1">tree_util</span><span class="s2">.</span><span class="s1">tree_flatten</span><span class="s2">(</span><span class="s1">variables</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">flat_variables</span>
+
+    <span class="s0">def </span><span class="s1">_get_init_rng</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Returns a JAX `PRNGKey` or structure of `PRNGKey`s to pass to `init_fn`. 
+ 
+        By default, this returns a single `PRNGKey` retrieved by calling 
+        `self.seed_generator.next()`. Override this to return a different 
+        structure. 
+ 
+        Returns: 
+            a JAX `PRNGKey` or structure of `PRNGKey`s that will be passed as 
+            the `rng` argument of `init_fn`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator</span><span class="s2">.</span><span class="s1">next</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_get_call_rng</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">training</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Returns a JAX `PRNGKey` or structure of `PRNGKey`s to pass to `call_fn`. 
+ 
+        By default, this returns a single `PRNGKey` retrieved by calling 
+        `self.seed_generator.next()` when `training` is `True`, and `None` when 
+        `training` is `False`. Override this to return a different structure or 
+        to pass RNGs in inference mode too. 
+ 
+        Returns: 
+            a JAX `PRNGKey` or structure of `PRNGKey`s that will be passed as 
+            the `rng` argument of `call_fn`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">training</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator</span><span class="s2">.</span><span class="s1">next</span><span class="s2">()</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return None</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">params </span><span class="s0">is not None or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">state </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if </span><span class="s1">jax_utils</span><span class="s2">.</span><span class="s1">is_in_jax_tracing_scope</span><span class="s2">():</span>
+            <span class="s5"># This exception is not actually shown, it is caught and a detailed</span>
+            <span class="s5"># warning about calling 'build' is printed.</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">&quot;'JaxLayer' cannot be built in tracing scope&quot;</span><span class="s2">)</span>
+
+        <span class="s5"># Initialize `params` and `state` if needed by calling `init_fn`.</span>
+        <span class="s0">def </span><span class="s1">create_input</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">):</span>
+            <span class="s1">shape </span><span class="s2">= [</span><span class="s1">d </span><span class="s0">if </span><span class="s1">d </span><span class="s0">is not None else </span><span class="s6">1 </span><span class="s0">for </span><span class="s1">d </span><span class="s0">in </span><span class="s1">shape</span><span class="s2">]</span>
+            <span class="s0">return </span><span class="s1">jax</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">.</span><span class="s1">ones</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">)</span>
+
+        <span class="s1">init_inputs </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_shape_structure</span><span class="s2">(</span><span class="s1">create_input</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">)</span>
+        <span class="s1">init_args </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">argument_name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">init_fn_arguments</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;rng&quot;</span><span class="s2">:</span>
+                <span class="s1">init_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_init_rng</span><span class="s2">())</span>
+            <span class="s0">elif </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;inputs&quot;</span><span class="s2">:</span>
+                <span class="s1">init_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">init_inputs</span><span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;training&quot;</span><span class="s2">:</span>
+                <span class="s1">init_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s0">True</span><span class="s2">)</span>
+
+        <span class="s1">init_result </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">init_fn</span><span class="s2">(*</span><span class="s1">init_args</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">has_state</span><span class="s2">:</span>
+            <span class="s1">init_params</span><span class="s2">, </span><span class="s1">init_state </span><span class="s2">= </span><span class="s1">init_result</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">init_params</span><span class="s2">, </span><span class="s1">init_state </span><span class="s2">= </span><span class="s1">init_result</span><span class="s2">, </span><span class="s0">None</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">tracked_params </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_create_variables</span><span class="s2">(</span>
+            <span class="s1">init_params</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">tracked_state </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_create_variables</span><span class="s2">(</span><span class="s1">init_state</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+        <span class="s0">def </span><span class="s1">unwrap_variable</span><span class="s2">(</span><span class="s1">variable</span><span class="s2">):</span>
+            <span class="s0">return None if </span><span class="s1">variable </span><span class="s0">is None else </span><span class="s1">variable</span><span class="s2">.</span><span class="s1">value</span>
+
+        <span class="s1">call_args </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">argument_name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn_arguments</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;params&quot;</span><span class="s2">:</span>
+                <span class="s1">call_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span>
+                    <span class="s1">jax</span><span class="s2">.</span><span class="s1">tree_util</span><span class="s2">.</span><span class="s1">tree_map</span><span class="s2">(</span><span class="s1">unwrap_variable</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">params</span><span class="s2">)</span>
+                <span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;state&quot;</span><span class="s2">:</span>
+                <span class="s1">call_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span>
+                    <span class="s1">jax</span><span class="s2">.</span><span class="s1">tree_util</span><span class="s2">.</span><span class="s1">tree_map</span><span class="s2">(</span><span class="s1">unwrap_variable</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">state</span><span class="s2">)</span>
+                <span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;rng&quot;</span><span class="s2">:</span>
+                <span class="s1">call_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_call_rng</span><span class="s2">(</span><span class="s1">training</span><span class="s2">))</span>
+            <span class="s0">elif </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;inputs&quot;</span><span class="s2">:</span>
+                <span class="s1">call_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">argument_name </span><span class="s2">== </span><span class="s3">&quot;training&quot;</span><span class="s2">:</span>
+                <span class="s1">call_args</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">training</span><span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">assign_state_to_variable</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">variable</span><span class="s2">):</span>
+            <span class="s5"># This exists only to make debugging this error case easier.</span>
+            <span class="s0">if not </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">variable</span><span class="s2">, </span><span class="s3">&quot;assign&quot;</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Structure mismatch: the structure of the state returned &quot;</span>
+                    <span class="s3">&quot;by `call` does not match the structure of the state at &quot;</span>
+                    <span class="s3">&quot;initialization time.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">value</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">has_state</span><span class="s2">:</span>
+            <span class="s1">predictions</span><span class="s2">, </span><span class="s1">new_state </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn</span><span class="s2">(*</span><span class="s1">call_args</span><span class="s2">)</span>
+            <span class="s1">jax</span><span class="s2">.</span><span class="s1">tree_util</span><span class="s2">.</span><span class="s1">tree_map</span><span class="s2">(</span>
+                <span class="s1">assign_state_to_variable</span><span class="s2">, </span><span class="s1">new_state</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">state</span>
+            <span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">predictions</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn</span><span class="s2">(*</span><span class="s1">call_args</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s3">&quot;call_fn&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">call_fn</span><span class="s2">),</span>
+            <span class="s3">&quot;init_fn&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">init_fn</span><span class="s2">),</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">list</span><span class="s2">(</span><span class="s1">base_config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()) + </span><span class="s1">list</span><span class="s2">(</span><span class="s1">config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()))</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s1">call_fn </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;call_fn&quot;</span><span class="s2">])</span>
+        <span class="s1">init_fn </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;init_fn&quot;</span><span class="s2">])</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;call_fn&quot;</span><span class="s2">] = </span><span class="s1">call_fn</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;init_fn&quot;</span><span class="s2">] = </span><span class="s1">init_fn</span>
+        <span class="s0">return </span><span class="s1">super</span><span class="s2">().</span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">config</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.layers.FlaxLayer&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">FlaxLayer</span><span class="s2">(</span><span class="s1">JaxLayer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Keras Layer that wraps a [Flax](https://flax.readthedocs.io) module. 
+ 
+    This layer enables the use of Flax components in the form of 
+    [`flax.linen.Module`]( 
+        https://flax.readthedocs.io/en/latest/api_reference/flax.linen/module.html) 
+    instances within Keras when using JAX as the backend for Keras. 
+ 
+    The module method to use for the forward pass can be specified via the 
+    `method` argument and is `__call__` by default. This method must take the 
+    following arguments with these exact names: 
+ 
+    - `self` if the method is bound to the module, which is the case for the 
+        default of `__call__`, and `module` otherwise to pass the module. 
+    - `inputs`: the inputs to the model, a JAX array or a `PyTree` of arrays. 
+    - `training` *(optional)*: an argument specifying if we're in training mode 
+        or inference mode, `True` is passed in training mode. 
+ 
+    `FlaxLayer` handles the non-trainable state of your model and required RNGs 
+    automatically. Note that the `mutable` parameter of 
+    [`flax.linen.Module.apply()`]( 
+        https://flax.readthedocs.io/en/latest/api_reference/flax.linen/module.html#flax.linen.apply) 
+    is set to `DenyList([&quot;params&quot;])`, therefore making the assumption that all 
+    the variables outside of the &quot;params&quot; collection are non-trainable weights. 
+ 
+    This example shows how to create a `FlaxLayer` from a Flax `Module` with 
+    the default `__call__` method and no training argument: 
+ 
+    ```python 
+    class MyFlaxModule(flax.linen.Module): 
+        @flax.linen.compact 
+        def __call__(self, inputs): 
+            x = inputs 
+            x = flax.linen.Conv(features=32, kernel_size=(3, 3))(x) 
+            x = flax.linen.relu(x) 
+            x = flax.linen.avg_pool(x, window_shape=(2, 2), strides=(2, 2)) 
+            x = x.reshape((x.shape[0], -1))  # flatten 
+            x = flax.linen.Dense(features=200)(x) 
+            x = flax.linen.relu(x) 
+            x = flax.linen.Dense(features=10)(x) 
+            x = flax.linen.softmax(x) 
+            return x 
+ 
+    flax_module = MyFlaxModule() 
+    keras_layer = FlaxLayer(flax_module) 
+    ``` 
+ 
+    This example shows how to wrap the module method to conform to the required 
+    signature. This allows having multiple input arguments and a training 
+    argument that has a different name and values. This additionally shows how 
+    to use a function that is not bound to the module. 
+ 
+    ```python 
+    class MyFlaxModule(flax.linen.Module): 
+        @flax.linen.compact 
+        def forward(self, input1, input2, deterministic): 
+            ... 
+            return outputs 
+ 
+    def my_flax_module_wrapper(module, inputs, training): 
+        input1, input2 = inputs 
+        return module.forward(input1, input2, not training) 
+ 
+    flax_module = MyFlaxModule() 
+    keras_layer = FlaxLayer( 
+        module=flax_module, 
+        method=my_flax_module_wrapper, 
+    ) 
+    ``` 
+ 
+    Args: 
+        module: An instance of `flax.linen.Module` or subclass. 
+        method: The method to call the model. This is generally a method in the 
+            `Module`. If not provided, the `__call__` method is used. `method` 
+            can also be a function not defined in the `Module`, in which case it 
+            must take the `Module` as the first argument. It is used for both 
+            `Module.init` and `Module.apply`. Details are documented in the 
+            `method` argument of [`flax.linen.Module.apply()`]( 
+              https://flax.readthedocs.io/en/latest/api_reference/flax.linen/module.html#flax.linen.apply). 
+        variables: A `dict` containing all the variables of the module in the 
+            same format as what is returned by [`flax.linen.Module.init()`]( 
+              https://flax.readthedocs.io/en/latest/api_reference/flax.linen/module.html#flax.linen.init). 
+            It should contain a &quot;params&quot; key and, if applicable, other keys for 
+            collections of variables for non-trainable state. This allows 
+            passing trained parameters and learned non-trainable state or 
+            controlling the initialization. If `None` is passed, the module's 
+            `init` function is called at build time to initialize the variables 
+            of the model. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">module</span><span class="s2">,</span>
+        <span class="s1">method</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">variables</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s5"># Late import to only require Flax when this is used.</span>
+        <span class="s0">from </span><span class="s1">flax</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">scope </span><span class="s0">as </span><span class="s1">flax_scope</span>
+
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;jax&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;FlaxLayer is only supported with the JAX backend. Current &quot;</span>
+                <span class="s3">f&quot;backend: </span><span class="s0">{</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">()</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">module </span><span class="s2">= </span><span class="s1">module</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">method </span><span class="s2">= </span><span class="s1">method</span>
+
+        <span class="s1">apply_mutable </span><span class="s2">= </span><span class="s1">flax_scope</span><span class="s2">.</span><span class="s1">DenyList</span><span class="s2">([</span><span class="s3">&quot;params&quot;</span><span class="s2">])</span>
+
+        <span class="s0">def </span><span class="s1">apply_with_training</span><span class="s2">(</span><span class="s1">params</span><span class="s2">, </span><span class="s1">state</span><span class="s2">, </span><span class="s1">rng</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">module</span><span class="s2">.</span><span class="s1">apply</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_params_and_state_to_variables</span><span class="s2">(</span><span class="s1">params</span><span class="s2">, </span><span class="s1">state</span><span class="s2">),</span>
+                <span class="s1">inputs</span><span class="s2">,</span>
+                <span class="s1">rngs</span><span class="s2">=</span><span class="s1">rng</span><span class="s2">,</span>
+                <span class="s1">method</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">,</span>
+                <span class="s1">mutable</span><span class="s2">=</span><span class="s1">apply_mutable</span><span class="s2">,</span>
+                <span class="s1">training</span><span class="s2">=</span><span class="s1">training</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">apply_without_training</span><span class="s2">(</span><span class="s1">params</span><span class="s2">, </span><span class="s1">state</span><span class="s2">, </span><span class="s1">rng</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">module</span><span class="s2">.</span><span class="s1">apply</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_params_and_state_to_variables</span><span class="s2">(</span><span class="s1">params</span><span class="s2">, </span><span class="s1">state</span><span class="s2">),</span>
+                <span class="s1">inputs</span><span class="s2">,</span>
+                <span class="s1">rngs</span><span class="s2">=</span><span class="s1">rng</span><span class="s2">,</span>
+                <span class="s1">method</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">,</span>
+                <span class="s1">mutable</span><span class="s2">=</span><span class="s1">apply_mutable</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">init_with_training</span><span class="s2">(</span><span class="s1">rng</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variables_to_params_and_state</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">module</span><span class="s2">.</span><span class="s1">init</span><span class="s2">(</span>
+                    <span class="s1">rng</span><span class="s2">,</span>
+                    <span class="s1">inputs</span><span class="s2">,</span>
+                    <span class="s1">method</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">,</span>
+                    <span class="s1">training</span><span class="s2">=</span><span class="s1">training</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">init_without_training</span><span class="s2">(</span><span class="s1">rng</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variables_to_params_and_state</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">module</span><span class="s2">.</span><span class="s1">init</span><span class="s2">(</span>
+                    <span class="s1">rng</span><span class="s2">,</span>
+                    <span class="s1">inputs</span><span class="s2">,</span>
+                    <span class="s1">method</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s3">&quot;training&quot;</span>
+            <span class="s0">in </span><span class="s1">inspect</span><span class="s2">.</span><span class="s1">signature</span><span class="s2">(</span><span class="s1">method </span><span class="s0">or </span><span class="s1">module</span><span class="s2">.</span><span class="s1">__call__</span><span class="s2">).</span><span class="s1">parameters</span>
+        <span class="s2">):</span>
+            <span class="s1">call_fn</span><span class="s2">, </span><span class="s1">init_fn </span><span class="s2">= </span><span class="s1">apply_with_training</span><span class="s2">, </span><span class="s1">init_with_training</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">call_fn</span><span class="s2">, </span><span class="s1">init_fn </span><span class="s2">= </span><span class="s1">apply_without_training</span><span class="s2">, </span><span class="s1">init_without_training</span>
+
+        <span class="s1">params</span><span class="s2">, </span><span class="s1">state </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variables_to_params_and_state</span><span class="s2">(</span><span class="s1">variables</span><span class="s2">)</span>
+
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">call_fn</span><span class="s2">=</span><span class="s1">call_fn</span><span class="s2">,</span>
+            <span class="s1">init_fn</span><span class="s2">=</span><span class="s1">init_fn</span><span class="s2">,</span>
+            <span class="s1">params</span><span class="s2">=</span><span class="s1">params</span><span class="s2">,</span>
+            <span class="s1">state</span><span class="s2">=</span><span class="s1">state</span><span class="s2">,</span>
+            <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_params_and_state_to_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">params</span><span class="s2">, </span><span class="s1">state</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">params</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">state</span><span class="s2">:</span>
+                <span class="s0">return </span><span class="s2">{**</span><span class="s1">params</span><span class="s2">, **</span><span class="s1">state</span><span class="s2">}</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">return </span><span class="s1">params</span>
+        <span class="s0">elif </span><span class="s1">state</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">state</span>
+        <span class="s0">return </span><span class="s2">{}</span>
+
+    <span class="s0">def </span><span class="s1">_variables_to_params_and_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">variables</span><span class="s2">):</span>
+        <span class="s5"># neither params nor state</span>
+        <span class="s0">if </span><span class="s1">variables </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return None</span><span class="s2">, </span><span class="s0">None</span>
+        <span class="s5"># state only</span>
+        <span class="s0">if </span><span class="s3">&quot;params&quot; </span><span class="s0">not in </span><span class="s1">variables</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">{}, </span><span class="s1">variables</span>
+        <span class="s5"># params only</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">variables</span><span class="s2">) == </span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">variables</span><span class="s2">, {}</span>
+        <span class="s5"># both, we need to split</span>
+        <span class="s1">params </span><span class="s2">= {</span><span class="s3">&quot;params&quot;</span><span class="s2">: </span><span class="s1">variables</span><span class="s2">[</span><span class="s3">&quot;params&quot;</span><span class="s2">]}</span>
+        <span class="s1">state </span><span class="s2">= {</span><span class="s1">k</span><span class="s2">: </span><span class="s1">v </span><span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">variables</span><span class="s2">.</span><span class="s1">items</span><span class="s2">() </span><span class="s0">if </span><span class="s1">k </span><span class="s2">!= </span><span class="s3">&quot;params&quot;</span><span class="s2">}</span>
+        <span class="s0">return </span><span class="s1">params</span><span class="s2">, </span><span class="s1">state</span>
+
+    <span class="s0">def </span><span class="s1">_get_init_rng</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s3">&quot;params&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator</span><span class="s2">.</span><span class="s1">next</span><span class="s2">(),</span>
+            <span class="s3">&quot;dropout&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator</span><span class="s2">.</span><span class="s1">next</span><span class="s2">(),</span>
+        <span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">_get_call_rng</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">training</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">training</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">{</span><span class="s3">&quot;dropout&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator</span><span class="s2">.</span><span class="s1">next</span><span class="s2">()}</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">{}</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config_method </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">, </span><span class="s3">&quot;__self__&quot;</span><span class="s2">)</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">.</span><span class="s1">__self__ </span><span class="s2">== </span><span class="s1">self</span><span class="s2">.</span><span class="s1">module</span>
+        <span class="s2">):</span>
+            <span class="s5"># A method bound to the module is serialized by name.</span>
+            <span class="s1">config_method </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">method</span><span class="s2">.</span><span class="s1">__name__</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s3">&quot;module&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">module</span><span class="s2">),</span>
+            <span class="s3">&quot;method&quot;</span><span class="s2">: </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span><span class="s2">(</span><span class="s1">config_method</span><span class="s2">),</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s5"># call_fn and init_fn come from module, do not save them.</span>
+        <span class="s1">base_config</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;call_fn&quot;</span><span class="s2">)</span>
+        <span class="s1">base_config</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;init_fn&quot;</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">list</span><span class="s2">(</span><span class="s1">base_config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()) + </span><span class="s1">list</span><span class="s2">(</span><span class="s1">config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()))</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s1">module </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;module&quot;</span><span class="s2">])</span>
+        <span class="s1">method </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;method&quot;</span><span class="s2">])</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;method&quot;</span><span class="s2">], </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s5"># Deserialize bound method from the module.</span>
+            <span class="s1">method </span><span class="s2">= </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">module</span><span class="s2">, </span><span class="s1">method</span><span class="s2">)</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;module&quot;</span><span class="s2">] = </span><span class="s1">module</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;method&quot;</span><span class="s2">] = </span><span class="s1">method</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

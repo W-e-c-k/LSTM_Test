@@ -1,0 +1,1599 @@
+<html>
+<head>
+<title>confusion_metrics.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+confusion_metrics.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">activations</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">initializers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">metrics </span><span class="s0">import </span><span class="s1">metrics_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">.</span><span class="s1">metric </span><span class="s0">import </span><span class="s1">Metric</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">python_utils </span><span class="s0">import </span><span class="s1">to_list</span>
+
+
+<span class="s0">class </span><span class="s1">_ConfusionMatrixConditionCount</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Calculates the number of the given confusion matrix condition. 
+ 
+    Args: 
+        confusion_matrix_cond: One of `metrics_utils.ConfusionMatrix` 
+            conditions. 
+        thresholds: (Optional) Defaults to `0.5`. A float value or a python list 
+            / tuple of float threshold values in `[0, 1]`. A threshold is 
+            compared with prediction values to determine the truth value of 
+            predictions (i.e., above the threshold is `True`, below is `False`). 
+            One metric value is generated for each threshold value. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">confusion_matrix_cond</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_confusion_matrix_cond </span><span class="s2">= </span><span class="s1">confusion_matrix_cond</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">init_thresholds </span><span class="s2">= </span><span class="s1">thresholds</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds </span><span class="s2">= </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">parse_init_thresholds</span><span class="s2">(</span>
+            <span class="s1">thresholds</span><span class="s2">, </span><span class="s1">default_threshold</span><span class="s2">=</span><span class="s4">0.5</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= (</span>
+            <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">is_evenly_distributed_thresholds</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">accumulator </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;accumulator&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Accumulates the metric statistics. 
+ 
+        Args: 
+            y_true: The ground truth values. 
+            y_pred: The predicted values. 
+            sample_weight: Optional weighting of each example. Defaults to `1`. 
+                Can be a tensor whose rank is either 0, or the same rank as 
+                `y_true`, and must be broadcastable to `y_true`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">update_confusion_matrix_variables</span><span class="s2">(</span>
+            <span class="s2">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_confusion_matrix_cond</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">accumulator</span><span class="s2">},</span>
+            <span class="s1">y_true</span><span class="s2">,</span>
+            <span class="s1">y_pred</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">thresholds_distributed_evenly</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly</span><span class="s2">,</span>
+            <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">) == </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s1">result </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">accumulator</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">result </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">accumulator</span>
+        <span class="s0">return </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">result</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span><span class="s5">&quot;thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">init_thresholds</span><span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.FalsePositives&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">FalsePositives</span><span class="s2">(</span><span class="s1">_ConfusionMatrixConditionCount</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Calculates the number of false positives. 
+ 
+    If `sample_weight` is given, calculates the sum of the weights of 
+    false positives. This metric creates one local variable, `accumulator` 
+    that is used to keep track of the number of false positives. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    Args: 
+        thresholds: (Optional) Defaults to `0.5`. A float value, or a Python 
+            list/tuple of float threshold values in `[0, 1]`. A threshold is 
+            compared with prediction values to determine the truth value of 
+            predictions (i.e., above the threshold is `True`, below is `False`). 
+            If used with a loss function that sets `from_logits=True` (i.e. no 
+            sigmoid applied to predictions), `thresholds` should be set to 0. 
+            One metric value is generated for each threshold value. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Examples: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.FalsePositives() 
+    &gt;&gt;&gt; m.update_state([0, 1, 0, 0], [0, 0, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    2.0 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 1, 0, 0], [0, 0, 1, 1], sample_weight=[0, 0, 1, 0]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">confusion_matrix_cond</span><span class="s2">=</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.FalseNegatives&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">FalseNegatives</span><span class="s2">(</span><span class="s1">_ConfusionMatrixConditionCount</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Calculates the number of false negatives. 
+ 
+    If `sample_weight` is given, calculates the sum of the weights of 
+    false negatives. This metric creates one local variable, `accumulator` 
+    that is used to keep track of the number of false negatives. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    Args: 
+        thresholds: (Optional) Defaults to `0.5`. A float value, or a Python 
+            list/tuple of float threshold values in `[0, 1]`. A threshold is 
+            compared with prediction values to determine the truth value of 
+            predictions (i.e., above the threshold is `True`, below is `False`). 
+            If used with a loss function that sets `from_logits=True` (i.e. no 
+            sigmoid applied to predictions), `thresholds` should be set to 0. 
+            One metric value is generated for each threshold value. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.FalseNegatives() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [0, 1, 0, 0]) 
+    &gt;&gt;&gt; m.result() 
+    2.0 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [0, 1, 0, 0], sample_weight=[0, 0, 1, 0]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">confusion_matrix_cond</span><span class="s2">=</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.TrueNegatives&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">TrueNegatives</span><span class="s2">(</span><span class="s1">_ConfusionMatrixConditionCount</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Calculates the number of true negatives. 
+ 
+    If `sample_weight` is given, calculates the sum of the weights of 
+    true negatives. This metric creates one local variable, `accumulator` 
+    that is used to keep track of the number of true negatives. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    Args: 
+        thresholds: (Optional) Defaults to `0.5`. A float value, or a Python 
+            list/tuple of float threshold values in `[0, 1]`. A threshold is 
+            compared with prediction values to determine the truth value of 
+            predictions (i.e., above the threshold is `True`, below is `False`). 
+            If used with a loss function that sets `from_logits=True` (i.e. no 
+            sigmoid applied to predictions), `thresholds` should be set to 0. 
+            One metric value is generated for each threshold value. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.TrueNegatives() 
+    &gt;&gt;&gt; m.update_state([0, 1, 0, 0], [1, 1, 0, 0]) 
+    &gt;&gt;&gt; m.result() 
+    2.0 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 1, 0, 0], [1, 1, 0, 0], sample_weight=[0, 0, 1, 0]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">confusion_matrix_cond</span><span class="s2">=</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.TruePositives&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">TruePositives</span><span class="s2">(</span><span class="s1">_ConfusionMatrixConditionCount</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Calculates the number of true positives. 
+ 
+    If `sample_weight` is given, calculates the sum of the weights of 
+    true positives. This metric creates one local variable, `true_positives` 
+    that is used to keep track of the number of true positives. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    Args: 
+        thresholds: (Optional) Defaults to `0.5`. A float value, or a Python 
+            list/tuple of float threshold values in `[0, 1]`. A threshold is 
+            compared with prediction values to determine the truth value of 
+            predictions (i.e., above the threshold is `True`, below is `False`). 
+            If used with a loss function that sets `from_logits=True` (i.e. no 
+            sigmoid applied to predictions), `thresholds` should be set to 0. 
+            One metric value is generated for each threshold value. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.TruePositives() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [1, 0, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    2.0 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [1, 0, 1, 1], sample_weight=[0, 0, 1, 0]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">confusion_matrix_cond</span><span class="s2">=</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.Precision&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">Precision</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes the precision of the predictions with respect to the labels. 
+ 
+    The metric creates two local variables, `true_positives` and 
+    `false_positives` that are used to compute the precision. This value is 
+    ultimately returned as `precision`, an idempotent operation that simply 
+    divides `true_positives` by the sum of `true_positives` and 
+    `false_positives`. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    If `top_k` is set, we'll calculate precision as how often on average a class 
+    among the top-k classes with the highest predicted values of a batch entry 
+    is correct and can be found in the label for that entry. 
+ 
+    If `class_id` is specified, we calculate precision by considering only the 
+    entries in the batch for which `class_id` is above the threshold and/or in 
+    the top-k highest predictions, and computing the fraction of them for which 
+    `class_id` is indeed a correct label. 
+ 
+    Args: 
+        thresholds: (Optional) A float value, or a Python list/tuple of float 
+            threshold values in `[0, 1]`. A threshold is compared with 
+            prediction values to determine the truth value of predictions (i.e., 
+            above the threshold is `True`, below is `False`). If used with a 
+            loss function that sets `from_logits=True` (i.e. no sigmoid applied 
+            to predictions), `thresholds` should be set to 0. One metric value 
+            is generated for each threshold value. If neither `thresholds` nor 
+            `top_k` are set, the default is to calculate precision with 
+            `thresholds=0.5`. 
+        top_k: (Optional) Unset by default. An int value specifying the top-k 
+            predictions to consider when calculating precision. 
+        class_id: (Optional) Integer class ID for which we want binary metrics. 
+            This must be in the half-open interval `[0, num_classes)`, where 
+            `num_classes` is the last dimension of predictions. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.Precision() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [1, 0, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    0.6666667 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [1, 0, 1, 1], sample_weight=[0, 0, 1, 0]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+ 
+    &gt;&gt;&gt; # With top_k=2, it will calculate precision over y_true[:2] 
+    &gt;&gt;&gt; # and y_pred[:2] 
+    &gt;&gt;&gt; m = keras.metrics.Precision(top_k=2) 
+    &gt;&gt;&gt; m.update_state([0, 0, 1, 1], [1, 1, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    0.0 
+ 
+    &gt;&gt;&gt; # With top_k=4, it will calculate precision over y_true[:4] 
+    &gt;&gt;&gt; # and y_pred[:4] 
+    &gt;&gt;&gt; m = keras.metrics.Precision(top_k=4) 
+    &gt;&gt;&gt; m.update_state([0, 0, 1, 1], [1, 1, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    0.5 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    model.compile(optimizer='sgd', 
+                  loss='binary_crossentropy', 
+                  metrics=[keras.metrics.Precision()]) 
+    ``` 
+ 
+    Usage with a loss with `from_logits=True`: 
+ 
+    ```python 
+    model.compile(optimizer='adam', 
+                  loss=keras.losses.BinaryCrossentropy(from_logits=True), 
+                  metrics=[keras.metrics.Precision(thresholds=0)]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">top_k</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s6"># Metric should be maximized during optimization.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_direction </span><span class="s2">= </span><span class="s5">&quot;up&quot;</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">init_thresholds </span><span class="s2">= </span><span class="s1">thresholds</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">top_k </span><span class="s2">= </span><span class="s1">top_k</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">class_id </span><span class="s2">= </span><span class="s1">class_id</span>
+
+        <span class="s1">default_threshold </span><span class="s2">= </span><span class="s4">0.5 </span><span class="s0">if </span><span class="s1">top_k </span><span class="s0">is None else </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">NEG_INF</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds </span><span class="s2">= </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">parse_init_thresholds</span><span class="s2">(</span>
+            <span class="s1">thresholds</span><span class="s2">, </span><span class="s1">default_threshold</span><span class="s2">=</span><span class="s1">default_threshold</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= (</span>
+            <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">is_evenly_distributed_thresholds</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;true_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;false_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Accumulates true positive and false positive statistics. 
+ 
+        Args: 
+            y_true: The ground truth values, with the same dimensions as 
+                `y_pred`. Will be cast to `bool`. 
+            y_pred: The predicted values. Each element must be in the range 
+                `[0, 1]`. 
+            sample_weight: Optional weighting of each example. Defaults to `1`. 
+                Can be a tensor whose rank is either 0, or the same rank as 
+                `y_true`, and must be broadcastable to `y_true`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">update_confusion_matrix_variables</span><span class="s2">(</span>
+            <span class="s2">{</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+            <span class="s2">},</span>
+            <span class="s1">y_true</span><span class="s2">,</span>
+            <span class="s1">y_pred</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">thresholds_distributed_evenly</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly</span><span class="s2">,</span>
+            <span class="s1">top_k</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">top_k</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">result </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">result</span><span class="s2">[</span><span class="s4">0</span><span class="s2">] </span><span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">) == </span><span class="s4">1 </span><span class="s0">else </span><span class="s1">result</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">to_list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">init_thresholds</span><span class="s2">,</span>
+            <span class="s5">&quot;top_k&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">top_k</span><span class="s2">,</span>
+            <span class="s5">&quot;class_id&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_id</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.Recall&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">Recall</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes the recall of the predictions with respect to the labels. 
+ 
+    This metric creates two local variables, `true_positives` and 
+    `false_negatives`, that are used to compute the recall. This value is 
+    ultimately returned as `recall`, an idempotent operation that simply divides 
+    `true_positives` by the sum of `true_positives` and `false_negatives`. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    If `top_k` is set, recall will be computed as how often on average a class 
+    among the labels of a batch entry is in the top-k predictions. 
+ 
+    If `class_id` is specified, we calculate recall by considering only the 
+    entries in the batch for which `class_id` is in the label, and computing the 
+    fraction of them for which `class_id` is above the threshold and/or in the 
+    top-k predictions. 
+ 
+    Args: 
+        thresholds: (Optional) A float value, or a Python list/tuple of float 
+            threshold values in `[0, 1]`. A threshold is compared with 
+            prediction values to determine the truth value of predictions (i.e., 
+            above the threshold is `True`, below is `False`). If used with a 
+            loss function that sets `from_logits=True` (i.e. no sigmoid 
+            applied to predictions), `thresholds` should be set to 0. 
+            One metric value is generated for each threshold value. 
+            If neither `thresholds` nor `top_k` are set, 
+            the default is to calculate recall with `thresholds=0.5`. 
+        top_k: (Optional) Unset by default. An int value specifying the top-k 
+            predictions to consider when calculating recall. 
+        class_id: (Optional) Integer class ID for which we want binary metrics. 
+            This must be in the half-open interval `[0, num_classes)`, where 
+            `num_classes` is the last dimension of predictions. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.Recall() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [1, 0, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    0.6666667 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 1, 1, 1], [1, 0, 1, 1], sample_weight=[0, 0, 1, 0]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    model.compile(optimizer='sgd', 
+                  loss='binary_crossentropy', 
+                  metrics=[keras.metrics.Recall()]) 
+    ``` 
+ 
+    Usage with a loss with `from_logits=True`: 
+ 
+    ```python 
+    model.compile(optimizer='adam', 
+                  loss=keras.losses.BinaryCrossentropy(from_logits=True), 
+                  metrics=[keras.metrics.Recall(thresholds=0)]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">top_k</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s6"># Metric should be maximized during optimization.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_direction </span><span class="s2">= </span><span class="s5">&quot;up&quot;</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">init_thresholds </span><span class="s2">= </span><span class="s1">thresholds</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">top_k </span><span class="s2">= </span><span class="s1">top_k</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">class_id </span><span class="s2">= </span><span class="s1">class_id</span>
+
+        <span class="s1">default_threshold </span><span class="s2">= </span><span class="s4">0.5 </span><span class="s0">if </span><span class="s1">top_k </span><span class="s0">is None else </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">NEG_INF</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds </span><span class="s2">= </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">parse_init_thresholds</span><span class="s2">(</span>
+            <span class="s1">thresholds</span><span class="s2">, </span><span class="s1">default_threshold</span><span class="s2">=</span><span class="s1">default_threshold</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= (</span>
+            <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">is_evenly_distributed_thresholds</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;true_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;false_negatives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Accumulates true positive and false negative statistics. 
+ 
+        Args: 
+            y_true: The ground truth values, with the same dimensions as 
+                `y_pred`. Will be cast to `bool`. 
+            y_pred: The predicted values. Each element must be in the range 
+                `[0, 1]`. 
+            sample_weight: Optional weighting of each example. Defaults to `1`. 
+                Can be a tensor whose rank is either 0, or the same rank as 
+                `y_true`, and must be broadcastable to `y_true`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">update_confusion_matrix_variables</span><span class="s2">(</span>
+            <span class="s2">{</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+            <span class="s2">},</span>
+            <span class="s1">y_true</span><span class="s2">,</span>
+            <span class="s1">y_pred</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">thresholds_distributed_evenly</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly</span><span class="s2">,</span>
+            <span class="s1">top_k</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">top_k</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">result </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">result</span><span class="s2">[</span><span class="s4">0</span><span class="s2">] </span><span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">) == </span><span class="s4">1 </span><span class="s0">else </span><span class="s1">result</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">to_list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">init_thresholds</span><span class="s2">,</span>
+            <span class="s5">&quot;top_k&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">top_k</span><span class="s2">,</span>
+            <span class="s5">&quot;class_id&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_id</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s0">class </span><span class="s1">SensitivitySpecificityBase</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Abstract base class for computing sensitivity and specificity. 
+ 
+    For additional information about specificity and sensitivity, see 
+    [the following](https://en.wikipedia.org/wiki/Sensitivity_and_specificity). 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">num_thresholds</span><span class="s2">=</span><span class="s4">200</span><span class="s2">, </span><span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s6"># Metric should be maximized during optimization.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_direction </span><span class="s2">= </span><span class="s5">&quot;up&quot;</span>
+
+        <span class="s0">if </span><span class="s1">num_thresholds </span><span class="s2">&lt;= </span><span class="s4">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Argument `num_thresholds` must be an integer &gt; 0. &quot;</span>
+                <span class="s5">f&quot;Received: num_thresholds=</span><span class="s0">{</span><span class="s1">num_thresholds</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">value </span><span class="s2">= </span><span class="s1">value</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">class_id </span><span class="s2">= </span><span class="s1">class_id</span>
+
+        <span class="s6"># Compute `num_thresholds` thresholds in [0, 1]</span>
+        <span class="s0">if </span><span class="s1">num_thresholds </span><span class="s2">== </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds </span><span class="s2">= [</span><span class="s4">0.5</span><span class="s2">]</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">thresholds </span><span class="s2">= [</span>
+                <span class="s2">(</span><span class="s1">i </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">) * </span><span class="s4">1.0 </span><span class="s2">/ (</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">)</span>
+                <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">2</span><span class="s2">)</span>
+            <span class="s2">]</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds </span><span class="s2">= [</span><span class="s4">0.0</span><span class="s2">] + </span><span class="s1">thresholds </span><span class="s2">+ [</span><span class="s4">1.0</span><span class="s2">]</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= </span><span class="s0">True</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;true_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;false_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;true_negatives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">),),</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;false_negatives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Accumulates confusion matrix statistics. 
+ 
+        Args: 
+            y_true: The ground truth values. 
+            y_pred: The predicted values. 
+            sample_weight: Optional weighting of each example. Defaults to `1`. 
+                Can be a tensor whose rank is either 0, or the same rank as 
+                `y_true`, and must be broadcastable to `y_true`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">update_confusion_matrix_variables</span><span class="s2">(</span>
+            <span class="s2">{</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+            <span class="s2">},</span>
+            <span class="s1">y_true</span><span class="s2">,</span>
+            <span class="s1">y_pred</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">thresholds_distributed_evenly</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">num_thresholds</span><span class="s2">,)))</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span><span class="s5">&quot;class_id&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_id</span><span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">_find_max_under_constraint</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">constrained</span><span class="s2">, </span><span class="s1">dependent</span><span class="s2">, </span><span class="s1">predicate</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Returns the maximum of dependent_statistic that satisfies the 
+        constraint. 
+ 
+        Args: 
+            constrained: Over these values the constraint is specified. A rank-1 
+                tensor. 
+            dependent: From these values the maximum that satiesfies the 
+                constraint is selected. Values in this tensor and in 
+                `constrained` are linked by having the same threshold at each 
+                position, hence this tensor must have the same shape. 
+            predicate: A binary boolean functor to be applied to arguments 
+                `constrained` and `self.value`, e.g. `ops.greater`. 
+ 
+        Returns: 
+            maximal dependent value, if no value satisfies the constraint 0.0. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">feasible </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">nonzero</span><span class="s2">(</span><span class="s1">predicate</span><span class="s2">(</span><span class="s1">constrained</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">value</span><span class="s2">))</span>
+        <span class="s1">feasible_exists </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">greater</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">size</span><span class="s2">(</span><span class="s1">feasible</span><span class="s2">), </span><span class="s4">0</span><span class="s2">)</span>
+        <span class="s1">max_dependent </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">max</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">take</span><span class="s2">(</span><span class="s1">dependent</span><span class="s2">, </span><span class="s1">feasible</span><span class="s2">), </span><span class="s1">initial</span><span class="s2">=</span><span class="s4">0</span><span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">feasible_exists</span><span class="s2">, </span><span class="s1">max_dependent</span><span class="s2">, </span><span class="s4">0.0</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.SensitivityAtSpecificity&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">SensitivityAtSpecificity</span><span class="s2">(</span><span class="s1">SensitivitySpecificityBase</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes best sensitivity where specificity is &gt;= specified value. 
+ 
+    `Sensitivity` measures the proportion of actual positives that are correctly 
+    identified as such `(tp / (tp + fn))`. 
+    `Specificity` measures the proportion of actual negatives that are correctly 
+    identified as such `(tn / (tn + fp))`. 
+ 
+    This metric creates four local variables, `true_positives`, 
+    `true_negatives`, `false_positives` and `false_negatives` that are used to 
+    compute the sensitivity at the given specificity. The threshold for the 
+    given specificity value is computed and used to evaluate the corresponding 
+    sensitivity. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    If `class_id` is specified, we calculate precision by considering only the 
+    entries in the batch for which `class_id` is above the threshold 
+    predictions, and computing the fraction of them for which `class_id` is 
+    indeed a correct label. 
+ 
+    For additional information about specificity and sensitivity, see 
+    [the following](https://en.wikipedia.org/wiki/Sensitivity_and_specificity). 
+ 
+    Args: 
+        specificity: A scalar value in range `[0, 1]`. 
+        num_thresholds: (Optional) Defaults to 200. The number of thresholds to 
+            use for matching the given specificity. 
+        class_id: (Optional) Integer class ID for which we want binary metrics. 
+            This must be in the half-open interval `[0, num_classes)`, where 
+            `num_classes` is the last dimension of predictions. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.SensitivityAtSpecificity(0.5) 
+    &gt;&gt;&gt; m.update_state([0, 0, 0, 1, 1], [0, 0.3, 0.8, 0.3, 0.8]) 
+    &gt;&gt;&gt; m.result() 
+    0.5 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 0, 0, 1, 1], [0, 0.3, 0.8, 0.3, 0.8], 
+    ...                sample_weight=[1, 1, 2, 2, 1]) 
+    &gt;&gt;&gt; m.result() 
+    0.333333 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    model.compile( 
+        optimizer='sgd', 
+        loss='binary_crossentropy', 
+        metrics=[keras.metrics.SensitivityAtSpecificity()]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">specificity</span><span class="s2">,</span>
+        <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s4">200</span><span class="s2">,</span>
+        <span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">specificity </span><span class="s2">&lt; </span><span class="s4">0 </span><span class="s0">or </span><span class="s1">specificity </span><span class="s2">&gt; </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Argument `specificity` must be in the range [0, 1]. &quot;</span>
+                <span class="s5">f&quot;Received: specificity=</span><span class="s0">{</span><span class="s1">specificity</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">specificity </span><span class="s2">= </span><span class="s1">specificity</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">num_thresholds</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">specificity</span><span class="s2">,</span>
+            <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">sensitivities </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">specificities </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_find_max_under_constraint</span><span class="s2">(</span>
+            <span class="s1">specificities</span><span class="s2">, </span><span class="s1">sensitivities</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">greater_equal</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;num_thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s5">&quot;specificity&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">specificity</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.SpecificityAtSensitivity&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">SpecificityAtSensitivity</span><span class="s2">(</span><span class="s1">SensitivitySpecificityBase</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes best specificity where sensitivity is &gt;= specified value. 
+ 
+    `Sensitivity` measures the proportion of actual positives that are correctly 
+    identified as such `(tp / (tp + fn))`. 
+    `Specificity` measures the proportion of actual negatives that are correctly 
+    identified as such `(tn / (tn + fp))`. 
+ 
+    This metric creates four local variables, `true_positives`, 
+    `true_negatives`, `false_positives` and `false_negatives` that are used to 
+    compute the specificity at the given sensitivity. The threshold for the 
+    given sensitivity value is computed and used to evaluate the corresponding 
+    specificity. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    If `class_id` is specified, we calculate precision by considering only the 
+    entries in the batch for which `class_id` is above the threshold 
+    predictions, and computing the fraction of them for which `class_id` is 
+    indeed a correct label. 
+ 
+    For additional information about specificity and sensitivity, see 
+    [the following](https://en.wikipedia.org/wiki/Sensitivity_and_specificity). 
+ 
+    Args: 
+        sensitivity: A scalar value in range `[0, 1]`. 
+        num_thresholds: (Optional) Defaults to 200. The number of thresholds to 
+            use for matching the given sensitivity. 
+        class_id: (Optional) Integer class ID for which we want binary metrics. 
+            This must be in the half-open interval `[0, num_classes)`, where 
+            `num_classes` is the last dimension of predictions. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.SpecificityAtSensitivity(0.5) 
+    &gt;&gt;&gt; m.update_state([0, 0, 0, 1, 1], [0, 0.3, 0.8, 0.3, 0.8]) 
+    &gt;&gt;&gt; m.result() 
+    0.66666667 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 0, 0, 1, 1], [0, 0.3, 0.8, 0.3, 0.8], 
+    ...                sample_weight=[1, 1, 2, 2, 2]) 
+    &gt;&gt;&gt; m.result() 
+    0.5 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    model.compile( 
+        optimizer='sgd', 
+        loss='binary_crossentropy', 
+        metrics=[keras.metrics.SpecificityAtSensitivity()]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">sensitivity</span><span class="s2">,</span>
+        <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s4">200</span><span class="s2">,</span>
+        <span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">sensitivity </span><span class="s2">&lt; </span><span class="s4">0 </span><span class="s0">or </span><span class="s1">sensitivity </span><span class="s2">&gt; </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Argument `sensitivity` must be in the range [0, 1]. &quot;</span>
+                <span class="s5">f&quot;Received: sensitivity=</span><span class="s0">{</span><span class="s1">sensitivity</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">sensitivity </span><span class="s2">= </span><span class="s1">sensitivity</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">num_thresholds</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">sensitivity</span><span class="s2">,</span>
+            <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">sensitivities </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">specificities </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_find_max_under_constraint</span><span class="s2">(</span>
+            <span class="s1">sensitivities</span><span class="s2">, </span><span class="s1">specificities</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">greater_equal</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;num_thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s5">&quot;sensitivity&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">sensitivity</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.PrecisionAtRecall&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">PrecisionAtRecall</span><span class="s2">(</span><span class="s1">SensitivitySpecificityBase</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes best precision where recall is &gt;= specified value. 
+ 
+    This metric creates four local variables, `true_positives`, 
+    `true_negatives`, `false_positives` and `false_negatives` that are used to 
+    compute the precision at the given recall. The threshold for the given 
+    recall value is computed and used to evaluate the corresponding precision. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    If `class_id` is specified, we calculate precision by considering only the 
+    entries in the batch for which `class_id` is above the threshold 
+    predictions, and computing the fraction of them for which `class_id` is 
+    indeed a correct label. 
+ 
+    Args: 
+        recall: A scalar value in range `[0, 1]`. 
+        num_thresholds: (Optional) Defaults to 200. The number of thresholds to 
+            use for matching the given recall. 
+        class_id: (Optional) Integer class ID for which we want binary metrics. 
+            This must be in the half-open interval `[0, num_classes)`, where 
+            `num_classes` is the last dimension of predictions. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.PrecisionAtRecall(0.5) 
+    &gt;&gt;&gt; m.update_state([0, 0, 0, 1, 1], [0, 0.3, 0.8, 0.3, 0.8]) 
+    &gt;&gt;&gt; m.result() 
+    0.5 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 0, 0, 1, 1], [0, 0.3, 0.8, 0.3, 0.8], 
+    ...                sample_weight=[2, 2, 2, 1, 1]) 
+    &gt;&gt;&gt; m.result() 
+    0.33333333 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    model.compile( 
+        optimizer='sgd', 
+        loss='binary_crossentropy', 
+        metrics=[keras.metrics.PrecisionAtRecall(recall=0.8)]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">recall</span><span class="s2">, </span><span class="s1">num_thresholds</span><span class="s2">=</span><span class="s4">200</span><span class="s2">, </span><span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">recall </span><span class="s2">&lt; </span><span class="s4">0 </span><span class="s0">or </span><span class="s1">recall </span><span class="s2">&gt; </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Argument `recall` must be in the range [0, 1]. &quot;</span>
+                <span class="s5">f&quot;Received: recall=</span><span class="s0">{</span><span class="s1">recall</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recall </span><span class="s2">= </span><span class="s1">recall</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">num_thresholds</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">value</span><span class="s2">=</span><span class="s1">recall</span><span class="s2">,</span>
+            <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">recalls </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">precisions </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_find_max_under_constraint</span><span class="s2">(</span>
+            <span class="s1">recalls</span><span class="s2">, </span><span class="s1">precisions</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">greater_equal</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span><span class="s5">&quot;num_thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s5">&quot;recall&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recall</span><span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.RecallAtPrecision&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">RecallAtPrecision</span><span class="s2">(</span><span class="s1">SensitivitySpecificityBase</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes best recall where precision is &gt;= specified value. 
+ 
+    For a given score-label-distribution the required precision might not 
+    be achievable, in this case 0.0 is returned as recall. 
+ 
+    This metric creates four local variables, `true_positives`, 
+    `true_negatives`, `false_positives` and `false_negatives` that are used to 
+    compute the recall at the given precision. The threshold for the given 
+    precision value is computed and used to evaluate the corresponding recall. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    If `class_id` is specified, we calculate precision by considering only the 
+    entries in the batch for which `class_id` is above the threshold 
+    predictions, and computing the fraction of them for which `class_id` is 
+    indeed a correct label. 
+ 
+    Args: 
+        precision: A scalar value in range `[0, 1]`. 
+        num_thresholds: (Optional) Defaults to 200. The number of thresholds 
+            to use for matching the given precision. 
+        class_id: (Optional) Integer class ID for which we want binary metrics. 
+            This must be in the half-open interval `[0, num_classes)`, where 
+            `num_classes` is the last dimension of predictions. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.RecallAtPrecision(0.8) 
+    &gt;&gt;&gt; m.update_state([0, 0, 1, 1], [0, 0.5, 0.3, 0.9]) 
+    &gt;&gt;&gt; m.result() 
+    0.5 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 0, 1, 1], [0, 0.5, 0.3, 0.9], 
+    ...                sample_weight=[1, 0, 0, 1]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    model.compile( 
+        optimizer='sgd', 
+        loss='binary_crossentropy', 
+        metrics=[keras.metrics.RecallAtPrecision(precision=0.8)]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">precision</span><span class="s2">,</span>
+        <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s4">200</span><span class="s2">,</span>
+        <span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">precision </span><span class="s2">&lt; </span><span class="s4">0 </span><span class="s0">or </span><span class="s1">precision </span><span class="s2">&gt; </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Argument `precision` must be in the range [0, 1]. &quot;</span>
+                <span class="s5">f&quot;Received: precision=</span><span class="s0">{</span><span class="s1">precision</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">precision </span><span class="s2">= </span><span class="s1">precision</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">num_thresholds</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">value</span><span class="s2">=</span><span class="s1">precision</span><span class="s2">,</span>
+            <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s1">class_id</span><span class="s2">=</span><span class="s1">class_id</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">recalls </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">precisions </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_find_max_under_constraint</span><span class="s2">(</span>
+            <span class="s1">precisions</span><span class="s2">, </span><span class="s1">recalls</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">greater_equal</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;num_thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s5">&quot;precision&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">precision</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.metrics.AUC&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">AUC</span><span class="s2">(</span><span class="s1">Metric</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Approximates the AUC (Area under the curve) of the ROC or PR curves. 
+ 
+    The AUC (Area under the curve) of the ROC (Receiver operating 
+    characteristic; default) or PR (Precision Recall) curves are quality 
+    measures of binary classifiers. Unlike the accuracy, and like cross-entropy 
+    losses, ROC-AUC and PR-AUC evaluate all the operational points of a model. 
+ 
+    This class approximates AUCs using a Riemann sum. During the metric 
+    accumulation phrase, predictions are accumulated within predefined buckets 
+    by value. The AUC is then computed by interpolating per-bucket averages. 
+    These buckets define the evaluated operational points. 
+ 
+    This metric creates four local variables, `true_positives`, 
+    `true_negatives`, `false_positives` and `false_negatives` that are used to 
+    compute the AUC.  To discretize the AUC curve, a linearly spaced set of 
+    thresholds is used to compute pairs of recall and precision values. The area 
+    under the ROC-curve is therefore computed using the height of the recall 
+    values by the false positive rate, while the area under the PR-curve is the 
+    computed using the height of the precision values by the recall. 
+ 
+    This value is ultimately returned as `auc`, an idempotent operation that 
+    computes the area under a discretized curve of precision versus recall 
+    values (computed using the aforementioned variables). The `num_thresholds` 
+    variable controls the degree of discretization with larger numbers of 
+    thresholds more closely approximating the true AUC. The quality of the 
+    approximation may vary dramatically depending on `num_thresholds`. The 
+    `thresholds` parameter can be used to manually specify thresholds which 
+    split the predictions more evenly. 
+ 
+    For a best approximation of the real AUC, `predictions` should be 
+    distributed approximately uniformly in the range `[0, 1]` (if 
+    `from_logits=False`). The quality of the AUC approximation may be poor if 
+    this is not the case. Setting `summation_method` to 'minoring' or 'majoring' 
+    can help quantify the error in the approximation by providing lower or upper 
+    bound estimate of the AUC. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use `sample_weight` of 0 to mask values. 
+ 
+    Args: 
+        num_thresholds: (Optional) The number of thresholds to 
+            use when discretizing the roc curve. Values must be &gt; 1. 
+            Defaults to `200`. 
+        curve: (Optional) Specifies the name of the curve to be computed, 
+            `'ROC'` (default) or `'PR'` for the Precision-Recall-curve. 
+        summation_method: (Optional) Specifies the [Riemann summation method]( 
+              https://en.wikipedia.org/wiki/Riemann_sum) used. 
+              'interpolation' (default) applies mid-point summation scheme for 
+              `ROC`.  For PR-AUC, interpolates (true/false) positives but not 
+              the ratio that is precision (see Davis &amp; Goadrich 2006 for 
+              details); 'minoring' applies left summation for increasing 
+              intervals and right summation for decreasing intervals; 'majoring' 
+              does the opposite. 
+        name: (Optional) string name of the metric instance. 
+        dtype: (Optional) data type of the metric result. 
+        thresholds: (Optional) A list of floating point values to use as the 
+            thresholds for discretizing the curve. If set, the `num_thresholds` 
+            parameter is ignored. Values should be in `[0, 1]`. Endpoint 
+            thresholds equal to {`-epsilon`, `1+epsilon`} for a small positive 
+            epsilon value will be automatically included with these to correctly 
+            handle predictions equal to exactly 0 or 1. 
+        multi_label: boolean indicating whether multilabel data should be 
+            treated as such, wherein AUC is computed separately for each label 
+            and then averaged across labels, or (when `False`) if the data 
+            should be flattened into a single label before AUC computation. In 
+            the latter case, when multilabel data is passed to AUC, each 
+            label-prediction pair is treated as an individual data point. Should 
+            be set to `False` for multi-class data. 
+        num_labels: (Optional) The number of labels, used when `multi_label` is 
+            True. If `num_labels` is not specified, then state variables get 
+            created on the first call to `update_state`. 
+        label_weights: (Optional) list, array, or tensor of non-negative weights 
+            used to compute AUCs for multilabel data. When `multi_label` is 
+            True, the weights are applied to the individual label AUCs when they 
+            are averaged to produce the multi-label AUC. When it's False, they 
+            are used to weight the individual label predictions in computing the 
+            confusion matrix on the flattened data. Note that this is unlike 
+            `class_weights` in that `class_weights` weights the example 
+            depending on the value of its label, whereas `label_weights` depends 
+            only on the index of that label before flattening; therefore 
+            `label_weights` should not be used for multi-class data. 
+        from_logits: boolean indicating whether the predictions (`y_pred` in 
+        `update_state`) are probabilities or sigmoid logits. As a rule of thumb, 
+        when using a keras loss, the `from_logits` constructor argument of the 
+        loss should match the AUC `from_logits` constructor argument. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; m = keras.metrics.AUC(num_thresholds=3) 
+    &gt;&gt;&gt; m.update_state([0, 0, 1, 1], [0, 0.5, 0.3, 0.9]) 
+    &gt;&gt;&gt; # threshold values are [0 - 1e-7, 0.5, 1 + 1e-7] 
+    &gt;&gt;&gt; # tp = [2, 1, 0], fp = [2, 0, 0], fn = [0, 1, 2], tn = [0, 2, 2] 
+    &gt;&gt;&gt; # tp_rate = recall = [1, 0.5, 0], fp_rate = [1, 0, 0] 
+    &gt;&gt;&gt; # auc = ((((1 + 0.5) / 2) * (1 - 0)) + (((0.5 + 0) / 2) * (0 - 0))) 
+    &gt;&gt;&gt; #     = 0.75 
+    &gt;&gt;&gt; m.result() 
+    0.75 
+ 
+    &gt;&gt;&gt; m.reset_state() 
+    &gt;&gt;&gt; m.update_state([0, 0, 1, 1], [0, 0.5, 0.3, 0.9], 
+    ...                sample_weight=[1, 0, 0, 1]) 
+    &gt;&gt;&gt; m.result() 
+    1.0 
+ 
+    Usage with `compile()` API: 
+ 
+    ```python 
+    # Reports the AUC of a model outputting a probability. 
+    model.compile(optimizer='sgd', 
+                  loss=keras.losses.BinaryCrossentropy(), 
+                  metrics=[keras.metrics.AUC()]) 
+ 
+    # Reports the AUC of a model outputting a logit. 
+    model.compile(optimizer='sgd', 
+                  loss=keras.losses.BinaryCrossentropy(from_logits=True), 
+                  metrics=[keras.metrics.AUC(from_logits=True)]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">num_thresholds</span><span class="s2">=</span><span class="s4">200</span><span class="s2">,</span>
+        <span class="s1">curve</span><span class="s2">=</span><span class="s5">&quot;ROC&quot;</span><span class="s2">,</span>
+        <span class="s1">summation_method</span><span class="s2">=</span><span class="s5">&quot;interpolation&quot;</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">thresholds</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">multi_label</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">num_labels</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">label_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">from_logits</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6"># Metric should be maximized during optimization.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_direction </span><span class="s2">= </span><span class="s5">&quot;up&quot;</span>
+
+        <span class="s6"># Validate configurations.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">curve</span><span class="s2">, </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span><span class="s2">) </span><span class="s0">and </span><span class="s1">curve </span><span class="s0">not in </span><span class="s1">list</span><span class="s2">(</span>
+            <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f'Invalid `curve` argument value &quot;</span><span class="s0">{</span><span class="s1">curve</span><span class="s0">}</span><span class="s5">&quot;. '</span>
+                <span class="s5">f&quot;Expected one of: </span><span class="s0">{</span><span class="s1">list</span><span class="s2">(</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span><span class="s2">)</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span>
+            <span class="s1">summation_method</span><span class="s2">, </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span>
+        <span class="s2">) </span><span class="s0">and </span><span class="s1">summation_method </span><span class="s0">not in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Invalid `summation_method` &quot;</span>
+                <span class="s5">f'argument value &quot;</span><span class="s0">{</span><span class="s1">summation_method</span><span class="s0">}</span><span class="s5">&quot;. '</span>
+                <span class="s5">f&quot;Expected one of: </span><span class="s0">{</span><span class="s1">list</span><span class="s2">(</span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">)</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s6"># Update properties.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_init_from_thresholds </span><span class="s2">= </span><span class="s1">thresholds </span><span class="s0">is not None</span>
+        <span class="s0">if </span><span class="s1">thresholds </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s6"># If specified, use the supplied thresholds.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">) + </span><span class="s4">2</span>
+            <span class="s1">thresholds </span><span class="s2">= </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= (</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">is_evenly_distributed_thresholds</span><span class="s2">(</span>
+                    <span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">([</span><span class="s4">0.0</span><span class="s2">] + </span><span class="s1">thresholds </span><span class="s2">+ [</span><span class="s4">1.0</span><span class="s2">])</span>
+                <span class="s2">)</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">num_thresholds </span><span class="s2">&lt;= </span><span class="s4">1</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s5">&quot;Argument `num_thresholds` must be an integer &gt; 1. &quot;</span>
+                    <span class="s5">f&quot;Received: num_thresholds=</span><span class="s0">{</span><span class="s1">num_thresholds</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s2">)</span>
+
+            <span class="s6"># Otherwise, linearly interpolate (num_thresholds - 2) thresholds in</span>
+            <span class="s6"># (0, 1).</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">num_thresholds</span>
+            <span class="s1">thresholds </span><span class="s2">= [</span>
+                <span class="s2">(</span><span class="s1">i </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">) * </span><span class="s4">1.0 </span><span class="s2">/ (</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">)</span>
+                <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">2</span><span class="s2">)</span>
+            <span class="s2">]</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly </span><span class="s2">= </span><span class="s0">True</span>
+
+        <span class="s6"># Add an endpoint &quot;threshold&quot; below zero and above one for either</span>
+        <span class="s6"># threshold method to account for floating point imprecisions.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s4">0.0 </span><span class="s2">- </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">()] + </span><span class="s1">thresholds </span><span class="s2">+ [</span><span class="s4">1.0 </span><span class="s2">+ </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">()]</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">curve</span><span class="s2">, </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">curve </span><span class="s2">= </span><span class="s1">curve</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">curve </span><span class="s2">= </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span><span class="s2">.</span><span class="s1">from_str</span><span class="s2">(</span><span class="s1">curve</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">summation_method</span><span class="s2">, </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summation_method </span><span class="s2">= </span><span class="s1">summation_method</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summation_method </span><span class="s2">= </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">from_str</span><span class="s2">(</span>
+                <span class="s1">summation_method</span>
+            <span class="s2">)</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+
+        <span class="s6"># Handle multilabel arguments.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label </span><span class="s2">= </span><span class="s1">multi_label</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_labels </span><span class="s2">= </span><span class="s1">num_labels</span>
+        <span class="s0">if </span><span class="s1">label_weights </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights </span><span class="s2">= </span><span class="s1">label_weights</span>
+
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_from_logits </span><span class="s2">= </span><span class="s1">from_logits</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_built </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">num_labels</span><span class="s2">:</span>
+                <span class="s1">shape </span><span class="s2">= [</span><span class="s0">None</span><span class="s2">, </span><span class="s1">num_labels</span><span class="s2">]</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_build</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">num_labels</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s5">&quot;`num_labels` is needed only when `multi_label` is True.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_build</span><span class="s2">(</span><span class="s0">None</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">thresholds</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;The thresholds used for evaluating AUC.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Initialize TP, FP, TN, and FN tensors, given the shape of the 
+        data.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) != </span><span class="s4">2</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s5">&quot;`y_pred` must have rank 2 when `multi_label=True`. &quot;</span>
+                    <span class="s5">f&quot;Found rank </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">)</span><span class="s0">}</span><span class="s5">. &quot;</span>
+                    <span class="s5">f&quot;Full shape received for `y_pred`: </span><span class="s0">{</span><span class="s1">shape</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_num_labels </span><span class="s2">= </span><span class="s1">shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">variable_shape </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_labels</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">variable_shape </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">]</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_build_input_shape </span><span class="s2">= </span><span class="s1">shape</span>
+        <span class="s6"># Create metric variables</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">variable_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;true_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">variable_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;false_positives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">variable_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;true_negatives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_variable</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">variable_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">Zeros</span><span class="s2">(),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;false_negatives&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Accumulates confusion matrix statistics. 
+ 
+        Args: 
+            y_true: The ground truth values. 
+            y_pred: The predicted values. 
+            sample_weight: Optional weighting of each example. Can 
+                be a tensor whose rank is either 0, or the same rank as 
+                `y_true`, and must be broadcastable to `y_true`. Defaults to 
+                `1`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_built</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_build</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label </span><span class="s0">or </span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights </span><span class="s0">is not None</span><span class="s2">):</span>
+            <span class="s6"># y_true should have shape (number of examples, number of labels).</span>
+            <span class="s1">shapes </span><span class="s2">= [(</span><span class="s1">y_true</span><span class="s2">, (</span><span class="s5">&quot;N&quot;</span><span class="s2">, </span><span class="s5">&quot;L&quot;</span><span class="s2">))]</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">:</span>
+                <span class="s6"># TP, TN, FP, and FN should all have shape</span>
+                <span class="s6"># (number of thresholds, number of labels).</span>
+                <span class="s1">shapes</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span>
+                    <span class="s2">[</span>
+                        <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, (</span><span class="s5">&quot;T&quot;</span><span class="s2">, </span><span class="s5">&quot;L&quot;</span><span class="s2">)),</span>
+                        <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">, (</span><span class="s5">&quot;T&quot;</span><span class="s2">, </span><span class="s5">&quot;L&quot;</span><span class="s2">)),</span>
+                        <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">, (</span><span class="s5">&quot;T&quot;</span><span class="s2">, </span><span class="s5">&quot;L&quot;</span><span class="s2">)),</span>
+                        <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">, (</span><span class="s5">&quot;T&quot;</span><span class="s2">, </span><span class="s5">&quot;L&quot;</span><span class="s2">)),</span>
+                    <span class="s2">]</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s6"># label_weights should be of length equal to the number of</span>
+                <span class="s6"># labels.</span>
+                <span class="s1">shapes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">((</span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span><span class="s2">, (</span><span class="s5">&quot;L&quot;</span><span class="s2">,)))</span>
+
+        <span class="s6"># Only forward label_weights to update_confusion_matrix_variables when</span>
+        <span class="s6"># multi_label is False. Otherwise the averaging of individual label AUCs</span>
+        <span class="s6"># is handled in AUC.result</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s0">None if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label </span><span class="s0">else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_from_logits</span><span class="s2">:</span>
+            <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">sigmoid</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">)</span>
+
+        <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">update_confusion_matrix_variables</span><span class="s2">(</span>
+            <span class="s2">{</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+                <span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">,  </span><span class="s6"># noqa: E501</span>
+            <span class="s2">},</span>
+            <span class="s1">y_true</span><span class="s2">,</span>
+            <span class="s1">y_pred</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds</span><span class="s2">,</span>
+            <span class="s1">thresholds_distributed_evenly</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_thresholds_distributed_evenly</span><span class="s2">,</span>
+            <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+            <span class="s1">multi_label</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">,</span>
+            <span class="s1">label_weights</span><span class="s2">=</span><span class="s1">label_weights</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">interpolate_pr_auc</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Interpolation formula inspired by section 4 of Davis &amp; Goadrich 2006. 
+ 
+        https://www.biostat.wisc.edu/~page/rocpr.pdf 
+ 
+        Note here we derive &amp; use a closed formula not present in the paper 
+        as follows: 
+ 
+            Precision = TP / (TP + FP) = TP / P 
+ 
+        Modeling all of TP (true positive), FP (false positive) and their sum 
+        P = TP + FP (predicted positive) as varying linearly within each 
+        interval [A, B] between successive thresholds, we get 
+ 
+            Precision slope = dTP / dP 
+                            = (TP_B - TP_A) / (P_B - P_A) 
+                            = (TP - TP_A) / (P - P_A) 
+            Precision = (TP_A + slope * (P - P_A)) / P 
+ 
+        The area within the interval is (slope / total_pos_weight) times 
+ 
+            int_A^B{Precision.dP} = int_A^B{(TP_A + slope * (P - P_A)) * dP / P} 
+            int_A^B{Precision.dP} = int_A^B{slope * dP + intercept * dP / P} 
+ 
+        where intercept = TP_A - slope * P_A = TP_B - slope * P_B, resulting in 
+ 
+            int_A^B{Precision.dP} = TP_B - TP_A + intercept * log(P_B / P_A) 
+ 
+        Bringing back the factor (slope / total_pos_weight) we'd put aside, we 
+        get 
+ 
+            slope * [dTP + intercept *  log(P_B / P_A)] / total_pos_weight 
+ 
+        where dTP == TP_B - TP_A. 
+ 
+        Note that when P_A == 0 the above calculation simplifies into 
+ 
+            int_A^B{Precision.dTP} = int_A^B{slope * dTP} 
+                                   = slope * (TP_B - TP_A) 
+ 
+        which is really equivalent to imputing constant precision throughout the 
+        first bucket having &gt;0 true positives. 
+ 
+        Returns: 
+            pr_auc: an approximation of the area under the P-R curve. 
+        &quot;&quot;&quot;</span>
+
+        <span class="s1">dtp </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">subtract</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">],</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:],</span>
+        <span class="s2">)</span>
+        <span class="s1">p </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">)</span>
+        <span class="s1">dp </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">subtract</span><span class="s2">(</span><span class="s1">p</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">], </span><span class="s1">p</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:])</span>
+        <span class="s1">prec_slope </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span><span class="s1">dtp</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">maximum</span><span class="s2">(</span><span class="s1">dp</span><span class="s2">, </span><span class="s4">0</span><span class="s2">))</span>
+        <span class="s1">intercept </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">subtract</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:], </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">prec_slope</span><span class="s2">, </span><span class="s1">p</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:])</span>
+        <span class="s2">)</span>
+
+        <span class="s1">safe_p_ratio </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">logical_and</span><span class="s2">(</span><span class="s1">p</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">] &gt; </span><span class="s4">0</span><span class="s2">, </span><span class="s1">p</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:] &gt; </span><span class="s4">0</span><span class="s2">),</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">], </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">maximum</span><span class="s2">(</span><span class="s1">p</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:], </span><span class="s4">0</span><span class="s2">)</span>
+            <span class="s2">),</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">ones_like</span><span class="s2">(</span><span class="s1">p</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:]),</span>
+        <span class="s2">)</span>
+
+        <span class="s1">pr_auc_increment </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span>
+                <span class="s1">prec_slope</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">dtp</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">intercept</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">log</span><span class="s2">(</span><span class="s1">safe_p_ratio</span><span class="s2">)))),</span>
+            <span class="s2">),</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">maximum</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:]), </span><span class="s4">0</span>
+            <span class="s2">),</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s1">by_label_auc </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">pr_auc_increment</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s6"># Evenly weighted average of the label AUCs.</span>
+                <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">mean</span><span class="s2">(</span><span class="s1">by_label_auc</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s6"># Weighted average of the label AUCs.</span>
+                <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">by_label_auc</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span><span class="s2">)),</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span><span class="s2">),</span>
+                <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">pr_auc_increment</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">curve </span><span class="s2">== </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span><span class="s2">.</span><span class="s1">PR</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">summation_method</span>
+            <span class="s2">== </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">INTERPOLATION</span>
+        <span class="s2">):</span>
+            <span class="s6"># This use case is different and is handled separately.</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">interpolate_pr_auc</span><span class="s2">()</span>
+
+        <span class="s6"># Set `x` and `y` values for the curves based on `curve` config.</span>
+        <span class="s1">recall </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">curve </span><span class="s2">== </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCCurve</span><span class="s2">.</span><span class="s1">ROC</span><span class="s2">:</span>
+            <span class="s1">fp_rate </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">,</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">),</span>
+            <span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">fp_rate</span>
+            <span class="s1">y </span><span class="s2">= </span><span class="s1">recall</span>
+        <span class="s0">else</span><span class="s2">:  </span><span class="s6"># curve == 'PR'.</span>
+            <span class="s1">precision </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">,</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">),</span>
+            <span class="s2">)</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">recall</span>
+            <span class="s1">y </span><span class="s2">= </span><span class="s1">precision</span>
+
+        <span class="s6"># Find the rectangle heights based on `summation_method`.</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summation_method</span>
+            <span class="s2">== </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">INTERPOLATION</span>
+        <span class="s2">):</span>
+            <span class="s6"># Note: the case ('PR', 'interpolation') has been handled above.</span>
+            <span class="s1">heights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">y</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">], </span><span class="s1">y</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:]), </span><span class="s4">2.0</span>
+            <span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">summation_method </span><span class="s2">== </span><span class="s1">metrics_utils</span><span class="s2">.</span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">MINORING</span><span class="s2">:</span>
+            <span class="s1">heights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">minimum</span><span class="s2">(</span><span class="s1">y</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">], </span><span class="s1">y</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:])</span>
+        <span class="s6"># self.summation_method = metrics_utils.AUCSummationMethod.MAJORING:</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">heights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">maximum</span><span class="s2">(</span><span class="s1">y</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">], </span><span class="s1">y</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:])</span>
+
+        <span class="s6"># Sum up the areas of all the rectangles.</span>
+        <span class="s1">riemann_terms </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">subtract</span><span class="s2">(</span><span class="s1">x</span><span class="s2">[: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds </span><span class="s2">- </span><span class="s4">1</span><span class="s2">], </span><span class="s1">x</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:]), </span><span class="s1">heights</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s1">by_label_auc </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">riemann_terms</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s4">0</span><span class="s2">)</span>
+
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s6"># Unweighted average of the label AUCs.</span>
+                <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">mean</span><span class="s2">(</span><span class="s1">by_label_auc</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s6"># Weighted average of the label AUCs.</span>
+                <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">divide_no_nan</span><span class="s2">(</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">by_label_auc</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span><span class="s2">)),</span>
+                    <span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span><span class="s2">),</span>
+                <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">riemann_terms</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_built</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">:</span>
+                <span class="s1">variable_shape </span><span class="s2">= (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_labels</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">variable_shape </span><span class="s2">= (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">,)</span>
+
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">variable_shape</span><span class="s2">))</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">false_positives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">variable_shape</span><span class="s2">))</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">true_negatives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">variable_shape</span><span class="s2">))</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">false_negatives</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">variable_shape</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">label_weights</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;num_thresholds&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s5">&quot;curve&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">curve</span><span class="s2">.</span><span class="s1">value</span><span class="s2">,</span>
+            <span class="s5">&quot;summation_method&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">summation_method</span><span class="s2">.</span><span class="s1">value</span><span class="s2">,</span>
+            <span class="s5">&quot;multi_label&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">multi_label</span><span class="s2">,</span>
+            <span class="s5">&quot;num_labels&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_labels</span><span class="s2">,</span>
+            <span class="s5">&quot;label_weights&quot;</span><span class="s2">: </span><span class="s1">label_weights</span><span class="s2">,</span>
+            <span class="s5">&quot;from_logits&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_from_logits</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s6"># optimization to avoid serializing a large number of generated</span>
+        <span class="s6"># thresholds</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_init_from_thresholds</span><span class="s2">:</span>
+            <span class="s6"># We remove the endpoint thresholds as an inverse of how the</span>
+            <span class="s6"># thresholds were initialized. This ensures that a metric</span>
+            <span class="s6"># initialized from this config has the same thresholds.</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s5">&quot;thresholds&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">thresholds</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:-</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+</pre>
+</body>
+</html>

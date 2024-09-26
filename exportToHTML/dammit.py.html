@@ -1,0 +1,1119 @@
+<html>
+<head>
+<title>dammit.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #cf8e6d;}
+.s6 { color: #2aacb8;}
+.s7 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dammit.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s2">&quot;&quot;&quot;Beautiful Soup bonus library: Unicode, Dammit 
+ 
+This library converts a bytestream to Unicode through any means 
+necessary. It is heavily based on code from Mark Pilgrim's Universal 
+Feed Parser. It works best on XML and HTML, but it does not rewrite the 
+XML or HTML to reflect a new encoding; that's the tree builder's job. 
+&quot;&quot;&quot;</span>
+<span class="s0"># Use of this source code is governed by the MIT license.</span>
+<span class="s1">__license__ </span><span class="s3">= </span><span class="s4">&quot;MIT&quot;</span>
+
+<span class="s5">from </span><span class="s1">html</span><span class="s3">.</span><span class="s1">entities </span><span class="s5">import </span><span class="s1">codepoint2name</span>
+<span class="s5">from </span><span class="s1">collections </span><span class="s5">import </span><span class="s1">defaultdict</span>
+<span class="s5">import </span><span class="s1">codecs</span>
+<span class="s5">import </span><span class="s1">re</span>
+<span class="s5">import </span><span class="s1">logging</span>
+<span class="s5">import </span><span class="s1">string</span>
+
+<span class="s0"># Import a library to autodetect character encodings. We'll support</span>
+<span class="s0"># any of a number of libraries that all support the same API:</span>
+<span class="s0">#</span>
+<span class="s0"># * cchardet</span>
+<span class="s0"># * chardet</span>
+<span class="s0"># * charset-normalizer</span>
+<span class="s1">chardet_module </span><span class="s3">= </span><span class="s5">None</span>
+<span class="s5">try</span><span class="s3">:</span>
+    <span class="s0">#  PyPI package: cchardet</span>
+    <span class="s5">import </span><span class="s1">cchardet </span><span class="s5">as </span><span class="s1">chardet_module</span>
+<span class="s5">except </span><span class="s1">ImportError</span><span class="s3">:</span>
+    <span class="s5">try</span><span class="s3">:</span>
+        <span class="s0">#  Debian package: python-chardet</span>
+        <span class="s0">#  PyPI package: chardet</span>
+        <span class="s5">import </span><span class="s1">chardet </span><span class="s5">as </span><span class="s1">chardet_module</span>
+    <span class="s5">except </span><span class="s1">ImportError</span><span class="s3">:</span>
+        <span class="s5">try</span><span class="s3">:</span>
+            <span class="s0"># PyPI package: charset-normalizer</span>
+            <span class="s5">import </span><span class="s1">charset_normalizer </span><span class="s5">as </span><span class="s1">chardet_module</span>
+        <span class="s5">except </span><span class="s1">ImportError</span><span class="s3">:</span>
+            <span class="s0"># No chardet available.</span>
+            <span class="s1">chardet_module </span><span class="s3">= </span><span class="s5">None</span>
+
+<span class="s5">if </span><span class="s1">chardet_module</span><span class="s3">:</span>
+    <span class="s5">def </span><span class="s1">chardet_dammit</span><span class="s3">(</span><span class="s1">s</span><span class="s3">):</span>
+        <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">s</span><span class="s3">, </span><span class="s1">str</span><span class="s3">):</span>
+            <span class="s5">return None</span>
+        <span class="s5">return </span><span class="s1">chardet_module</span><span class="s3">.</span><span class="s1">detect</span><span class="s3">(</span><span class="s1">s</span><span class="s3">)[</span><span class="s4">'encoding'</span><span class="s3">]</span>
+<span class="s5">else</span><span class="s3">:</span>
+    <span class="s5">def </span><span class="s1">chardet_dammit</span><span class="s3">(</span><span class="s1">s</span><span class="s3">):</span>
+        <span class="s5">return None</span>
+
+<span class="s0"># Build bytestring and Unicode versions of regular expressions for finding</span>
+<span class="s0"># a declared encoding inside an XML or HTML document.</span>
+<span class="s1">xml_encoding </span><span class="s3">= </span><span class="s4">'^</span><span class="s5">\\</span><span class="s4">s*&lt;</span><span class="s5">\\</span><span class="s4">?.*encoding=[</span><span class="s5">\'</span><span class="s4">&quot;](.*?)[</span><span class="s5">\'</span><span class="s4">&quot;].*</span><span class="s5">\\</span><span class="s4">?&gt;'</span>
+<span class="s1">html_meta </span><span class="s3">= </span><span class="s4">'&lt;</span><span class="s5">\\</span><span class="s4">s*meta[^&gt;]+charset</span><span class="s5">\\</span><span class="s4">s*=</span><span class="s5">\\</span><span class="s4">s*[&quot;</span><span class="s5">\'</span><span class="s4">]?([^&gt;]*?)[ /;</span><span class="s5">\'</span><span class="s4">&quot;&gt;]'</span>
+<span class="s1">encoding_res </span><span class="s3">= </span><span class="s1">dict</span><span class="s3">()</span>
+<span class="s1">encoding_res</span><span class="s3">[</span><span class="s1">bytes</span><span class="s3">] = {</span>
+    <span class="s4">'html' </span><span class="s3">: </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s1">html_meta</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">(</span><span class="s4">&quot;ascii&quot;</span><span class="s3">), </span><span class="s1">re</span><span class="s3">.</span><span class="s1">I</span><span class="s3">),</span>
+    <span class="s4">'xml' </span><span class="s3">: </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s1">xml_encoding</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">(</span><span class="s4">&quot;ascii&quot;</span><span class="s3">), </span><span class="s1">re</span><span class="s3">.</span><span class="s1">I</span><span class="s3">),</span>
+<span class="s3">}</span>
+<span class="s1">encoding_res</span><span class="s3">[</span><span class="s1">str</span><span class="s3">] = {</span>
+    <span class="s4">'html' </span><span class="s3">: </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s1">html_meta</span><span class="s3">, </span><span class="s1">re</span><span class="s3">.</span><span class="s1">I</span><span class="s3">),</span>
+    <span class="s4">'xml' </span><span class="s3">: </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s1">xml_encoding</span><span class="s3">, </span><span class="s1">re</span><span class="s3">.</span><span class="s1">I</span><span class="s3">)</span>
+<span class="s3">}</span>
+
+<span class="s5">from </span><span class="s1">html</span><span class="s3">.</span><span class="s1">entities </span><span class="s5">import </span><span class="s1">html5</span>
+
+<span class="s5">class </span><span class="s1">EntitySubstitution</span><span class="s3">(</span><span class="s1">object</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;The ability to substitute XML or HTML entities for certain characters.&quot;&quot;&quot;</span>
+
+    <span class="s5">def </span><span class="s1">_populate_class_variables</span><span class="s3">():</span>
+        <span class="s2">&quot;&quot;&quot;Initialize variables used by this class to manage the plethora of 
+        HTML5 named entities. 
+ 
+        This function returns a 3-tuple containing two dictionaries 
+        and a regular expression: 
+ 
+        unicode_to_name - A mapping of Unicode strings like &quot;⦨&quot; to 
+        entity names like &quot;angmsdaa&quot;. When a single Unicode string has 
+        multiple entity names, we try to choose the most commonly-used 
+        name. 
+ 
+        name_to_unicode: A mapping of entity names like &quot;angmsdaa&quot; to  
+        Unicode strings like &quot;⦨&quot;. 
+ 
+        named_entity_re: A regular expression matching (almost) any 
+        Unicode string that corresponds to an HTML5 named entity. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">unicode_to_name </span><span class="s3">= {}</span>
+        <span class="s1">name_to_unicode </span><span class="s3">= {}</span>
+
+        <span class="s1">short_entities </span><span class="s3">= </span><span class="s1">set</span><span class="s3">()</span>
+        <span class="s1">long_entities_by_first_character </span><span class="s3">= </span><span class="s1">defaultdict</span><span class="s3">(</span><span class="s1">set</span><span class="s3">)</span>
+        
+        <span class="s5">for </span><span class="s1">name_with_semicolon</span><span class="s3">, </span><span class="s1">character </span><span class="s5">in </span><span class="s1">sorted</span><span class="s3">(</span><span class="s1">html5</span><span class="s3">.</span><span class="s1">items</span><span class="s3">()):</span>
+            <span class="s0"># &quot;It is intentional, for legacy compatibility, that many</span>
+            <span class="s0"># code points have multiple character reference names. For</span>
+            <span class="s0"># example, some appear both with and without the trailing</span>
+            <span class="s0"># semicolon, or with different capitalizations.&quot;</span>
+            <span class="s0"># - https://html.spec.whatwg.org/multipage/named-characters.html#named-character-references</span>
+            <span class="s0">#</span>
+            <span class="s0"># The parsers are in charge of handling (or not) character</span>
+            <span class="s0"># references with no trailing semicolon, so we remove the</span>
+            <span class="s0"># semicolon whenever it appears.</span>
+            <span class="s5">if </span><span class="s1">name_with_semicolon</span><span class="s3">.</span><span class="s1">endswith</span><span class="s3">(</span><span class="s4">';'</span><span class="s3">):</span>
+                <span class="s1">name </span><span class="s3">= </span><span class="s1">name_with_semicolon</span><span class="s3">[:-</span><span class="s6">1</span><span class="s3">]</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s1">name </span><span class="s3">= </span><span class="s1">name_with_semicolon</span>
+
+            <span class="s0"># When parsing HTML, we want to recognize any known named</span>
+            <span class="s0"># entity and convert it to a sequence of Unicode</span>
+            <span class="s0"># characters.</span>
+            <span class="s5">if </span><span class="s1">name </span><span class="s5">not in </span><span class="s1">name_to_unicode</span><span class="s3">:</span>
+                <span class="s1">name_to_unicode</span><span class="s3">[</span><span class="s1">name</span><span class="s3">] = </span><span class="s1">character</span>
+
+            <span class="s0"># When _generating_ HTML, we want to recognize special</span>
+            <span class="s0"># character sequences that _could_ be converted to named</span>
+            <span class="s0"># entities.</span>
+            <span class="s1">unicode_to_name</span><span class="s3">[</span><span class="s1">character</span><span class="s3">] = </span><span class="s1">name</span>
+
+            <span class="s0"># We also need to build a regular expression that lets us</span>
+            <span class="s0"># _find_ those characters in output strings so we can</span>
+            <span class="s0"># replace them.</span>
+            <span class="s0">#</span>
+            <span class="s0"># This is tricky, for two reasons.</span>
+
+            <span class="s5">if </span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">character</span><span class="s3">) == </span><span class="s6">1 </span><span class="s5">and </span><span class="s1">ord</span><span class="s3">(</span><span class="s1">character</span><span class="s3">) &lt; </span><span class="s6">128</span>
+                <span class="s5">and </span><span class="s1">character </span><span class="s5">not in </span><span class="s4">'&lt;&gt;&amp;'</span><span class="s3">):</span>
+                <span class="s0"># First, it would be annoying to turn single ASCII</span>
+                <span class="s0"># characters like | into named entities like</span>
+                <span class="s0"># &amp;verbar;. The exceptions are &lt;&gt;&amp;, which we _must_</span>
+                <span class="s0"># turn into named entities to produce valid HTML.</span>
+                <span class="s5">continue</span>
+
+            <span class="s5">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">character</span><span class="s3">) &gt; </span><span class="s6">1 </span><span class="s5">and </span><span class="s1">all</span><span class="s3">(</span><span class="s1">ord</span><span class="s3">(</span><span class="s1">x</span><span class="s3">) &lt; </span><span class="s6">128 </span><span class="s5">for </span><span class="s1">x </span><span class="s5">in </span><span class="s1">character</span><span class="s3">):</span>
+                <span class="s0"># We also do not want to turn _combinations_ of ASCII</span>
+                <span class="s0"># characters like 'fj' into named entities like '&amp;fjlig;',</span>
+                <span class="s0"># though that's more debateable.</span>
+                <span class="s5">continue</span>
+
+            <span class="s0"># Second, some named entities have a Unicode value that's</span>
+            <span class="s0"># a subset of the Unicode value for some _other_ named</span>
+            <span class="s0"># entity.  As an example, \u2267' is &amp;GreaterFullEqual;,</span>
+            <span class="s0"># but '\u2267\u0338' is &amp;NotGreaterFullEqual;. Our regular</span>
+            <span class="s0"># expression needs to match the first two characters of</span>
+            <span class="s0"># &quot;\u2267\u0338foo&quot;, but only the first character of</span>
+            <span class="s0"># &quot;\u2267foo&quot;.</span>
+            <span class="s0">#</span>
+            <span class="s0"># In this step, we build two sets of characters that</span>
+            <span class="s0"># _eventually_ need to go into the regular expression. But</span>
+            <span class="s0"># we won't know exactly what the regular expression needs</span>
+            <span class="s0"># to look like until we've gone through the entire list of</span>
+            <span class="s0"># named entities.</span>
+            <span class="s5">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">character</span><span class="s3">) == </span><span class="s6">1</span><span class="s3">:</span>
+                <span class="s1">short_entities</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s1">character</span><span class="s3">)</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s1">long_entities_by_first_character</span><span class="s3">[</span><span class="s1">character</span><span class="s3">[</span><span class="s6">0</span><span class="s3">]].</span><span class="s1">add</span><span class="s3">(</span><span class="s1">character</span><span class="s3">)</span>
+
+        <span class="s0"># Now that we've been through the entire list of entities, we</span>
+        <span class="s0"># can create a regular expression that matches any of them.</span>
+        <span class="s1">particles </span><span class="s3">= </span><span class="s1">set</span><span class="s3">()</span>
+        <span class="s5">for </span><span class="s1">short </span><span class="s5">in </span><span class="s1">short_entities</span><span class="s3">:</span>
+            <span class="s1">long_versions </span><span class="s3">= </span><span class="s1">long_entities_by_first_character</span><span class="s3">[</span><span class="s1">short</span><span class="s3">]</span>
+            <span class="s5">if not </span><span class="s1">long_versions</span><span class="s3">:</span>
+                <span class="s1">particles</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s1">short</span><span class="s3">)</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s1">ignore </span><span class="s3">= </span><span class="s4">&quot;&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">([</span><span class="s1">x</span><span class="s3">[</span><span class="s6">1</span><span class="s3">] </span><span class="s5">for </span><span class="s1">x </span><span class="s5">in </span><span class="s1">long_versions</span><span class="s3">])</span>
+                <span class="s0"># This finds, e.g. \u2267 but only if it is _not_</span>
+                <span class="s0"># followed by \u0338.</span>
+                <span class="s1">particles</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s4">&quot;%s(?![%s])&quot; </span><span class="s3">% (</span><span class="s1">short</span><span class="s3">, </span><span class="s1">ignore</span><span class="s3">))</span>
+        
+        <span class="s5">for </span><span class="s1">long_entities </span><span class="s5">in </span><span class="s1">list</span><span class="s3">(</span><span class="s1">long_entities_by_first_character</span><span class="s3">.</span><span class="s1">values</span><span class="s3">()):</span>
+            <span class="s5">for </span><span class="s1">long_entity </span><span class="s5">in </span><span class="s1">long_entities</span><span class="s3">:</span>
+                <span class="s1">particles</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s1">long_entity</span><span class="s3">)</span>
+
+        <span class="s1">re_definition </span><span class="s3">= </span><span class="s4">&quot;(%s)&quot; </span><span class="s3">% </span><span class="s4">&quot;|&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">particles</span><span class="s3">)</span>
+                
+        <span class="s0"># If an entity shows up in both html5 and codepoint2name, it's</span>
+        <span class="s0"># likely that HTML5 gives it several different names, such as</span>
+        <span class="s0"># 'rsquo' and 'rsquor'. When converting Unicode characters to</span>
+        <span class="s0"># named entities, the codepoint2name name should take</span>
+        <span class="s0"># precedence where possible, since that's the more easily</span>
+        <span class="s0"># recognizable one.</span>
+        <span class="s5">for </span><span class="s1">codepoint</span><span class="s3">, </span><span class="s1">name </span><span class="s5">in </span><span class="s1">list</span><span class="s3">(</span><span class="s1">codepoint2name</span><span class="s3">.</span><span class="s1">items</span><span class="s3">()):</span>
+            <span class="s1">character </span><span class="s3">= </span><span class="s1">chr</span><span class="s3">(</span><span class="s1">codepoint</span><span class="s3">)</span>
+            <span class="s1">unicode_to_name</span><span class="s3">[</span><span class="s1">character</span><span class="s3">] = </span><span class="s1">name</span>
+
+        <span class="s5">return </span><span class="s1">unicode_to_name</span><span class="s3">, </span><span class="s1">name_to_unicode</span><span class="s3">, </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s1">re_definition</span><span class="s3">)</span>
+    <span class="s3">(</span><span class="s1">CHARACTER_TO_HTML_ENTITY</span><span class="s3">, </span><span class="s1">HTML_ENTITY_TO_CHARACTER</span><span class="s3">,</span>
+     <span class="s1">CHARACTER_TO_HTML_ENTITY_RE</span><span class="s3">) = </span><span class="s1">_populate_class_variables</span><span class="s3">()</span>
+
+    <span class="s1">CHARACTER_TO_XML_ENTITY </span><span class="s3">= {</span>
+        <span class="s4">&quot;'&quot;</span><span class="s3">: </span><span class="s4">&quot;apos&quot;</span><span class="s3">,</span>
+        <span class="s4">'&quot;'</span><span class="s3">: </span><span class="s4">&quot;quot&quot;</span><span class="s3">,</span>
+        <span class="s4">&quot;&amp;&quot;</span><span class="s3">: </span><span class="s4">&quot;amp&quot;</span><span class="s3">,</span>
+        <span class="s4">&quot;&lt;&quot;</span><span class="s3">: </span><span class="s4">&quot;lt&quot;</span><span class="s3">,</span>
+        <span class="s4">&quot;&gt;&quot;</span><span class="s3">: </span><span class="s4">&quot;gt&quot;</span><span class="s3">,</span>
+        <span class="s3">}</span>
+
+    <span class="s1">BARE_AMPERSAND_OR_BRACKET </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">&quot;([&lt;&gt;]|&quot;</span>
+                                           <span class="s4">&quot;&amp;(?!#</span><span class="s5">\\</span><span class="s4">d+;|#x[0-9a-fA-F]+;|</span><span class="s5">\\</span><span class="s4">w+;)&quot;</span>
+                                           <span class="s4">&quot;)&quot;</span><span class="s3">)</span>
+
+    <span class="s1">AMPERSAND_OR_BRACKET </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">&quot;([&lt;&gt;&amp;])&quot;</span><span class="s3">)</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">_substitute_html_entity</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">matchobj</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Used with a regular expression to substitute the 
+        appropriate HTML entity for a special character string.&quot;&quot;&quot;</span>
+        <span class="s1">entity </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">CHARACTER_TO_HTML_ENTITY</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">matchobj</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s6">0</span><span class="s3">))</span>
+        <span class="s5">return </span><span class="s4">&quot;&amp;%s;&quot; </span><span class="s3">% </span><span class="s1">entity</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">_substitute_xml_entity</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">matchobj</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Used with a regular expression to substitute the 
+        appropriate XML entity for a special character string.&quot;&quot;&quot;</span>
+        <span class="s1">entity </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">CHARACTER_TO_XML_ENTITY</span><span class="s3">[</span><span class="s1">matchobj</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s6">0</span><span class="s3">)]</span>
+        <span class="s5">return </span><span class="s4">&quot;&amp;%s;&quot; </span><span class="s3">% </span><span class="s1">entity</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">quoted_attribute_value</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">value</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Make a value into a quoted XML attribute, possibly escaping it. 
+ 
+         Most strings will be quoted using double quotes. 
+ 
+          Bob's Bar -&gt; &quot;Bob's Bar&quot; 
+ 
+         If a string contains double quotes, it will be quoted using 
+         single quotes. 
+ 
+          Welcome to &quot;my bar&quot; -&gt; 'Welcome to &quot;my bar&quot;' 
+ 
+         If a string contains both single and double quotes, the 
+         double quotes will be escaped, and the string will be quoted 
+         using double quotes. 
+ 
+          Welcome to &quot;Bob's Bar&quot; -&gt; &quot;Welcome to &amp;quot;Bob's bar&amp;quot; 
+        &quot;&quot;&quot;</span>
+        <span class="s1">quote_with </span><span class="s3">= </span><span class="s4">'&quot;'</span>
+        <span class="s5">if </span><span class="s4">'&quot;' </span><span class="s5">in </span><span class="s1">value</span><span class="s3">:</span>
+            <span class="s5">if </span><span class="s4">&quot;'&quot; </span><span class="s5">in </span><span class="s1">value</span><span class="s3">:</span>
+                <span class="s0"># The string contains both single and double</span>
+                <span class="s0"># quotes.  Turn the double quotes into</span>
+                <span class="s0"># entities. We quote the double quotes rather than</span>
+                <span class="s0"># the single quotes because the entity name is</span>
+                <span class="s0"># &quot;&amp;quot;&quot; whether this is HTML or XML.  If we</span>
+                <span class="s0"># quoted the single quotes, we'd have to decide</span>
+                <span class="s0"># between &amp;apos; and &amp;squot;.</span>
+                <span class="s1">replace_with </span><span class="s3">= </span><span class="s4">&quot;&amp;quot;&quot;</span>
+                <span class="s1">value </span><span class="s3">= </span><span class="s1">value</span><span class="s3">.</span><span class="s1">replace</span><span class="s3">(</span><span class="s4">'&quot;'</span><span class="s3">, </span><span class="s1">replace_with</span><span class="s3">)</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s0"># There are double quotes but no single quotes.</span>
+                <span class="s0"># We can use single quotes to quote the attribute.</span>
+                <span class="s1">quote_with </span><span class="s3">= </span><span class="s4">&quot;'&quot;</span>
+        <span class="s5">return </span><span class="s1">quote_with </span><span class="s3">+ </span><span class="s1">value </span><span class="s3">+ </span><span class="s1">quote_with</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">substitute_xml</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">make_quoted_attribute</span><span class="s3">=</span><span class="s5">False</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Substitute XML entities for special XML characters. 
+ 
+        :param value: A string to be substituted. The less-than sign 
+          will become &amp;lt;, the greater-than sign will become &amp;gt;, 
+          and any ampersands will become &amp;amp;. If you want ampersands 
+          that appear to be part of an entity definition to be left 
+          alone, use substitute_xml_containing_entities() instead. 
+ 
+        :param make_quoted_attribute: If True, then the string will be 
+         quoted, as befits an attribute value. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># Escape angle brackets and ampersands.</span>
+        <span class="s1">value </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">AMPERSAND_OR_BRACKET</span><span class="s3">.</span><span class="s1">sub</span><span class="s3">(</span>
+            <span class="s1">cls</span><span class="s3">.</span><span class="s1">_substitute_xml_entity</span><span class="s3">, </span><span class="s1">value</span><span class="s3">)</span>
+
+        <span class="s5">if </span><span class="s1">make_quoted_attribute</span><span class="s3">:</span>
+            <span class="s1">value </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">quoted_attribute_value</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+        <span class="s5">return </span><span class="s1">value</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">substitute_xml_containing_entities</span><span class="s3">(</span>
+        <span class="s1">cls</span><span class="s3">, </span><span class="s1">value</span><span class="s3">, </span><span class="s1">make_quoted_attribute</span><span class="s3">=</span><span class="s5">False</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Substitute XML entities for special XML characters. 
+ 
+        :param value: A string to be substituted. The less-than sign will 
+          become &amp;lt;, the greater-than sign will become &amp;gt;, and any 
+          ampersands that are not part of an entity defition will 
+          become &amp;amp;. 
+ 
+        :param make_quoted_attribute: If True, then the string will be 
+         quoted, as befits an attribute value. 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># Escape angle brackets, and ampersands that aren't part of</span>
+        <span class="s0"># entities.</span>
+        <span class="s1">value </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">BARE_AMPERSAND_OR_BRACKET</span><span class="s3">.</span><span class="s1">sub</span><span class="s3">(</span>
+            <span class="s1">cls</span><span class="s3">.</span><span class="s1">_substitute_xml_entity</span><span class="s3">, </span><span class="s1">value</span><span class="s3">)</span>
+
+        <span class="s5">if </span><span class="s1">make_quoted_attribute</span><span class="s3">:</span>
+            <span class="s1">value </span><span class="s3">= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">quoted_attribute_value</span><span class="s3">(</span><span class="s1">value</span><span class="s3">)</span>
+        <span class="s5">return </span><span class="s1">value</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">substitute_html</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">s</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Replace certain Unicode characters with named HTML entities. 
+ 
+        This differs from data.encode(encoding, 'xmlcharrefreplace') 
+        in that the goal is to make the result more readable (to those 
+        with ASCII displays) rather than to recover from 
+        errors. There's absolutely nothing wrong with a UTF-8 string 
+        containg a LATIN SMALL LETTER E WITH ACUTE, but replacing that 
+        character with &quot;&amp;eacute;&quot; will make it more readable to some 
+        people. 
+ 
+        :param s: A Unicode string. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">return </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">CHARACTER_TO_HTML_ENTITY_RE</span><span class="s3">.</span><span class="s1">sub</span><span class="s3">(</span>
+            <span class="s1">cls</span><span class="s3">.</span><span class="s1">_substitute_html_entity</span><span class="s3">, </span><span class="s1">s</span><span class="s3">)</span>
+
+
+<span class="s5">class </span><span class="s1">EncodingDetector</span><span class="s3">:</span>
+    <span class="s2">&quot;&quot;&quot;Suggests a number of possible encodings for a bytestring. 
+ 
+    Order of precedence: 
+ 
+    1. Encodings you specifically tell EncodingDetector to try first 
+    (the known_definite_encodings argument to the constructor). 
+ 
+    2. An encoding determined by sniffing the document's byte-order mark. 
+ 
+    3. Encodings you specifically tell EncodingDetector to try if 
+    byte-order mark sniffing fails (the user_encodings argument to the 
+    constructor). 
+ 
+    4. An encoding declared within the bytestring itself, either in an 
+    XML declaration (if the bytestring is to be interpreted as an XML 
+    document), or in a &lt;meta&gt; tag (if the bytestring is to be 
+    interpreted as an HTML document.) 
+ 
+    5. An encoding detected through textual analysis by chardet, 
+    cchardet, or a similar external library. 
+ 
+    4. UTF-8. 
+ 
+    5. Windows-1252. 
+ 
+    &quot;&quot;&quot;</span>
+    <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">markup</span><span class="s3">, </span><span class="s1">known_definite_encodings</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+                 <span class="s1">is_html</span><span class="s3">=</span><span class="s5">False</span><span class="s3">, </span><span class="s1">exclude_encodings</span><span class="s3">=</span><span class="s5">None</span><span class="s3">,</span>
+                 <span class="s1">user_encodings</span><span class="s3">=</span><span class="s5">None</span><span class="s3">, </span><span class="s1">override_encodings</span><span class="s3">=</span><span class="s5">None</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Constructor. 
+ 
+        :param markup: Some markup in an unknown encoding. 
+ 
+        :param known_definite_encodings: When determining the encoding 
+            of `markup`, these encodings will be tried first, in 
+            order. In HTML terms, this corresponds to the &quot;known 
+            definite encoding&quot; step defined here: 
+            https://html.spec.whatwg.org/multipage/parsing.html#parsing-with-a-known-character-encoding 
+ 
+        :param user_encodings: These encodings will be tried after the 
+            `known_definite_encodings` have been tried and failed, and 
+            after an attempt to sniff the encoding by looking at a 
+            byte order mark has failed. In HTML terms, this 
+            corresponds to the step &quot;user has explicitly instructed 
+            the user agent to override the document's character 
+            encoding&quot;, defined here: 
+            https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding 
+ 
+        :param override_encodings: A deprecated alias for 
+            known_definite_encodings. Any encodings here will be tried 
+            immediately after the encodings in 
+            known_definite_encodings. 
+ 
+        :param is_html: If True, this markup is considered to be 
+            HTML. Otherwise it's assumed to be XML. 
+ 
+        :param exclude_encodings: These encodings will not be tried, 
+            even if they otherwise would be. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">known_definite_encodings </span><span class="s3">= </span><span class="s1">list</span><span class="s3">(</span><span class="s1">known_definite_encodings </span><span class="s5">or </span><span class="s3">[])</span>
+        <span class="s5">if </span><span class="s1">override_encodings</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">known_definite_encodings </span><span class="s3">+= </span><span class="s1">override_encodings</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">user_encodings </span><span class="s3">= </span><span class="s1">user_encodings </span><span class="s5">or </span><span class="s3">[]</span>
+        <span class="s1">exclude_encodings </span><span class="s3">= </span><span class="s1">exclude_encodings </span><span class="s5">or </span><span class="s3">[]</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">exclude_encodings </span><span class="s3">= </span><span class="s1">set</span><span class="s3">([</span><span class="s1">x</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">() </span><span class="s5">for </span><span class="s1">x </span><span class="s5">in </span><span class="s1">exclude_encodings</span><span class="s3">])</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">chardet_encoding </span><span class="s3">= </span><span class="s5">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">is_html </span><span class="s3">= </span><span class="s1">is_html</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">declared_encoding </span><span class="s3">= </span><span class="s5">None</span>
+
+        <span class="s0"># First order of business: strip a byte-order mark.</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">sniffed_encoding </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">strip_byte_order_mark</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">)</span>
+
+    <span class="s5">def </span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Should we even bother to try this encoding? 
+ 
+        :param encoding: Name of an encoding. 
+        :param tried: Encodings that have already been tried. This will be modified 
+            as a side effect. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">if </span><span class="s1">encoding </span><span class="s5">is not None</span><span class="s3">:</span>
+            <span class="s1">encoding </span><span class="s3">= </span><span class="s1">encoding</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+            <span class="s5">if </span><span class="s1">encoding </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">exclude_encodings</span><span class="s3">:</span>
+                <span class="s5">return False</span>
+            <span class="s5">if </span><span class="s1">encoding </span><span class="s5">not in </span><span class="s1">tried</span><span class="s3">:</span>
+                <span class="s1">tried</span><span class="s3">.</span><span class="s1">add</span><span class="s3">(</span><span class="s1">encoding</span><span class="s3">)</span>
+                <span class="s5">return True</span>
+        <span class="s5">return False</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s5">def </span><span class="s1">encodings</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Yield a number of encodings that might work for this markup. 
+ 
+        :yield: A sequence of strings. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">tried </span><span class="s3">= </span><span class="s1">set</span><span class="s3">()</span>
+
+        <span class="s0"># First, try the known definite encodings</span>
+        <span class="s5">for </span><span class="s1">e </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">known_definite_encodings</span><span class="s3">:</span>
+            <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">e</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+                <span class="s5">yield </span><span class="s1">e</span>
+
+        <span class="s0"># Did the document originally start with a byte-order mark</span>
+        <span class="s0"># that indicated its encoding?</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">sniffed_encoding</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+            <span class="s5">yield </span><span class="s1">self</span><span class="s3">.</span><span class="s1">sniffed_encoding</span>
+
+        <span class="s0"># Sniffing the byte-order mark did nothing; try the user</span>
+        <span class="s0"># encodings.</span>
+        <span class="s5">for </span><span class="s1">e </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">user_encodings</span><span class="s3">:</span>
+            <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">e</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+                <span class="s5">yield </span><span class="s1">e</span>
+            
+        <span class="s0"># Look within the document for an XML or HTML encoding</span>
+        <span class="s0"># declaration.</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">declared_encoding </span><span class="s5">is None</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">declared_encoding </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">find_declared_encoding</span><span class="s3">(</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">is_html</span><span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">declared_encoding</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+            <span class="s5">yield </span><span class="s1">self</span><span class="s3">.</span><span class="s1">declared_encoding</span>
+
+        <span class="s0"># Use third-party character set detection to guess at the</span>
+        <span class="s0"># encoding.</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">chardet_encoding </span><span class="s5">is None</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">chardet_encoding </span><span class="s3">= </span><span class="s1">chardet_dammit</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">markup</span><span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">chardet_encoding</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+            <span class="s5">yield </span><span class="s1">self</span><span class="s3">.</span><span class="s1">chardet_encoding</span>
+
+        <span class="s0"># As a last-ditch effort, try utf-8 and windows-1252.</span>
+        <span class="s5">for </span><span class="s1">e </span><span class="s5">in </span><span class="s3">(</span><span class="s4">'utf-8'</span><span class="s3">, </span><span class="s4">'windows-1252'</span><span class="s3">):</span>
+            <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_usable</span><span class="s3">(</span><span class="s1">e</span><span class="s3">, </span><span class="s1">tried</span><span class="s3">):</span>
+                <span class="s5">yield </span><span class="s1">e</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">strip_byte_order_mark</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">data</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;If a byte-order mark is present, strip it and return the encoding it implies. 
+ 
+        :param data: Some markup. 
+        :return: A 2-tuple (modified data, implied encoding) 
+        &quot;&quot;&quot;</span>
+        <span class="s1">encoding </span><span class="s3">= </span><span class="s5">None</span>
+        <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">data</span><span class="s3">, </span><span class="s1">str</span><span class="s3">):</span>
+            <span class="s0"># Unicode data cannot have a byte-order mark.</span>
+            <span class="s5">return </span><span class="s1">data</span><span class="s3">, </span><span class="s1">encoding</span>
+        <span class="s5">if </span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">data</span><span class="s3">) &gt;= </span><span class="s6">4</span><span class="s3">) </span><span class="s5">and </span><span class="s3">(</span><span class="s1">data</span><span class="s3">[:</span><span class="s6">2</span><span class="s3">] == </span><span class="s7">b'</span><span class="s5">\xfe\xff</span><span class="s7">'</span><span class="s3">) </span><span class="s1">\</span>
+               <span class="s5">and </span><span class="s3">(</span><span class="s1">data</span><span class="s3">[</span><span class="s6">2</span><span class="s3">:</span><span class="s6">4</span><span class="s3">] != </span><span class="s4">'</span><span class="s5">\x00\x00</span><span class="s4">'</span><span class="s3">):</span>
+            <span class="s1">encoding </span><span class="s3">= </span><span class="s4">'utf-16be'</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s6">2</span><span class="s3">:]</span>
+        <span class="s5">elif </span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">data</span><span class="s3">) &gt;= </span><span class="s6">4</span><span class="s3">) </span><span class="s5">and </span><span class="s3">(</span><span class="s1">data</span><span class="s3">[:</span><span class="s6">2</span><span class="s3">] == </span><span class="s7">b'</span><span class="s5">\xff\xfe</span><span class="s7">'</span><span class="s3">) </span><span class="s1">\</span>
+                 <span class="s5">and </span><span class="s3">(</span><span class="s1">data</span><span class="s3">[</span><span class="s6">2</span><span class="s3">:</span><span class="s6">4</span><span class="s3">] != </span><span class="s4">'</span><span class="s5">\x00\x00</span><span class="s4">'</span><span class="s3">):</span>
+            <span class="s1">encoding </span><span class="s3">= </span><span class="s4">'utf-16le'</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s6">2</span><span class="s3">:]</span>
+        <span class="s5">elif </span><span class="s1">data</span><span class="s3">[:</span><span class="s6">3</span><span class="s3">] == </span><span class="s7">b'</span><span class="s5">\xef\xbb\xbf</span><span class="s7">'</span><span class="s3">:</span>
+            <span class="s1">encoding </span><span class="s3">= </span><span class="s4">'utf-8'</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s6">3</span><span class="s3">:]</span>
+        <span class="s5">elif </span><span class="s1">data</span><span class="s3">[:</span><span class="s6">4</span><span class="s3">] == </span><span class="s7">b'</span><span class="s5">\x00\x00\xfe\xff</span><span class="s7">'</span><span class="s3">:</span>
+            <span class="s1">encoding </span><span class="s3">= </span><span class="s4">'utf-32be'</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s6">4</span><span class="s3">:]</span>
+        <span class="s5">elif </span><span class="s1">data</span><span class="s3">[:</span><span class="s6">4</span><span class="s3">] == </span><span class="s7">b'</span><span class="s5">\xff\xfe\x00\x00</span><span class="s7">'</span><span class="s3">:</span>
+            <span class="s1">encoding </span><span class="s3">= </span><span class="s4">'utf-32le'</span>
+            <span class="s1">data </span><span class="s3">= </span><span class="s1">data</span><span class="s3">[</span><span class="s6">4</span><span class="s3">:]</span>
+        <span class="s5">return </span><span class="s1">data</span><span class="s3">, </span><span class="s1">encoding</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">find_declared_encoding</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">markup</span><span class="s3">, </span><span class="s1">is_html</span><span class="s3">=</span><span class="s5">False</span><span class="s3">, </span><span class="s1">search_entire_document</span><span class="s3">=</span><span class="s5">False</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Given a document, tries to find its declared encoding. 
+ 
+        An XML encoding is declared at the beginning of the document. 
+ 
+        An HTML encoding is declared in a &lt;meta&gt; tag, hopefully near the 
+        beginning of the document. 
+ 
+        :param markup: Some markup. 
+        :param is_html: If True, this markup is considered to be HTML. Otherwise 
+            it's assumed to be XML. 
+        :param search_entire_document: Since an encoding is supposed to declared near the beginning 
+            of the document, most of the time it's only necessary to search a few kilobytes of data. 
+            Set this to True to force this method to search the entire document. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">if </span><span class="s1">search_entire_document</span><span class="s3">:</span>
+            <span class="s1">xml_endpos </span><span class="s3">= </span><span class="s1">html_endpos </span><span class="s3">= </span><span class="s1">len</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">)</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">xml_endpos </span><span class="s3">= </span><span class="s6">1024</span>
+            <span class="s1">html_endpos </span><span class="s3">= </span><span class="s1">max</span><span class="s3">(</span><span class="s6">2048</span><span class="s3">, </span><span class="s1">int</span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">) * </span><span class="s6">0.05</span><span class="s3">))</span>
+
+        <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">bytes</span><span class="s3">):</span>
+            <span class="s1">res </span><span class="s3">= </span><span class="s1">encoding_res</span><span class="s3">[</span><span class="s1">bytes</span><span class="s3">]</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">res </span><span class="s3">= </span><span class="s1">encoding_res</span><span class="s3">[</span><span class="s1">str</span><span class="s3">]</span>
+
+        <span class="s1">xml_re </span><span class="s3">= </span><span class="s1">res</span><span class="s3">[</span><span class="s4">'xml'</span><span class="s3">]</span>
+        <span class="s1">html_re </span><span class="s3">= </span><span class="s1">res</span><span class="s3">[</span><span class="s4">'html'</span><span class="s3">]</span>
+        <span class="s1">declared_encoding </span><span class="s3">= </span><span class="s5">None</span>
+        <span class="s1">declared_encoding_match </span><span class="s3">= </span><span class="s1">xml_re</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">endpos</span><span class="s3">=</span><span class="s1">xml_endpos</span><span class="s3">)</span>
+        <span class="s5">if not </span><span class="s1">declared_encoding_match </span><span class="s5">and </span><span class="s1">is_html</span><span class="s3">:</span>
+            <span class="s1">declared_encoding_match </span><span class="s3">= </span><span class="s1">html_re</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">endpos</span><span class="s3">=</span><span class="s1">html_endpos</span><span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">declared_encoding_match </span><span class="s5">is not None</span><span class="s3">:</span>
+            <span class="s1">declared_encoding </span><span class="s3">= </span><span class="s1">declared_encoding_match</span><span class="s3">.</span><span class="s1">groups</span><span class="s3">()[</span><span class="s6">0</span><span class="s3">]</span>
+        <span class="s5">if </span><span class="s1">declared_encoding</span><span class="s3">:</span>
+            <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">declared_encoding</span><span class="s3">, </span><span class="s1">bytes</span><span class="s3">):</span>
+                <span class="s1">declared_encoding </span><span class="s3">= </span><span class="s1">declared_encoding</span><span class="s3">.</span><span class="s1">decode</span><span class="s3">(</span><span class="s4">'ascii'</span><span class="s3">, </span><span class="s4">'replace'</span><span class="s3">)</span>
+            <span class="s5">return </span><span class="s1">declared_encoding</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+        <span class="s5">return None</span>
+
+<span class="s5">class </span><span class="s1">UnicodeDammit</span><span class="s3">:</span>
+    <span class="s2">&quot;&quot;&quot;A class for detecting the encoding of a *ML document and 
+    converting it to a Unicode string. If the source encoding is 
+    windows-1252, can replace MS smart quotes with their HTML or XML 
+    equivalents.&quot;&quot;&quot;</span>
+
+    <span class="s0"># This dictionary maps commonly seen values for &quot;charset&quot; in HTML</span>
+    <span class="s0"># meta tags to the corresponding Python codec names. It only covers</span>
+    <span class="s0"># values that aren't in Python's aliases and can't be determined</span>
+    <span class="s0"># by the heuristics in find_codec.</span>
+    <span class="s1">CHARSET_ALIASES </span><span class="s3">= {</span><span class="s4">&quot;macintosh&quot;</span><span class="s3">: </span><span class="s4">&quot;mac-roman&quot;</span><span class="s3">,</span>
+                       <span class="s4">&quot;x-sjis&quot;</span><span class="s3">: </span><span class="s4">&quot;shift-jis&quot;</span><span class="s3">}</span>
+
+    <span class="s1">ENCODINGS_WITH_SMART_QUOTES </span><span class="s3">= [</span>
+        <span class="s4">&quot;windows-1252&quot;</span><span class="s3">,</span>
+        <span class="s4">&quot;iso-8859-1&quot;</span><span class="s3">,</span>
+        <span class="s4">&quot;iso-8859-2&quot;</span><span class="s3">,</span>
+        <span class="s3">]</span>
+
+    <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">markup</span><span class="s3">, </span><span class="s1">known_definite_encodings</span><span class="s3">=[],</span>
+                 <span class="s1">smart_quotes_to</span><span class="s3">=</span><span class="s5">None</span><span class="s3">, </span><span class="s1">is_html</span><span class="s3">=</span><span class="s5">False</span><span class="s3">, </span><span class="s1">exclude_encodings</span><span class="s3">=[],</span>
+                 <span class="s1">user_encodings</span><span class="s3">=</span><span class="s5">None</span><span class="s3">, </span><span class="s1">override_encodings</span><span class="s3">=</span><span class="s5">None</span>
+    <span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Constructor. 
+ 
+        :param markup: A bytestring representing markup in an unknown encoding. 
+ 
+        :param known_definite_encodings: When determining the encoding 
+            of `markup`, these encodings will be tried first, in 
+            order. In HTML terms, this corresponds to the &quot;known 
+            definite encoding&quot; step defined here: 
+            https://html.spec.whatwg.org/multipage/parsing.html#parsing-with-a-known-character-encoding 
+ 
+        :param user_encodings: These encodings will be tried after the 
+            `known_definite_encodings` have been tried and failed, and 
+            after an attempt to sniff the encoding by looking at a 
+            byte order mark has failed. In HTML terms, this 
+            corresponds to the step &quot;user has explicitly instructed 
+            the user agent to override the document's character 
+            encoding&quot;, defined here: 
+            https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding 
+ 
+        :param override_encodings: A deprecated alias for 
+            known_definite_encodings. Any encodings here will be tried 
+            immediately after the encodings in 
+            known_definite_encodings. 
+ 
+        :param smart_quotes_to: By default, Microsoft smart quotes will, like all other characters, be converted 
+           to Unicode characters. Setting this to 'ascii' will convert them to ASCII quotes instead. 
+           Setting it to 'xml' will convert them to XML entity references, and setting it to 'html' 
+           will convert them to HTML entity references. 
+        :param is_html: If True, this markup is considered to be HTML. Otherwise 
+            it's assumed to be XML. 
+        :param exclude_encodings: These encodings will not be considered, even 
+            if the sniffing code thinks they might make sense. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">smart_quotes_to </span><span class="s3">= </span><span class="s1">smart_quotes_to</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">tried_encodings </span><span class="s3">= []</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">contains_replacement_characters </span><span class="s3">= </span><span class="s5">False</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">is_html </span><span class="s3">= </span><span class="s1">is_html</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">log </span><span class="s3">= </span><span class="s1">logging</span><span class="s3">.</span><span class="s1">getLogger</span><span class="s3">(</span><span class="s1">__name__</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">detector </span><span class="s3">= </span><span class="s1">EncodingDetector</span><span class="s3">(</span>
+            <span class="s1">markup</span><span class="s3">, </span><span class="s1">known_definite_encodings</span><span class="s3">, </span><span class="s1">is_html</span><span class="s3">, </span><span class="s1">exclude_encodings</span><span class="s3">,</span>
+            <span class="s1">user_encodings</span><span class="s3">, </span><span class="s1">override_encodings</span>
+        <span class="s3">)</span>
+
+        <span class="s0"># Short-circuit if the data is in Unicode to begin with.</span>
+        <span class="s5">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">str</span><span class="s3">) </span><span class="s5">or </span><span class="s1">markup </span><span class="s3">== </span><span class="s4">''</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">markup </span><span class="s3">= </span><span class="s1">markup</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">unicode_markup </span><span class="s3">= </span><span class="s1">str</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">)</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">original_encoding </span><span class="s3">= </span><span class="s5">None</span>
+            <span class="s5">return</span>
+
+        <span class="s0"># The encoding detector may have stripped a byte-order mark.</span>
+        <span class="s0"># Use the stripped markup from this point on.</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">markup </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">detector</span><span class="s3">.</span><span class="s1">markup</span>
+
+        <span class="s1">u </span><span class="s3">= </span><span class="s5">None</span>
+        <span class="s5">for </span><span class="s1">encoding </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">detector</span><span class="s3">.</span><span class="s1">encodings</span><span class="s3">:</span>
+            <span class="s1">markup </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">detector</span><span class="s3">.</span><span class="s1">markup</span>
+            <span class="s1">u </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_convert_from</span><span class="s3">(</span><span class="s1">encoding</span><span class="s3">)</span>
+            <span class="s5">if </span><span class="s1">u </span><span class="s5">is not None</span><span class="s3">:</span>
+                <span class="s5">break</span>
+
+        <span class="s5">if not </span><span class="s1">u</span><span class="s3">:</span>
+            <span class="s0"># None of the encodings worked. As an absolute last resort,</span>
+            <span class="s0"># try them again with character replacement.</span>
+
+            <span class="s5">for </span><span class="s1">encoding </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">detector</span><span class="s3">.</span><span class="s1">encodings</span><span class="s3">:</span>
+                <span class="s5">if </span><span class="s1">encoding </span><span class="s3">!= </span><span class="s4">&quot;ascii&quot;</span><span class="s3">:</span>
+                    <span class="s1">u </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_convert_from</span><span class="s3">(</span><span class="s1">encoding</span><span class="s3">, </span><span class="s4">&quot;replace&quot;</span><span class="s3">)</span>
+                <span class="s5">if </span><span class="s1">u </span><span class="s5">is not None</span><span class="s3">:</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">log</span><span class="s3">.</span><span class="s1">warning</span><span class="s3">(</span>
+                            <span class="s4">&quot;Some characters could not be decoded, and were &quot;</span>
+                            <span class="s4">&quot;replaced with REPLACEMENT CHARACTER.&quot;</span>
+                    <span class="s3">)</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">contains_replacement_characters </span><span class="s3">= </span><span class="s5">True</span>
+                    <span class="s5">break</span>
+
+        <span class="s0"># If none of that worked, we could at this point force it to</span>
+        <span class="s0"># ASCII, but that would destroy so much data that I think</span>
+        <span class="s0"># giving up is better.</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">unicode_markup </span><span class="s3">= </span><span class="s1">u</span>
+        <span class="s5">if not </span><span class="s1">u</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">original_encoding </span><span class="s3">= </span><span class="s5">None</span>
+
+    <span class="s5">def </span><span class="s1">_sub_ms_char</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">match</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Changes a MS smart quote character to an XML or HTML 
+        entity, or an ASCII character.&quot;&quot;&quot;</span>
+        <span class="s1">orig </span><span class="s3">= </span><span class="s1">match</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s6">1</span><span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">smart_quotes_to </span><span class="s3">== </span><span class="s4">'ascii'</span><span class="s3">:</span>
+            <span class="s1">sub </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">MS_CHARS_TO_ASCII</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">orig</span><span class="s3">).</span><span class="s1">encode</span><span class="s3">()</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s1">sub </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">MS_CHARS</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">orig</span><span class="s3">)</span>
+            <span class="s5">if </span><span class="s1">type</span><span class="s3">(</span><span class="s1">sub</span><span class="s3">) == </span><span class="s1">tuple</span><span class="s3">:</span>
+                <span class="s5">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">smart_quotes_to </span><span class="s3">== </span><span class="s4">'xml'</span><span class="s3">:</span>
+                    <span class="s1">sub </span><span class="s3">= </span><span class="s4">'&amp;#x'</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">() + </span><span class="s1">sub</span><span class="s3">[</span><span class="s6">1</span><span class="s3">].</span><span class="s1">encode</span><span class="s3">() + </span><span class="s4">';'</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">()</span>
+                <span class="s5">else</span><span class="s3">:</span>
+                    <span class="s1">sub </span><span class="s3">= </span><span class="s4">'&amp;'</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">() + </span><span class="s1">sub</span><span class="s3">[</span><span class="s6">0</span><span class="s3">].</span><span class="s1">encode</span><span class="s3">() + </span><span class="s4">';'</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">()</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s1">sub </span><span class="s3">= </span><span class="s1">sub</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">()</span>
+        <span class="s5">return </span><span class="s1">sub</span>
+
+    <span class="s5">def </span><span class="s1">_convert_from</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">proposed</span><span class="s3">, </span><span class="s1">errors</span><span class="s3">=</span><span class="s4">&quot;strict&quot;</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Attempt to convert the markup to the proposed encoding. 
+ 
+        :param proposed: The name of a character encoding. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">proposed </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">find_codec</span><span class="s3">(</span><span class="s1">proposed</span><span class="s3">)</span>
+        <span class="s5">if not </span><span class="s1">proposed </span><span class="s5">or </span><span class="s3">(</span><span class="s1">proposed</span><span class="s3">, </span><span class="s1">errors</span><span class="s3">) </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">tried_encodings</span><span class="s3">:</span>
+            <span class="s5">return None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">tried_encodings</span><span class="s3">.</span><span class="s1">append</span><span class="s3">((</span><span class="s1">proposed</span><span class="s3">, </span><span class="s1">errors</span><span class="s3">))</span>
+        <span class="s1">markup </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">markup</span>
+        <span class="s0"># Convert smart quotes to HTML if coming from an encoding</span>
+        <span class="s0"># that might have them.</span>
+        <span class="s5">if </span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">smart_quotes_to </span><span class="s5">is not None</span>
+            <span class="s5">and </span><span class="s1">proposed </span><span class="s5">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">ENCODINGS_WITH_SMART_QUOTES</span><span class="s3">):</span>
+            <span class="s1">smart_quotes_re </span><span class="s3">= </span><span class="s7">b&quot;([</span><span class="s5">\x80</span><span class="s7">-</span><span class="s5">\x9f</span><span class="s7">])&quot;</span>
+            <span class="s1">smart_quotes_compiled </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s1">smart_quotes_re</span><span class="s3">)</span>
+            <span class="s1">markup </span><span class="s3">= </span><span class="s1">smart_quotes_compiled</span><span class="s3">.</span><span class="s1">sub</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_sub_ms_char</span><span class="s3">, </span><span class="s1">markup</span><span class="s3">)</span>
+
+        <span class="s5">try</span><span class="s3">:</span>
+            <span class="s0">#print(&quot;Trying to convert document to %s (errors=%s)&quot; % (</span>
+            <span class="s0">#    proposed, errors))</span>
+            <span class="s1">u </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_to_unicode</span><span class="s3">(</span><span class="s1">markup</span><span class="s3">, </span><span class="s1">proposed</span><span class="s3">, </span><span class="s1">errors</span><span class="s3">)</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">markup </span><span class="s3">= </span><span class="s1">u</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">original_encoding </span><span class="s3">= </span><span class="s1">proposed</span>
+        <span class="s5">except </span><span class="s1">Exception </span><span class="s5">as </span><span class="s1">e</span><span class="s3">:</span>
+            <span class="s0">#print(&quot;That didn't work!&quot;)</span>
+            <span class="s0">#print(e)</span>
+            <span class="s5">return None</span>
+        <span class="s0">#print(&quot;Correct encoding: %s&quot; % proposed)</span>
+        <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">markup</span>
+
+    <span class="s5">def </span><span class="s1">_to_unicode</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">data</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">, </span><span class="s1">errors</span><span class="s3">=</span><span class="s4">&quot;strict&quot;</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Given a string and its encoding, decodes the string into Unicode. 
+ 
+        :param encoding: The name of an encoding. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">return </span><span class="s1">str</span><span class="s3">(</span><span class="s1">data</span><span class="s3">, </span><span class="s1">encoding</span><span class="s3">, </span><span class="s1">errors</span><span class="s3">)</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s5">def </span><span class="s1">declared_html_encoding</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;If the markup is an HTML document, returns the encoding declared _within_ 
+        the document. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">is_html</span><span class="s3">:</span>
+            <span class="s5">return None</span>
+        <span class="s5">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">detector</span><span class="s3">.</span><span class="s1">declared_encoding</span>
+
+    <span class="s5">def </span><span class="s1">find_codec</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">charset</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Convert the name of a character set to a codec name. 
+ 
+        :param charset: The name of a character set. 
+        :return: The name of a codec. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">value </span><span class="s3">= (</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_codec</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">CHARSET_ALIASES</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">charset</span><span class="s3">, </span><span class="s1">charset</span><span class="s3">))</span>
+               <span class="s5">or </span><span class="s3">(</span><span class="s1">charset </span><span class="s5">and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_codec</span><span class="s3">(</span><span class="s1">charset</span><span class="s3">.</span><span class="s1">replace</span><span class="s3">(</span><span class="s4">&quot;-&quot;</span><span class="s3">, </span><span class="s4">&quot;&quot;</span><span class="s3">)))</span>
+               <span class="s5">or </span><span class="s3">(</span><span class="s1">charset </span><span class="s5">and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_codec</span><span class="s3">(</span><span class="s1">charset</span><span class="s3">.</span><span class="s1">replace</span><span class="s3">(</span><span class="s4">&quot;-&quot;</span><span class="s3">, </span><span class="s4">&quot;_&quot;</span><span class="s3">)))</span>
+               <span class="s5">or </span><span class="s3">(</span><span class="s1">charset </span><span class="s5">and </span><span class="s1">charset</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">())</span>
+               <span class="s5">or </span><span class="s1">charset</span>
+                <span class="s3">)</span>
+        <span class="s5">if </span><span class="s1">value</span><span class="s3">:</span>
+            <span class="s5">return </span><span class="s1">value</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+        <span class="s5">return None</span>
+
+    <span class="s5">def </span><span class="s1">_codec</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">charset</span><span class="s3">):</span>
+        <span class="s5">if not </span><span class="s1">charset</span><span class="s3">:</span>
+            <span class="s5">return </span><span class="s1">charset</span>
+        <span class="s1">codec </span><span class="s3">= </span><span class="s5">None</span>
+        <span class="s5">try</span><span class="s3">:</span>
+            <span class="s1">codecs</span><span class="s3">.</span><span class="s1">lookup</span><span class="s3">(</span><span class="s1">charset</span><span class="s3">)</span>
+            <span class="s1">codec </span><span class="s3">= </span><span class="s1">charset</span>
+        <span class="s5">except </span><span class="s3">(</span><span class="s1">LookupError</span><span class="s3">, </span><span class="s1">ValueError</span><span class="s3">):</span>
+            <span class="s5">pass</span>
+        <span class="s5">return </span><span class="s1">codec</span>
+
+
+    <span class="s0"># A partial mapping of ISO-Latin-1 to HTML entities/XML numeric entities.</span>
+    <span class="s1">MS_CHARS </span><span class="s3">= {</span><span class="s7">b'</span><span class="s5">\x80</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'euro'</span><span class="s3">, </span><span class="s4">'20AC'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x81</span><span class="s7">'</span><span class="s3">: </span><span class="s4">' '</span><span class="s3">,</span>
+                <span class="s7">b'</span><span class="s5">\x82</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'sbquo'</span><span class="s3">, </span><span class="s4">'201A'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x83</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'fnof'</span><span class="s3">, </span><span class="s4">'192'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x84</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'bdquo'</span><span class="s3">, </span><span class="s4">'201E'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x85</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'hellip'</span><span class="s3">, </span><span class="s4">'2026'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x86</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'dagger'</span><span class="s3">, </span><span class="s4">'2020'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x87</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'Dagger'</span><span class="s3">, </span><span class="s4">'2021'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x88</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'circ'</span><span class="s3">, </span><span class="s4">'2C6'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x89</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'permil'</span><span class="s3">, </span><span class="s4">'2030'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x8A</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'Scaron'</span><span class="s3">, </span><span class="s4">'160'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x8B</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'lsaquo'</span><span class="s3">, </span><span class="s4">'2039'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x8C</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'OElig'</span><span class="s3">, </span><span class="s4">'152'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x8D</span><span class="s7">'</span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+                <span class="s7">b'</span><span class="s5">\x8E</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'#x17D'</span><span class="s3">, </span><span class="s4">'17D'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x8F</span><span class="s7">'</span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+                <span class="s7">b'</span><span class="s5">\x90</span><span class="s7">'</span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+                <span class="s7">b'</span><span class="s5">\x91</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'lsquo'</span><span class="s3">, </span><span class="s4">'2018'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x92</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'rsquo'</span><span class="s3">, </span><span class="s4">'2019'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x93</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'ldquo'</span><span class="s3">, </span><span class="s4">'201C'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x94</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'rdquo'</span><span class="s3">, </span><span class="s4">'201D'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x95</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'bull'</span><span class="s3">, </span><span class="s4">'2022'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x96</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'ndash'</span><span class="s3">, </span><span class="s4">'2013'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x97</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'mdash'</span><span class="s3">, </span><span class="s4">'2014'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x98</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'tilde'</span><span class="s3">, </span><span class="s4">'2DC'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x99</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'trade'</span><span class="s3">, </span><span class="s4">'2122'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x9a</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'scaron'</span><span class="s3">, </span><span class="s4">'161'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x9b</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'rsaquo'</span><span class="s3">, </span><span class="s4">'203A'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x9c</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'oelig'</span><span class="s3">, </span><span class="s4">'153'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x9d</span><span class="s7">'</span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+                <span class="s7">b'</span><span class="s5">\x9e</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'#x17E'</span><span class="s3">, </span><span class="s4">'17E'</span><span class="s3">),</span>
+                <span class="s7">b'</span><span class="s5">\x9f</span><span class="s7">'</span><span class="s3">: (</span><span class="s4">'Yuml'</span><span class="s3">, </span><span class="s4">''</span><span class="s3">),}</span>
+
+    <span class="s0"># A parochial partial mapping of ISO-Latin-1 to ASCII. Contains</span>
+    <span class="s0"># horrors like stripping diacritical marks to turn á into a, but also</span>
+    <span class="s0"># contains non-horrors like turning “ into &quot;.</span>
+    <span class="s1">MS_CHARS_TO_ASCII </span><span class="s3">= {</span>
+        <span class="s7">b'</span><span class="s5">\x80</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'EUR'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x81</span><span class="s7">' </span><span class="s3">: </span><span class="s4">' '</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x82</span><span class="s7">' </span><span class="s3">: </span><span class="s4">','</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x83</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'f'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x84</span><span class="s7">' </span><span class="s3">: </span><span class="s4">',,'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x85</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'...'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x86</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'+'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x87</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'++'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x88</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'^'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x89</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'%'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x8a</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'S'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x8b</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'&lt;'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x8c</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'OE'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x8d</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x8e</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'Z'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x8f</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x90</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x91</span><span class="s7">' </span><span class="s3">: </span><span class="s4">&quot;'&quot;</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x92</span><span class="s7">' </span><span class="s3">: </span><span class="s4">&quot;'&quot;</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x93</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'&quot;'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x94</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'&quot;'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x95</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'*'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x96</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'-'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x97</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'--'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x98</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'~'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x99</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'(TM)'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x9a</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'s'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x9b</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'&gt;'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x9c</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'oe'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x9d</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x9e</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'z'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\x9f</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'Y'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa0</span><span class="s7">' </span><span class="s3">: </span><span class="s4">' '</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa1</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'!'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa2</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'c'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa3</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'GBP'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa4</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'$'</span><span class="s3">, </span><span class="s0">#This approximation is especially parochial--this is the</span>
+                       <span class="s0">#generic currency symbol.</span>
+        <span class="s7">b'</span><span class="s5">\xa5</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'YEN'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa6</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'|'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa7</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'S'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa8</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'..'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xa9</span><span class="s7">' </span><span class="s3">: </span><span class="s4">''</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xaa</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'(th)'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xab</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'&lt;&lt;'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xac</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'!'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xad</span><span class="s7">' </span><span class="s3">: </span><span class="s4">' '</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xae</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'(R)'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xaf</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'-'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb0</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb1</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'+-'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb2</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'2'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb3</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'3'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb4</span><span class="s7">' </span><span class="s3">: (</span><span class="s4">&quot;'&quot;</span><span class="s3">, </span><span class="s4">'acute'</span><span class="s3">),</span>
+        <span class="s7">b'</span><span class="s5">\xb5</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'u'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb6</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'P'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb7</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'*'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb8</span><span class="s7">' </span><span class="s3">: </span><span class="s4">','</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xb9</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'1'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xba</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'(th)'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xbb</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'&gt;&gt;'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xbc</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'1/4'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xbd</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'1/2'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xbe</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'3/4'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xbf</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'?'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc0</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'A'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc1</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'A'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc2</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'A'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc3</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'A'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc4</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'A'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc5</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'A'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc6</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'AE'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc7</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'C'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc8</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'E'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xc9</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'E'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xca</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'E'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xcb</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'E'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xcc</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'I'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xcd</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'I'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xce</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'I'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xcf</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'I'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd0</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'D'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd1</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'N'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd2</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'O'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd3</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'O'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd4</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'O'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd5</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'O'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd6</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'O'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd7</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'*'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd8</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'O'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xd9</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'U'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xda</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'U'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xdb</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'U'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xdc</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'U'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xdd</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'Y'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xde</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'b'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xdf</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'B'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe0</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'a'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe1</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'a'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe2</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'a'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe3</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'a'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe4</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'a'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe5</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'a'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe6</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'ae'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe7</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'c'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe8</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'e'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xe9</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'e'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xea</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'e'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xeb</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'e'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xec</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'i'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xed</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'i'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xee</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'i'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xef</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'i'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf0</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf1</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'n'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf2</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf3</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf4</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf5</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf6</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf7</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'/'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf8</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'o'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xf9</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'u'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xfa</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'u'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xfb</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'u'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xfc</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'u'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xfd</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'y'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xfe</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'b'</span><span class="s3">,</span>
+        <span class="s7">b'</span><span class="s5">\xff</span><span class="s7">' </span><span class="s3">: </span><span class="s4">'y'</span><span class="s3">,</span>
+        <span class="s3">}</span>
+
+    <span class="s0"># A map used when removing rogue Windows-1252/ISO-8859-1</span>
+    <span class="s0"># characters in otherwise UTF-8 documents.</span>
+    <span class="s0">#</span>
+    <span class="s0"># Note that \x81, \x8d, \x8f, \x90, and \x9d are undefined in</span>
+    <span class="s0"># Windows-1252.</span>
+    <span class="s1">WINDOWS_1252_TO_UTF8 </span><span class="s3">= {</span>
+        <span class="s6">0x80 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x82\xac</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># €</span>
+        <span class="s6">0x82 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x9a</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ‚</span>
+        <span class="s6">0x83 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc6\x92</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ƒ</span>
+        <span class="s6">0x84 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x9e</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># „</span>
+        <span class="s6">0x85 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xa6</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># …</span>
+        <span class="s6">0x86 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xa0</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># †</span>
+        <span class="s6">0x87 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xa1</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ‡</span>
+        <span class="s6">0x88 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xcb\x86</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ˆ</span>
+        <span class="s6">0x89 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xb0</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ‰</span>
+        <span class="s6">0x8a </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\xa0</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Š</span>
+        <span class="s6">0x8b </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xb9</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ‹</span>
+        <span class="s6">0x8c </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\x92</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Œ</span>
+        <span class="s6">0x8e </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\xbd</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ž</span>
+        <span class="s6">0x91 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x98</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ‘</span>
+        <span class="s6">0x92 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x99</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ’</span>
+        <span class="s6">0x93 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x9c</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># “</span>
+        <span class="s6">0x94 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x9d</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ”</span>
+        <span class="s6">0x95 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xa2</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># •</span>
+        <span class="s6">0x96 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x93</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># –</span>
+        <span class="s6">0x97 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\x94</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># —</span>
+        <span class="s6">0x98 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xcb\x9c</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ˜</span>
+        <span class="s6">0x99 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x84\xa2</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ™</span>
+        <span class="s6">0x9a </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\xa1</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># š</span>
+        <span class="s6">0x9b </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xe2\x80\xba</span><span class="s7">'</span><span class="s3">, </span><span class="s0"># ›</span>
+        <span class="s6">0x9c </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\x93</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># œ</span>
+        <span class="s6">0x9e </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\xbe</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ž</span>
+        <span class="s6">0x9f </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc5\xb8</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ÿ</span>
+        <span class="s6">0xa0 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa0</span><span class="s7">'</span><span class="s3">,     </span><span class="s0">#  </span>
+        <span class="s6">0xa1 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa1</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¡</span>
+        <span class="s6">0xa2 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa2</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¢</span>
+        <span class="s6">0xa3 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa3</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># £</span>
+        <span class="s6">0xa4 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa4</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¤</span>
+        <span class="s6">0xa5 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa5</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¥</span>
+        <span class="s6">0xa6 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa6</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¦</span>
+        <span class="s6">0xa7 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa7</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># §</span>
+        <span class="s6">0xa8 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa8</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¨</span>
+        <span class="s6">0xa9 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xa9</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ©</span>
+        <span class="s6">0xaa </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xaa</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ª</span>
+        <span class="s6">0xab </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xab</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># «</span>
+        <span class="s6">0xac </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xac</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¬</span>
+        <span class="s6">0xad </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xad</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ­</span>
+        <span class="s6">0xae </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xae</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ®</span>
+        <span class="s6">0xaf </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xaf</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¯</span>
+        <span class="s6">0xb0 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb0</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># °</span>
+        <span class="s6">0xb1 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb1</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ±</span>
+        <span class="s6">0xb2 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb2</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ²</span>
+        <span class="s6">0xb3 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb3</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ³</span>
+        <span class="s6">0xb4 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb4</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ´</span>
+        <span class="s6">0xb5 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb5</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># µ</span>
+        <span class="s6">0xb6 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb6</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¶</span>
+        <span class="s6">0xb7 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb7</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ·</span>
+        <span class="s6">0xb8 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb8</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¸</span>
+        <span class="s6">0xb9 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xb9</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¹</span>
+        <span class="s6">0xba </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xba</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># º</span>
+        <span class="s6">0xbb </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xbb</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># »</span>
+        <span class="s6">0xbc </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xbc</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¼</span>
+        <span class="s6">0xbd </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xbd</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ½</span>
+        <span class="s6">0xbe </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xbe</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¾</span>
+        <span class="s6">0xbf </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc2\xbf</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ¿</span>
+        <span class="s6">0xc0 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x80</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># À</span>
+        <span class="s6">0xc1 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x81</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Á</span>
+        <span class="s6">0xc2 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x82</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Â</span>
+        <span class="s6">0xc3 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x83</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ã</span>
+        <span class="s6">0xc4 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x84</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ä</span>
+        <span class="s6">0xc5 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x85</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Å</span>
+        <span class="s6">0xc6 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x86</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Æ</span>
+        <span class="s6">0xc7 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x87</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ç</span>
+        <span class="s6">0xc8 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x88</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># È</span>
+        <span class="s6">0xc9 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x89</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># É</span>
+        <span class="s6">0xca </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x8a</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ê</span>
+        <span class="s6">0xcb </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x8b</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ë</span>
+        <span class="s6">0xcc </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x8c</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ì</span>
+        <span class="s6">0xcd </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x8d</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Í</span>
+        <span class="s6">0xce </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x8e</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Î</span>
+        <span class="s6">0xcf </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x8f</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ï</span>
+        <span class="s6">0xd0 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x90</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ð</span>
+        <span class="s6">0xd1 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x91</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ñ</span>
+        <span class="s6">0xd2 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x92</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ò</span>
+        <span class="s6">0xd3 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x93</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ó</span>
+        <span class="s6">0xd4 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x94</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ô</span>
+        <span class="s6">0xd5 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x95</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Õ</span>
+        <span class="s6">0xd6 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x96</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ö</span>
+        <span class="s6">0xd7 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x97</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ×</span>
+        <span class="s6">0xd8 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x98</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ø</span>
+        <span class="s6">0xd9 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x99</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ù</span>
+        <span class="s6">0xda </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x9a</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ú</span>
+        <span class="s6">0xdb </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x9b</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Û</span>
+        <span class="s6">0xdc </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x9c</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ü</span>
+        <span class="s6">0xdd </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x9d</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Ý</span>
+        <span class="s6">0xde </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x9e</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># Þ</span>
+        <span class="s6">0xdf </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\x9f</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ß</span>
+        <span class="s6">0xe0 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa0</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># à</span>
+        <span class="s6">0xe1 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xa1</span><span class="s7">'</span><span class="s3">,         </span><span class="s0"># á</span>
+        <span class="s6">0xe2 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa2</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># â</span>
+        <span class="s6">0xe3 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa3</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ã</span>
+        <span class="s6">0xe4 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa4</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ä</span>
+        <span class="s6">0xe5 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa5</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># å</span>
+        <span class="s6">0xe6 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa6</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># æ</span>
+        <span class="s6">0xe7 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa7</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ç</span>
+        <span class="s6">0xe8 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa8</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># è</span>
+        <span class="s6">0xe9 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xa9</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># é</span>
+        <span class="s6">0xea </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xaa</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ê</span>
+        <span class="s6">0xeb </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xab</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ë</span>
+        <span class="s6">0xec </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xac</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ì</span>
+        <span class="s6">0xed </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xad</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># í</span>
+        <span class="s6">0xee </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xae</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># î</span>
+        <span class="s6">0xef </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xaf</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ï</span>
+        <span class="s6">0xf0 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb0</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ð</span>
+        <span class="s6">0xf1 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb1</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ñ</span>
+        <span class="s6">0xf2 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb2</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ò</span>
+        <span class="s6">0xf3 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb3</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ó</span>
+        <span class="s6">0xf4 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb4</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ô</span>
+        <span class="s6">0xf5 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb5</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># õ</span>
+        <span class="s6">0xf6 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb6</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ö</span>
+        <span class="s6">0xf7 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb7</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ÷</span>
+        <span class="s6">0xf8 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb8</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ø</span>
+        <span class="s6">0xf9 </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xb9</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ù</span>
+        <span class="s6">0xfa </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xba</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ú</span>
+        <span class="s6">0xfb </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xbb</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># û</span>
+        <span class="s6">0xfc </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xbc</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ü</span>
+        <span class="s6">0xfd </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xbd</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># ý</span>
+        <span class="s6">0xfe </span><span class="s3">: </span><span class="s7">b'</span><span class="s5">\xc3\xbe</span><span class="s7">'</span><span class="s3">,     </span><span class="s0"># þ</span>
+        <span class="s3">}</span>
+
+    <span class="s1">MULTIBYTE_MARKERS_AND_SIZES </span><span class="s3">= [</span>
+        <span class="s3">(</span><span class="s6">0xc2</span><span class="s3">, </span><span class="s6">0xdf</span><span class="s3">, </span><span class="s6">2</span><span class="s3">), </span><span class="s0"># 2-byte characters start with a byte C2-DF</span>
+        <span class="s3">(</span><span class="s6">0xe0</span><span class="s3">, </span><span class="s6">0xef</span><span class="s3">, </span><span class="s6">3</span><span class="s3">), </span><span class="s0"># 3-byte characters start with E0-EF</span>
+        <span class="s3">(</span><span class="s6">0xf0</span><span class="s3">, </span><span class="s6">0xf4</span><span class="s3">, </span><span class="s6">4</span><span class="s3">), </span><span class="s0"># 4-byte characters start with F0-F4</span>
+        <span class="s3">]</span>
+
+    <span class="s1">FIRST_MULTIBYTE_MARKER </span><span class="s3">= </span><span class="s1">MULTIBYTE_MARKERS_AND_SIZES</span><span class="s3">[</span><span class="s6">0</span><span class="s3">][</span><span class="s6">0</span><span class="s3">]</span>
+    <span class="s1">LAST_MULTIBYTE_MARKER </span><span class="s3">= </span><span class="s1">MULTIBYTE_MARKERS_AND_SIZES</span><span class="s3">[-</span><span class="s6">1</span><span class="s3">][</span><span class="s6">1</span><span class="s3">]</span>
+
+    <span class="s3">@</span><span class="s1">classmethod</span>
+    <span class="s5">def </span><span class="s1">detwingle</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">, </span><span class="s1">in_bytes</span><span class="s3">, </span><span class="s1">main_encoding</span><span class="s3">=</span><span class="s4">&quot;utf8&quot;</span><span class="s3">,</span>
+                  <span class="s1">embedded_encoding</span><span class="s3">=</span><span class="s4">&quot;windows-1252&quot;</span><span class="s3">):</span>
+        <span class="s2">&quot;&quot;&quot;Fix characters from one encoding embedded in some other encoding. 
+ 
+        Currently the only situation supported is Windows-1252 (or its 
+        subset ISO-8859-1), embedded in UTF-8. 
+ 
+        :param in_bytes: A bytestring that you suspect contains 
+            characters from multiple encodings. Note that this _must_ 
+            be a bytestring. If you've already converted the document 
+            to Unicode, you're too late. 
+        :param main_encoding: The primary encoding of `in_bytes`. 
+        :param embedded_encoding: The encoding that was used to embed characters 
+            in the main document. 
+        :return: A bytestring in which `embedded_encoding` 
+          characters have been converted to their `main_encoding` 
+          equivalents. 
+        &quot;&quot;&quot;</span>
+        <span class="s5">if </span><span class="s1">embedded_encoding</span><span class="s3">.</span><span class="s1">replace</span><span class="s3">(</span><span class="s4">'_'</span><span class="s3">, </span><span class="s4">'-'</span><span class="s3">).</span><span class="s1">lower</span><span class="s3">() </span><span class="s5">not in </span><span class="s3">(</span>
+            <span class="s4">'windows-1252'</span><span class="s3">, </span><span class="s4">'windows_1252'</span><span class="s3">):</span>
+            <span class="s5">raise </span><span class="s1">NotImplementedError</span><span class="s3">(</span>
+                <span class="s4">&quot;Windows-1252 and ISO-8859-1 are the only currently supported &quot;</span>
+                <span class="s4">&quot;embedded encodings.&quot;</span><span class="s3">)</span>
+
+        <span class="s5">if </span><span class="s1">main_encoding</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">() </span><span class="s5">not in </span><span class="s3">(</span><span class="s4">'utf8'</span><span class="s3">, </span><span class="s4">'utf-8'</span><span class="s3">):</span>
+            <span class="s5">raise </span><span class="s1">NotImplementedError</span><span class="s3">(</span>
+                <span class="s4">&quot;UTF-8 is the only currently supported main encoding.&quot;</span><span class="s3">)</span>
+
+        <span class="s1">byte_chunks </span><span class="s3">= []</span>
+
+        <span class="s1">chunk_start </span><span class="s3">= </span><span class="s6">0</span>
+        <span class="s1">pos </span><span class="s3">= </span><span class="s6">0</span>
+        <span class="s5">while </span><span class="s1">pos </span><span class="s3">&lt; </span><span class="s1">len</span><span class="s3">(</span><span class="s1">in_bytes</span><span class="s3">):</span>
+            <span class="s1">byte </span><span class="s3">= </span><span class="s1">in_bytes</span><span class="s3">[</span><span class="s1">pos</span><span class="s3">]</span>
+            <span class="s5">if not </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">byte</span><span class="s3">, </span><span class="s1">int</span><span class="s3">):</span>
+                <span class="s0"># Python 2.x</span>
+                <span class="s1">byte </span><span class="s3">= </span><span class="s1">ord</span><span class="s3">(</span><span class="s1">byte</span><span class="s3">)</span>
+            <span class="s5">if </span><span class="s3">(</span><span class="s1">byte </span><span class="s3">&gt;= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">FIRST_MULTIBYTE_MARKER</span>
+                <span class="s5">and </span><span class="s1">byte </span><span class="s3">&lt;= </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">LAST_MULTIBYTE_MARKER</span><span class="s3">):</span>
+                <span class="s0"># This is the start of a UTF-8 multibyte character. Skip</span>
+                <span class="s0"># to the end.</span>
+                <span class="s5">for </span><span class="s1">start</span><span class="s3">, </span><span class="s1">end</span><span class="s3">, </span><span class="s1">size </span><span class="s5">in </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">MULTIBYTE_MARKERS_AND_SIZES</span><span class="s3">:</span>
+                    <span class="s5">if </span><span class="s1">byte </span><span class="s3">&gt;= </span><span class="s1">start </span><span class="s5">and </span><span class="s1">byte </span><span class="s3">&lt;= </span><span class="s1">end</span><span class="s3">:</span>
+                        <span class="s1">pos </span><span class="s3">+= </span><span class="s1">size</span>
+                        <span class="s5">break</span>
+            <span class="s5">elif </span><span class="s1">byte </span><span class="s3">&gt;= </span><span class="s6">0x80 </span><span class="s5">and </span><span class="s1">byte </span><span class="s5">in </span><span class="s1">cls</span><span class="s3">.</span><span class="s1">WINDOWS_1252_TO_UTF8</span><span class="s3">:</span>
+                <span class="s0"># We found a Windows-1252 character!</span>
+                <span class="s0"># Save the string up to this point as a chunk.</span>
+                <span class="s1">byte_chunks</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">in_bytes</span><span class="s3">[</span><span class="s1">chunk_start</span><span class="s3">:</span><span class="s1">pos</span><span class="s3">])</span>
+
+                <span class="s0"># Now translate the Windows-1252 character into UTF-8</span>
+                <span class="s0"># and add it as another, one-byte chunk.</span>
+                <span class="s1">byte_chunks</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">cls</span><span class="s3">.</span><span class="s1">WINDOWS_1252_TO_UTF8</span><span class="s3">[</span><span class="s1">byte</span><span class="s3">])</span>
+                <span class="s1">pos </span><span class="s3">+= </span><span class="s6">1</span>
+                <span class="s1">chunk_start </span><span class="s3">= </span><span class="s1">pos</span>
+            <span class="s5">else</span><span class="s3">:</span>
+                <span class="s0"># Go on to the next character.</span>
+                <span class="s1">pos </span><span class="s3">+= </span><span class="s6">1</span>
+        <span class="s5">if </span><span class="s1">chunk_start </span><span class="s3">== </span><span class="s6">0</span><span class="s3">:</span>
+            <span class="s0"># The string is unchanged.</span>
+            <span class="s5">return </span><span class="s1">in_bytes</span>
+        <span class="s5">else</span><span class="s3">:</span>
+            <span class="s0"># Store the final chunk.</span>
+            <span class="s1">byte_chunks</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">in_bytes</span><span class="s3">[</span><span class="s1">chunk_start</span><span class="s3">:])</span>
+        <span class="s5">return </span><span class="s7">b''</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">byte_chunks</span><span class="s3">)</span>
+
+</pre>
+</body>
+</html>

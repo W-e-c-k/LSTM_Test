@@ -1,0 +1,503 @@
+<html>
+<head>
+<title>app.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+app.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2017 The Abseil Authors.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+
+<span class="s2">&quot;&quot;&quot;Generic entry point for Abseil Python applications. 
+ 
+To use this module, define a ``main`` function with a single ``argv`` argument 
+and call ``app.run(main)``. For example:: 
+ 
+    def main(argv): 
+      if len(argv) &gt; 1: 
+        raise app.UsageError('Too many command-line arguments.') 
+ 
+    if __name__ == '__main__': 
+      app.run(main) 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">collections</span>
+<span class="s3">import </span><span class="s1">errno</span>
+<span class="s3">import </span><span class="s1">os</span>
+<span class="s3">import </span><span class="s1">pdb</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">import </span><span class="s1">textwrap</span>
+<span class="s3">import </span><span class="s1">traceback</span>
+
+<span class="s3">from </span><span class="s1">absl </span><span class="s3">import </span><span class="s1">command_name</span>
+<span class="s3">from </span><span class="s1">absl </span><span class="s3">import </span><span class="s1">flags</span>
+<span class="s3">from </span><span class="s1">absl </span><span class="s3">import </span><span class="s1">logging</span>
+
+<span class="s3">try</span><span class="s4">:</span>
+  <span class="s3">import </span><span class="s1">faulthandler</span>
+<span class="s3">except </span><span class="s1">ImportError</span><span class="s4">:</span>
+  <span class="s1">faulthandler </span><span class="s4">= </span><span class="s3">None</span>
+
+<span class="s1">FLAGS </span><span class="s4">= </span><span class="s1">flags</span><span class="s4">.</span><span class="s1">FLAGS</span>
+
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_boolean</span><span class="s4">(</span><span class="s5">'run_with_pdb'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">, </span><span class="s5">'Set to true for PDB debug mode'</span><span class="s4">)</span>
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_boolean</span><span class="s4">(</span><span class="s5">'pdb_post_mortem'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">,</span>
+                     <span class="s5">'Set to true to handle uncaught exceptions with PDB '</span>
+                     <span class="s5">'post mortem.'</span><span class="s4">)</span>
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_alias</span><span class="s4">(</span><span class="s5">'pdb'</span><span class="s4">, </span><span class="s5">'pdb_post_mortem'</span><span class="s4">)</span>
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_boolean</span><span class="s4">(</span><span class="s5">'run_with_profiling'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">,</span>
+                     <span class="s5">'Set to true for profiling the script. '</span>
+                     <span class="s5">'Execution will be slower, and the output format might '</span>
+                     <span class="s5">'change over time.'</span><span class="s4">)</span>
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_string</span><span class="s4">(</span><span class="s5">'profile_file'</span><span class="s4">, </span><span class="s3">None</span><span class="s4">,</span>
+                    <span class="s5">'Dump profile information to a file (for python -m '</span>
+                    <span class="s5">'pstats). Implies --run_with_profiling.'</span><span class="s4">)</span>
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_boolean</span><span class="s4">(</span><span class="s5">'use_cprofile_for_profiling'</span><span class="s4">, </span><span class="s3">True</span><span class="s4">,</span>
+                     <span class="s5">'Use cProfile instead of the profile module for '</span>
+                     <span class="s5">'profiling. This has no effect unless '</span>
+                     <span class="s5">'--run_with_profiling is set.'</span><span class="s4">)</span>
+<span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_boolean</span><span class="s4">(</span><span class="s5">'only_check_args'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">,</span>
+                     <span class="s5">'Set to true to validate args and exit.'</span><span class="s4">,</span>
+                     <span class="s1">allow_hide_cpp</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+
+
+<span class="s0"># If main() exits via an abnormal exception, call into these</span>
+<span class="s0"># handlers before exiting.</span>
+<span class="s1">EXCEPTION_HANDLERS </span><span class="s4">= []</span>
+
+
+<span class="s3">class </span><span class="s1">Error</span><span class="s4">(</span><span class="s1">Exception</span><span class="s4">):</span>
+  <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">UsageError</span><span class="s4">(</span><span class="s1">Error</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Exception raised when the arguments supplied by the user are invalid. 
+ 
+  Raise this when the arguments supplied are invalid from the point of 
+  view of the application. For example when two mutually exclusive 
+  flags have been supplied or when there are not enough non-flag 
+  arguments. It is distinct from flags.Error which covers the lower 
+  level of parsing and validating individual flags. 
+  &quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">message</span><span class="s4">, </span><span class="s1">exitcode</span><span class="s4">=</span><span class="s6">1</span><span class="s4">):</span>
+    <span class="s1">super</span><span class="s4">(</span><span class="s1">UsageError</span><span class="s4">, </span><span class="s1">self</span><span class="s4">).</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">message</span><span class="s4">)</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">exitcode </span><span class="s4">= </span><span class="s1">exitcode</span>
+
+
+<span class="s3">class </span><span class="s1">HelpFlag</span><span class="s4">(</span><span class="s1">flags</span><span class="s4">.</span><span class="s1">BooleanFlag</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Special boolean flag that displays usage and raises SystemExit.&quot;&quot;&quot;</span>
+  <span class="s1">NAME </span><span class="s4">= </span><span class="s5">'help'</span>
+  <span class="s1">SHORT_NAME </span><span class="s4">= </span><span class="s5">'?'</span>
+
+  <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">super</span><span class="s4">(</span><span class="s1">HelpFlag</span><span class="s4">, </span><span class="s1">self</span><span class="s4">).</span><span class="s1">__init__</span><span class="s4">(</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">NAME</span><span class="s4">, </span><span class="s3">False</span><span class="s4">, </span><span class="s5">'show this help'</span><span class="s4">,</span>
+        <span class="s1">short_name</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">SHORT_NAME</span><span class="s4">, </span><span class="s1">allow_hide_cpp</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+
+  <span class="s3">def </span><span class="s1">parse</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">arg</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_parse</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">):</span>
+      <span class="s1">usage</span><span class="s4">(</span><span class="s1">shorthelp</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">writeto_stdout</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+      <span class="s0"># Advertise --helpfull on stdout, since usage() was on stdout.</span>
+      <span class="s1">print</span><span class="s4">()</span>
+      <span class="s1">print</span><span class="s4">(</span><span class="s5">'Try --helpfull to get a list of all flags.'</span><span class="s4">)</span>
+      <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s6">1</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">HelpshortFlag</span><span class="s4">(</span><span class="s1">HelpFlag</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;--helpshort is an alias for --help.&quot;&quot;&quot;</span>
+  <span class="s1">NAME </span><span class="s4">= </span><span class="s5">'helpshort'</span>
+  <span class="s1">SHORT_NAME </span><span class="s4">= </span><span class="s3">None</span>
+
+
+<span class="s3">class </span><span class="s1">HelpfullFlag</span><span class="s4">(</span><span class="s1">flags</span><span class="s4">.</span><span class="s1">BooleanFlag</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Display help for flags in the main module and all dependent modules.&quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">super</span><span class="s4">(</span><span class="s1">HelpfullFlag</span><span class="s4">, </span><span class="s1">self</span><span class="s4">).</span><span class="s1">__init__</span><span class="s4">(</span>
+        <span class="s5">'helpfull'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">, </span><span class="s5">'show full help'</span><span class="s4">, </span><span class="s1">allow_hide_cpp</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+
+  <span class="s3">def </span><span class="s1">parse</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">arg</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_parse</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">):</span>
+      <span class="s1">usage</span><span class="s4">(</span><span class="s1">writeto_stdout</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+      <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s6">1</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">HelpXMLFlag</span><span class="s4">(</span><span class="s1">flags</span><span class="s4">.</span><span class="s1">BooleanFlag</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Similar to HelpfullFlag, but generates output in XML format.&quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">super</span><span class="s4">(</span><span class="s1">HelpXMLFlag</span><span class="s4">, </span><span class="s1">self</span><span class="s4">).</span><span class="s1">__init__</span><span class="s4">(</span>
+        <span class="s5">'helpxml'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">, </span><span class="s5">'like --helpfull, but generates XML output'</span><span class="s4">,</span>
+        <span class="s1">allow_hide_cpp</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+
+  <span class="s3">def </span><span class="s1">parse</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">arg</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_parse</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">):</span>
+      <span class="s1">flags</span><span class="s4">.</span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">write_help_in_xml_format</span><span class="s4">(</span><span class="s1">sys</span><span class="s4">.</span><span class="s1">stdout</span><span class="s4">)</span>
+      <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s6">1</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">parse_flags_with_usage</span><span class="s4">(</span><span class="s1">args</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Tries to parse the flags, print usage, and exit if unparsable. 
+ 
+  Args: 
+    args: [str], a non-empty list of the command line arguments including 
+        program name. 
+ 
+  Returns: 
+    [str], a non-empty list of remaining command line arguments after parsing 
+    flags, including program name. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">try</span><span class="s4">:</span>
+    <span class="s3">return </span><span class="s1">FLAGS</span><span class="s4">(</span><span class="s1">args</span><span class="s4">)</span>
+  <span class="s3">except </span><span class="s1">flags</span><span class="s4">.</span><span class="s1">Error </span><span class="s3">as </span><span class="s1">error</span><span class="s4">:</span>
+    <span class="s1">message </span><span class="s4">= </span><span class="s1">str</span><span class="s4">(</span><span class="s1">error</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s5">'</span><span class="s3">\n</span><span class="s5">' </span><span class="s3">in </span><span class="s1">message</span><span class="s4">:</span>
+      <span class="s1">final_message </span><span class="s4">= </span><span class="s5">'FATAL Flags parsing error:</span><span class="s3">\n</span><span class="s5">%s</span><span class="s3">\n</span><span class="s5">' </span><span class="s4">% </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">indent</span><span class="s4">(</span>
+          <span class="s1">message</span><span class="s4">, </span><span class="s5">'  '</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+      <span class="s1">final_message </span><span class="s4">= </span><span class="s5">'FATAL Flags parsing error: %s</span><span class="s3">\n</span><span class="s5">' </span><span class="s4">% </span><span class="s1">message</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">stderr</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">final_message</span><span class="s4">)</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">stderr</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s5">'Pass --helpshort or --helpfull to see help on flags.</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">)</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s6">1</span><span class="s4">)</span>
+
+
+<span class="s1">_define_help_flags_called </span><span class="s4">= </span><span class="s3">False</span>
+
+
+<span class="s3">def </span><span class="s1">define_help_flags</span><span class="s4">():</span>
+  <span class="s2">&quot;&quot;&quot;Registers help flags. Idempotent.&quot;&quot;&quot;</span>
+  <span class="s0"># Use a global to ensure idempotence.</span>
+  <span class="s3">global </span><span class="s1">_define_help_flags_called</span>
+
+  <span class="s3">if not </span><span class="s1">_define_help_flags_called</span><span class="s4">:</span>
+    <span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_flag</span><span class="s4">(</span><span class="s1">HelpFlag</span><span class="s4">())</span>
+    <span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_flag</span><span class="s4">(</span><span class="s1">HelpshortFlag</span><span class="s4">())  </span><span class="s0"># alias for --help</span>
+    <span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_flag</span><span class="s4">(</span><span class="s1">HelpfullFlag</span><span class="s4">())</span>
+    <span class="s1">flags</span><span class="s4">.</span><span class="s1">DEFINE_flag</span><span class="s4">(</span><span class="s1">HelpXMLFlag</span><span class="s4">())</span>
+    <span class="s1">_define_help_flags_called </span><span class="s4">= </span><span class="s3">True</span>
+
+
+<span class="s3">def </span><span class="s1">_register_and_parse_flags_with_usage</span><span class="s4">(</span>
+    <span class="s1">argv</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">flags_parser</span><span class="s4">=</span><span class="s1">parse_flags_with_usage</span><span class="s4">,</span>
+<span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Registers help flags, parses arguments and shows usage if appropriate. 
+ 
+  This also calls sys.exit(0) if flag --only_check_args is True. 
+ 
+  Args: 
+    argv: [str], a non-empty list of the command line arguments including 
+        program name, sys.argv is used if None. 
+    flags_parser: Callable[[List[Text]], Any], the function used to parse flags. 
+        The return value of this function is passed to `main` untouched. 
+        It must guarantee FLAGS is parsed after this function is called. 
+ 
+  Returns: 
+    The return value of `flags_parser`. When using the default `flags_parser`, 
+    it returns the following: 
+    [str], a non-empty list of remaining command line arguments after parsing 
+    flags, including program name. 
+ 
+  Raises: 
+    Error: Raised when flags_parser is called, but FLAGS is not parsed. 
+    SystemError: Raised when it's called more than once. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">_register_and_parse_flags_with_usage</span><span class="s4">.</span><span class="s1">done</span><span class="s4">:</span>
+    <span class="s3">raise </span><span class="s1">SystemError</span><span class="s4">(</span><span class="s5">'Flag registration can be done only once.'</span><span class="s4">)</span>
+
+  <span class="s1">define_help_flags</span><span class="s4">()</span>
+
+  <span class="s1">original_argv </span><span class="s4">= </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">argv </span><span class="s3">if </span><span class="s1">argv </span><span class="s3">is None else </span><span class="s1">argv</span>
+  <span class="s1">args_to_main </span><span class="s4">= </span><span class="s1">flags_parser</span><span class="s4">(</span><span class="s1">original_argv</span><span class="s4">)</span>
+  <span class="s3">if not </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">is_parsed</span><span class="s4">():</span>
+    <span class="s3">raise </span><span class="s1">Error</span><span class="s4">(</span><span class="s5">'FLAGS must be parsed after flags_parser is called.'</span><span class="s4">)</span>
+
+  <span class="s0"># Exit when told so.</span>
+  <span class="s3">if </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">only_check_args</span><span class="s4">:</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s6">0</span><span class="s4">)</span>
+  <span class="s0"># Immediately after flags are parsed, bump verbosity to INFO if the flag has</span>
+  <span class="s0"># not been set.</span>
+  <span class="s3">if </span><span class="s1">FLAGS</span><span class="s4">[</span><span class="s5">'verbosity'</span><span class="s4">].</span><span class="s1">using_default_value</span><span class="s4">:</span>
+    <span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">verbosity </span><span class="s4">= </span><span class="s6">0</span>
+  <span class="s1">_register_and_parse_flags_with_usage</span><span class="s4">.</span><span class="s1">done </span><span class="s4">= </span><span class="s3">True</span>
+
+  <span class="s3">return </span><span class="s1">args_to_main</span>
+
+<span class="s1">_register_and_parse_flags_with_usage</span><span class="s4">.</span><span class="s1">done </span><span class="s4">= </span><span class="s3">False</span>
+
+
+<span class="s3">def </span><span class="s1">_run_main</span><span class="s4">(</span><span class="s1">main</span><span class="s4">, </span><span class="s1">argv</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Calls main, optionally with pdb or profiler.&quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">run_with_pdb</span><span class="s4">:</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s1">pdb</span><span class="s4">.</span><span class="s1">runcall</span><span class="s4">(</span><span class="s1">main</span><span class="s4">, </span><span class="s1">argv</span><span class="s4">))</span>
+  <span class="s3">elif </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">run_with_profiling </span><span class="s3">or </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">profile_file</span><span class="s4">:</span>
+    <span class="s0"># Avoid import overhead since most apps (including performance-sensitive</span>
+    <span class="s0"># ones) won't be run with profiling.</span>
+    <span class="s0"># pylint: disable=g-import-not-at-top</span>
+    <span class="s3">import </span><span class="s1">atexit</span>
+    <span class="s3">if </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">use_cprofile_for_profiling</span><span class="s4">:</span>
+      <span class="s3">import </span><span class="s1">cProfile </span><span class="s3">as </span><span class="s1">profile</span>
+    <span class="s3">else</span><span class="s4">:</span>
+      <span class="s3">import </span><span class="s1">profile</span>
+    <span class="s1">profiler </span><span class="s4">= </span><span class="s1">profile</span><span class="s4">.</span><span class="s1">Profile</span><span class="s4">()</span>
+    <span class="s3">if </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">profile_file</span><span class="s4">:</span>
+      <span class="s1">atexit</span><span class="s4">.</span><span class="s1">register</span><span class="s4">(</span><span class="s1">profiler</span><span class="s4">.</span><span class="s1">dump_stats</span><span class="s4">, </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">profile_file</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+      <span class="s1">atexit</span><span class="s4">.</span><span class="s1">register</span><span class="s4">(</span><span class="s1">profiler</span><span class="s4">.</span><span class="s1">print_stats</span><span class="s4">)</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s1">profiler</span><span class="s4">.</span><span class="s1">runcall</span><span class="s4">(</span><span class="s1">main</span><span class="s4">, </span><span class="s1">argv</span><span class="s4">))</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s1">main</span><span class="s4">(</span><span class="s1">argv</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_call_exception_handlers</span><span class="s4">(</span><span class="s1">exception</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Calls any installed exception handlers.&quot;&quot;&quot;</span>
+  <span class="s3">for </span><span class="s1">handler </span><span class="s3">in </span><span class="s1">EXCEPTION_HANDLERS</span><span class="s4">:</span>
+    <span class="s3">try</span><span class="s4">:</span>
+      <span class="s3">if </span><span class="s1">handler</span><span class="s4">.</span><span class="s1">wants</span><span class="s4">(</span><span class="s1">exception</span><span class="s4">):</span>
+        <span class="s1">handler</span><span class="s4">.</span><span class="s1">handle</span><span class="s4">(</span><span class="s1">exception</span><span class="s4">)</span>
+    <span class="s3">except</span><span class="s4">:  </span><span class="s0"># pylint: disable=bare-except</span>
+      <span class="s3">try</span><span class="s4">:</span>
+        <span class="s0"># We don't want to stop for exceptions in the exception handlers but</span>
+        <span class="s0"># we shouldn't hide them either.</span>
+        <span class="s1">logging</span><span class="s4">.</span><span class="s1">error</span><span class="s4">(</span><span class="s1">traceback</span><span class="s4">.</span><span class="s1">format_exc</span><span class="s4">())</span>
+      <span class="s3">except</span><span class="s4">:  </span><span class="s0"># pylint: disable=bare-except</span>
+        <span class="s0"># In case even the logging statement fails, ignore.</span>
+        <span class="s3">pass</span>
+
+
+<span class="s3">def </span><span class="s1">run</span><span class="s4">(</span>
+    <span class="s1">main</span><span class="s4">,</span>
+    <span class="s1">argv</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">flags_parser</span><span class="s4">=</span><span class="s1">parse_flags_with_usage</span><span class="s4">,</span>
+<span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Begins executing the program. 
+ 
+  Args: 
+    main: The main function to execute. It takes an single argument &quot;argv&quot;, 
+        which is a list of command line arguments with parsed flags removed. 
+        The return value is passed to `sys.exit`, and so for example 
+        a return value of 0 or None results in a successful termination, whereas 
+        a return value of 1 results in abnormal termination. 
+        For more details, see https://docs.python.org/3/library/sys#sys.exit 
+    argv: A non-empty list of the command line arguments including program name, 
+        sys.argv is used if None. 
+    flags_parser: Callable[[List[Text]], Any], the function used to parse flags. 
+        The return value of this function is passed to `main` untouched. 
+        It must guarantee FLAGS is parsed after this function is called. 
+        Should be passed as a keyword-only arg which will become mandatory in a 
+        future release. 
+  - Parses command line flags with the flag module. 
+  - If there are any errors, prints usage(). 
+  - Calls main() with the remaining arguments. 
+  - If main() raises a UsageError, prints usage and the error message. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">try</span><span class="s4">:</span>
+    <span class="s1">args </span><span class="s4">= </span><span class="s1">_run_init</span><span class="s4">(</span>
+        <span class="s1">sys</span><span class="s4">.</span><span class="s1">argv </span><span class="s3">if </span><span class="s1">argv </span><span class="s3">is None else </span><span class="s1">argv</span><span class="s4">,</span>
+        <span class="s1">flags_parser</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">while </span><span class="s1">_init_callbacks</span><span class="s4">:</span>
+      <span class="s1">callback </span><span class="s4">= </span><span class="s1">_init_callbacks</span><span class="s4">.</span><span class="s1">popleft</span><span class="s4">()</span>
+      <span class="s1">callback</span><span class="s4">()</span>
+    <span class="s3">try</span><span class="s4">:</span>
+      <span class="s1">_run_main</span><span class="s4">(</span><span class="s1">main</span><span class="s4">, </span><span class="s1">args</span><span class="s4">)</span>
+    <span class="s3">except </span><span class="s1">UsageError </span><span class="s3">as </span><span class="s1">error</span><span class="s4">:</span>
+      <span class="s1">usage</span><span class="s4">(</span><span class="s1">shorthelp</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">detailed_error</span><span class="s4">=</span><span class="s1">error</span><span class="s4">, </span><span class="s1">exitcode</span><span class="s4">=</span><span class="s1">error</span><span class="s4">.</span><span class="s1">exitcode</span><span class="s4">)</span>
+    <span class="s3">except</span><span class="s4">:</span>
+      <span class="s1">exc </span><span class="s4">= </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">exc_info</span><span class="s4">()[</span><span class="s6">1</span><span class="s4">]</span>
+      <span class="s0"># Don't try to post-mortem debug successful SystemExits, since those</span>
+      <span class="s0"># mean there wasn't actually an error. In particular, the test framework</span>
+      <span class="s0"># raises SystemExit(False) even if all tests passed.</span>
+      <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">exc</span><span class="s4">, </span><span class="s1">SystemExit</span><span class="s4">) </span><span class="s3">and not </span><span class="s1">exc</span><span class="s4">.</span><span class="s1">code</span><span class="s4">:</span>
+        <span class="s3">raise</span>
+
+      <span class="s0"># Check the tty so that we don't hang waiting for input in an</span>
+      <span class="s0"># non-interactive scenario.</span>
+      <span class="s3">if </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">pdb_post_mortem </span><span class="s3">and </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">stdout</span><span class="s4">.</span><span class="s1">isatty</span><span class="s4">():</span>
+        <span class="s1">traceback</span><span class="s4">.</span><span class="s1">print_exc</span><span class="s4">()</span>
+        <span class="s1">print</span><span class="s4">()</span>
+        <span class="s1">print</span><span class="s4">(</span><span class="s5">' *** Entering post-mortem debugging ***'</span><span class="s4">)</span>
+        <span class="s1">print</span><span class="s4">()</span>
+        <span class="s1">pdb</span><span class="s4">.</span><span class="s1">post_mortem</span><span class="s4">()</span>
+      <span class="s3">raise</span>
+  <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e</span><span class="s4">:</span>
+    <span class="s1">_call_exception_handlers</span><span class="s4">(</span><span class="s1">e</span><span class="s4">)</span>
+    <span class="s3">raise</span>
+
+<span class="s0"># Callbacks which have been deferred until after _run_init has been called.</span>
+<span class="s1">_init_callbacks </span><span class="s4">= </span><span class="s1">collections</span><span class="s4">.</span><span class="s1">deque</span><span class="s4">()</span>
+
+
+<span class="s3">def </span><span class="s1">call_after_init</span><span class="s4">(</span><span class="s1">callback</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Calls the given callback only once ABSL has finished initialization. 
+ 
+  If ABSL has already finished initialization when ``call_after_init`` is 
+  called then the callback is executed immediately, otherwise `callback` is 
+  stored to be executed after ``app.run`` has finished initializing (aka. just 
+  before the main function is called). 
+ 
+  If called after ``app.run``, this is equivalent to calling ``callback()`` in 
+  the caller thread. If called before ``app.run``, callbacks are run 
+  sequentially (in an undefined order) in the same thread as ``app.run``. 
+ 
+  Args: 
+    callback: a callable to be called once ABSL has finished initialization. 
+      This may be immediate if initialization has already finished. It 
+      takes no arguments and returns nothing. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">_run_init</span><span class="s4">.</span><span class="s1">done</span><span class="s4">:</span>
+    <span class="s1">callback</span><span class="s4">()</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">_init_callbacks</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">callback</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_run_init</span><span class="s4">(</span>
+    <span class="s1">argv</span><span class="s4">,</span>
+    <span class="s1">flags_parser</span><span class="s4">,</span>
+<span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Does one-time initialization and re-parses flags on rerun.&quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">_run_init</span><span class="s4">.</span><span class="s1">done</span><span class="s4">:</span>
+    <span class="s3">return </span><span class="s1">flags_parser</span><span class="s4">(</span><span class="s1">argv</span><span class="s4">)</span>
+  <span class="s1">command_name</span><span class="s4">.</span><span class="s1">make_process_name_useful</span><span class="s4">()</span>
+  <span class="s0"># Set up absl logging handler.</span>
+  <span class="s1">logging</span><span class="s4">.</span><span class="s1">use_absl_handler</span><span class="s4">()</span>
+  <span class="s1">args </span><span class="s4">= </span><span class="s1">_register_and_parse_flags_with_usage</span><span class="s4">(</span>
+      <span class="s1">argv</span><span class="s4">=</span><span class="s1">argv</span><span class="s4">,</span>
+      <span class="s1">flags_parser</span><span class="s4">=</span><span class="s1">flags_parser</span><span class="s4">,</span>
+  <span class="s4">)</span>
+  <span class="s3">if </span><span class="s1">faulthandler</span><span class="s4">:</span>
+    <span class="s3">try</span><span class="s4">:</span>
+      <span class="s1">faulthandler</span><span class="s4">.</span><span class="s1">enable</span><span class="s4">()</span>
+    <span class="s3">except </span><span class="s1">Exception</span><span class="s4">:  </span><span class="s0"># pylint: disable=broad-except</span>
+      <span class="s0"># Some tests verify stderr output very closely, so don't print anything.</span>
+      <span class="s0"># Disabled faulthandler is a low-impact error.</span>
+      <span class="s3">pass</span>
+  <span class="s1">_run_init</span><span class="s4">.</span><span class="s1">done </span><span class="s4">= </span><span class="s3">True</span>
+  <span class="s3">return </span><span class="s1">args</span>
+
+
+<span class="s1">_run_init</span><span class="s4">.</span><span class="s1">done </span><span class="s4">= </span><span class="s3">False</span>
+
+
+<span class="s3">def </span><span class="s1">usage</span><span class="s4">(</span><span class="s1">shorthelp</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">writeto_stdout</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">detailed_error</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+          <span class="s1">exitcode</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Writes __main__'s docstring to stderr with some help text. 
+ 
+  Args: 
+    shorthelp: bool, if True, prints only flags from the main module, 
+        rather than all flags. 
+    writeto_stdout: bool, if True, writes help message to stdout, 
+        rather than to stderr. 
+    detailed_error: str, additional detail about why usage info was presented. 
+    exitcode: optional integer, if set, exits with this status code after 
+        writing help. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">if </span><span class="s1">writeto_stdout</span><span class="s4">:</span>
+    <span class="s1">stdfile </span><span class="s4">= </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">stdout</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">stdfile </span><span class="s4">= </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">stderr</span>
+
+  <span class="s1">doc </span><span class="s4">= </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">modules</span><span class="s4">[</span><span class="s5">'__main__'</span><span class="s4">].</span><span class="s1">__doc__</span>
+  <span class="s3">if not </span><span class="s1">doc</span><span class="s4">:</span>
+    <span class="s1">doc </span><span class="s4">= </span><span class="s5">'</span><span class="s3">\n</span><span class="s5">USAGE: %s [flags]</span><span class="s3">\n</span><span class="s5">' </span><span class="s4">% </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">argv</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">doc </span><span class="s4">= </span><span class="s1">flags</span><span class="s4">.</span><span class="s1">text_wrap</span><span class="s4">(</span><span class="s1">doc</span><span class="s4">, </span><span class="s1">indent</span><span class="s4">=</span><span class="s5">'       '</span><span class="s4">, </span><span class="s1">firstline_indent</span><span class="s4">=</span><span class="s5">''</span><span class="s4">)</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s0"># Replace all '%s' with sys.argv[0], and all '%%' with '%'.</span>
+    <span class="s1">num_specifiers </span><span class="s4">= </span><span class="s1">doc</span><span class="s4">.</span><span class="s1">count</span><span class="s4">(</span><span class="s5">'%'</span><span class="s4">) - </span><span class="s6">2 </span><span class="s4">* </span><span class="s1">doc</span><span class="s4">.</span><span class="s1">count</span><span class="s4">(</span><span class="s5">'%%'</span><span class="s4">)</span>
+    <span class="s3">try</span><span class="s4">:</span>
+      <span class="s1">doc </span><span class="s4">%= (</span><span class="s1">sys</span><span class="s4">.</span><span class="s1">argv</span><span class="s4">[</span><span class="s6">0</span><span class="s4">],) * </span><span class="s1">num_specifiers</span>
+    <span class="s3">except </span><span class="s4">(</span><span class="s1">OverflowError</span><span class="s4">, </span><span class="s1">TypeError</span><span class="s4">, </span><span class="s1">ValueError</span><span class="s4">):</span>
+      <span class="s0"># Just display the docstring as-is.</span>
+      <span class="s3">pass</span>
+  <span class="s3">if </span><span class="s1">shorthelp</span><span class="s4">:</span>
+    <span class="s1">flag_str </span><span class="s4">= </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">main_module_help</span><span class="s4">()</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">flag_str </span><span class="s4">= </span><span class="s1">FLAGS</span><span class="s4">.</span><span class="s1">get_help</span><span class="s4">()</span>
+  <span class="s3">try</span><span class="s4">:</span>
+    <span class="s1">stdfile</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">doc</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">flag_str</span><span class="s4">:</span>
+      <span class="s1">stdfile</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">flags:</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">)</span>
+      <span class="s1">stdfile</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">flag_str</span><span class="s4">)</span>
+    <span class="s1">stdfile</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">detailed_error </span><span class="s3">is not None</span><span class="s4">:</span>
+      <span class="s1">stdfile</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">%s</span><span class="s3">\n</span><span class="s5">' </span><span class="s4">% </span><span class="s1">detailed_error</span><span class="s4">)</span>
+  <span class="s3">except </span><span class="s1">IOError </span><span class="s3">as </span><span class="s1">e</span><span class="s4">:</span>
+    <span class="s0"># We avoid printing a huge backtrace if we get EPIPE, because</span>
+    <span class="s0"># &quot;foo.par --help | less&quot; is a frequent use case.</span>
+    <span class="s3">if </span><span class="s1">e</span><span class="s4">.</span><span class="s1">errno </span><span class="s4">!= </span><span class="s1">errno</span><span class="s4">.</span><span class="s1">EPIPE</span><span class="s4">:</span>
+      <span class="s3">raise</span>
+  <span class="s3">if </span><span class="s1">exitcode </span><span class="s3">is not None</span><span class="s4">:</span>
+    <span class="s1">sys</span><span class="s4">.</span><span class="s1">exit</span><span class="s4">(</span><span class="s1">exitcode</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">ExceptionHandler</span><span class="s4">(</span><span class="s1">object</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Base exception handler from which other may inherit.&quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">wants</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">exc</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Returns whether this handler wants to handle the exception or not. 
+ 
+    This base class returns True for all exceptions by default. Override in 
+    subclass if it wants to be more selective. 
+ 
+    Args: 
+      exc: Exception, the current exception. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">del </span><span class="s1">exc  </span><span class="s0"># Unused.</span>
+    <span class="s3">return True</span>
+
+  <span class="s3">def </span><span class="s1">handle</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">exc</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Do something with the current exception. 
+ 
+    Args: 
+      exc: Exception, the current exception 
+ 
+    This method must be overridden. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">raise </span><span class="s1">NotImplementedError</span><span class="s4">()</span>
+
+
+<span class="s3">def </span><span class="s1">install_exception_handler</span><span class="s4">(</span><span class="s1">handler</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Installs an exception handler. 
+ 
+  Args: 
+    handler: ExceptionHandler, the exception handler to install. 
+ 
+  Raises: 
+    TypeError: Raised when the handler was not of the correct type. 
+ 
+  All installed exception handlers will be called if main() exits via 
+  an abnormal exception, i.e. not one of SystemExit, KeyboardInterrupt, 
+  FlagsError or UsageError. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">handler</span><span class="s4">, </span><span class="s1">ExceptionHandler</span><span class="s4">):</span>
+    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">'handler of type %s does not inherit from ExceptionHandler'</span>
+                    <span class="s4">% </span><span class="s1">type</span><span class="s4">(</span><span class="s1">handler</span><span class="s4">))</span>
+  <span class="s1">EXCEPTION_HANDLERS</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">handler</span><span class="s4">)</span>
+</pre>
+</body>
+</html>

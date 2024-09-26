@@ -1,0 +1,706 @@
+<html>
+<head>
+<title>metrics_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #2aacb8;}
+.s4 { color: #6aab73;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+metrics_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">enum </span><span class="s0">import </span><span class="s1">Enum</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">losses</span><span class="s2">.</span><span class="s1">loss </span><span class="s0">import </span><span class="s1">squeeze_or_expand_to_same_rank</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">python_utils </span><span class="s0">import </span><span class="s1">to_list</span>
+
+<span class="s1">NEG_INF </span><span class="s2">= -</span><span class="s3">1e10</span>
+
+
+<span class="s0">def </span><span class="s1">assert_thresholds_range</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">thresholds </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">invalid_thresholds </span><span class="s2">= [</span>
+            <span class="s1">t </span><span class="s0">for </span><span class="s1">t </span><span class="s0">in </span><span class="s1">thresholds </span><span class="s0">if </span><span class="s1">t </span><span class="s0">is None or </span><span class="s1">t </span><span class="s2">&lt; </span><span class="s3">0 </span><span class="s0">or </span><span class="s1">t </span><span class="s2">&gt; </span><span class="s3">1</span>
+        <span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">invalid_thresholds</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Threshold values must be in [0, 1]. &quot;</span>
+                <span class="s4">f&quot;Received: </span><span class="s0">{</span><span class="s1">invalid_thresholds</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">parse_init_thresholds</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">, </span><span class="s1">default_threshold</span><span class="s2">=</span><span class="s3">0.5</span><span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">thresholds </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">assert_thresholds_range</span><span class="s2">(</span><span class="s1">to_list</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">))</span>
+    <span class="s1">thresholds </span><span class="s2">= </span><span class="s1">to_list</span><span class="s2">(</span>
+        <span class="s1">default_threshold </span><span class="s0">if </span><span class="s1">thresholds </span><span class="s0">is None else </span><span class="s1">thresholds</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">thresholds</span>
+
+
+<span class="s0">class </span><span class="s1">ConfusionMatrix</span><span class="s2">(</span><span class="s1">Enum</span><span class="s2">):</span>
+    <span class="s1">TRUE_POSITIVES </span><span class="s2">= </span><span class="s4">&quot;tp&quot;</span>
+    <span class="s1">FALSE_POSITIVES </span><span class="s2">= </span><span class="s4">&quot;fp&quot;</span>
+    <span class="s1">TRUE_NEGATIVES </span><span class="s2">= </span><span class="s4">&quot;tn&quot;</span>
+    <span class="s1">FALSE_NEGATIVES </span><span class="s2">= </span><span class="s4">&quot;fn&quot;</span>
+
+
+<span class="s0">class </span><span class="s1">AUCCurve</span><span class="s2">(</span><span class="s1">Enum</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Type of AUC Curve (ROC or PR).&quot;&quot;&quot;</span>
+
+    <span class="s1">ROC </span><span class="s2">= </span><span class="s4">&quot;ROC&quot;</span>
+    <span class="s1">PR </span><span class="s2">= </span><span class="s4">&quot;PR&quot;</span>
+
+    <span class="s2">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">from_str</span><span class="s2">(</span><span class="s1">key</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s2">(</span><span class="s4">&quot;pr&quot;</span><span class="s2">, </span><span class="s4">&quot;PR&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">AUCCurve</span><span class="s2">.</span><span class="s1">PR</span>
+        <span class="s0">elif </span><span class="s1">key </span><span class="s0">in </span><span class="s2">(</span><span class="s4">&quot;roc&quot;</span><span class="s2">, </span><span class="s4">&quot;ROC&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">AUCCurve</span><span class="s2">.</span><span class="s1">ROC</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f'Invalid AUC curve value: &quot;</span><span class="s0">{</span><span class="s1">key</span><span class="s0">}</span><span class="s4">&quot;. '</span>
+                <span class="s4">'Expected values are [&quot;PR&quot;, &quot;ROC&quot;]'</span>
+            <span class="s2">)</span>
+
+
+<span class="s0">class </span><span class="s1">AUCSummationMethod</span><span class="s2">(</span><span class="s1">Enum</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Type of AUC summation method. 
+ 
+    https://en.wikipedia.org/wiki/Riemann_sum) 
+ 
+    Contains the following values: 
+    * 'interpolation': Applies mid-point summation scheme for `ROC` curve. For 
+      `PR` curve, interpolates (true/false) positives but not the ratio that is 
+      precision (see Davis &amp; Goadrich 2006 for details). 
+    * 'minoring': Applies left summation for increasing intervals and right 
+      summation for decreasing intervals. 
+    * 'majoring': Applies right summation for increasing intervals and left 
+      summation for decreasing intervals. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">INTERPOLATION </span><span class="s2">= </span><span class="s4">&quot;interpolation&quot;</span>
+    <span class="s1">MAJORING </span><span class="s2">= </span><span class="s4">&quot;majoring&quot;</span>
+    <span class="s1">MINORING </span><span class="s2">= </span><span class="s4">&quot;minoring&quot;</span>
+
+    <span class="s2">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">from_str</span><span class="s2">(</span><span class="s1">key</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s2">(</span><span class="s4">&quot;interpolation&quot;</span><span class="s2">, </span><span class="s4">&quot;Interpolation&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">INTERPOLATION</span>
+        <span class="s0">elif </span><span class="s1">key </span><span class="s0">in </span><span class="s2">(</span><span class="s4">&quot;majoring&quot;</span><span class="s2">, </span><span class="s4">&quot;Majoring&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">MAJORING</span>
+        <span class="s0">elif </span><span class="s1">key </span><span class="s0">in </span><span class="s2">(</span><span class="s4">&quot;minoring&quot;</span><span class="s2">, </span><span class="s4">&quot;Minoring&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">AUCSummationMethod</span><span class="s2">.</span><span class="s1">MINORING</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f'Invalid AUC summation method value: &quot;</span><span class="s0">{</span><span class="s1">key</span><span class="s0">}</span><span class="s4">&quot;. '</span>
+                <span class="s4">'Expected values are [&quot;interpolation&quot;, &quot;majoring&quot;, &quot;minoring&quot;]'</span>
+            <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_update_confusion_matrix_variables_optimized</span><span class="s2">(</span>
+    <span class="s1">variables_to_update</span><span class="s2">,</span>
+    <span class="s1">y_true</span><span class="s2">,</span>
+    <span class="s1">y_pred</span><span class="s2">,</span>
+    <span class="s1">thresholds</span><span class="s2">,</span>
+    <span class="s1">multi_label</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">sample_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">label_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">thresholds_with_epsilon</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Update confusion matrix variables with memory efficient alternative. 
+ 
+    Note that the thresholds need to be evenly distributed within the list, eg, 
+    the diff between consecutive elements are the same. 
+ 
+    To compute TP/FP/TN/FN, we are measuring a binary classifier 
+      C(t) = (predictions &gt;= t) 
+    at each threshold 't'. So we have 
+      TP(t) = sum( C(t) * true_labels ) 
+      FP(t) = sum( C(t) * false_labels ) 
+ 
+    But, computing C(t) requires computation for each t. To make it fast, 
+    observe that C(t) is a cumulative integral, and so if we have 
+      thresholds = [t_0, ..., t_{n-1}];  t_0 &lt; ... &lt; t_{n-1} 
+    where n = num_thresholds, and if we can compute the bucket function 
+      B(i) = Sum( (predictions == t), t_i &lt;= t &lt; t{i+1} ) 
+    then we get 
+      C(t_i) = sum( B(j), j &gt;= i ) 
+    which is the reversed cumulative sum in ops.cumsum(). 
+ 
+    We can compute B(i) efficiently by taking advantage of the fact that 
+    our thresholds are evenly distributed, in that 
+      width = 1.0 / (num_thresholds - 1) 
+      thresholds = [0.0, 1*width, 2*width, 3*width, ..., 1.0] 
+    Given a prediction value p, we can map it to its bucket by 
+      bucket_index(p) = floor( p * (num_thresholds - 1) ) 
+    so we can use ops.segment_sum() to update the buckets in one pass. 
+ 
+    Consider following example: 
+    y_true = [0, 0, 1, 1] 
+    y_pred = [0.1, 0.5, 0.3, 0.9] 
+    thresholds = [0.0, 0.5, 1.0] 
+    num_buckets = 2   # [0.0, 1.0], (1.0, 2.0] 
+    bucket_index(y_pred) = ops.floor(y_pred * num_buckets) 
+                         = ops.floor([0.2, 1.0, 0.6, 1.8]) 
+                         = [0, 0, 0, 1] 
+    # The meaning of this bucket is that if any of the label is true, 
+    # then 1 will be added to the corresponding bucket with the index. 
+    # Eg, if the label for 0.2 is true, then 1 will be added to bucket 0. If the 
+    # label for 1.8 is true, then 1 will be added to bucket 1. 
+    # 
+    # Note the second item &quot;1.0&quot; is floored to 0, since the value need to be 
+    # strictly larger than the bucket lower bound. 
+    # In the implementation, we use ops.ceil() - 1 to achieve this. 
+    tp_bucket_value = ops.segment_sum(true_labels, bucket_indices, 
+                                                   num_segments=num_thresholds) 
+                    = [1, 1, 0] 
+    # For [1, 1, 0] here, it means there is 1 true value contributed by bucket 
+    # 0, and 1 value contributed by bucket 1. When we aggregate them to 
+    # together, the result become [a + b + c, b + c, c], since large thresholds 
+    # will always contribute to the value for smaller thresholds. 
+    true_positive = ops.cumsum(tp_bucket_value, reverse=True) 
+                  = [2, 1, 0] 
+ 
+    This implementation exhibits a run time and space complexity of O(T + N), 
+    where T is the number of thresholds and N is the size of predictions. 
+    Metrics that rely on standard implementation instead exhibit a complexity of 
+    O(T * N). 
+ 
+    Args: 
+        variables_to_update: Dictionary with 'tp', 'fn', 'tn', 'fp' as valid 
+            keys and corresponding variables to update as values. 
+        y_true: A floating point `Tensor` whose shape matches `y_pred`. Will be 
+            cast to `bool`. 
+        y_pred: A floating point `Tensor` of arbitrary shape and whose values 
+            are in the range `[0, 1]`. 
+        thresholds: A sorted floating point `Tensor` with value in `[0, 1]`. 
+            It need to be evenly distributed (the diff between each element need 
+            to be the same). 
+        multi_label: Optional boolean indicating whether multidimensional 
+            prediction/labels should be treated as multilabel responses, or 
+            flattened into a single label. When True, the values of 
+            `variables_to_update` must have a second dimension equal to the 
+            number of labels in y_true and y_pred, and those tensors must not be 
+            RaggedTensors. 
+        sample_weights: Optional `Tensor` whose rank is either 0, or the same 
+            rank as `y_true`, and must be broadcastable to `y_true` (i.e., all 
+            dimensions must be either `1`, or the same as the corresponding 
+            `y_true` dimension). 
+        label_weights: Optional tensor of non-negative weights for multilabel 
+            data. The weights are applied when calculating TP, FP, FN, and TN 
+            without explicit multilabel handling (i.e. when the data is to be 
+            flattened). 
+        thresholds_with_epsilon: Optional boolean indicating whether the leading 
+            and tailing thresholds has any epsilon added for floating point 
+            imprecisions.  It will change how we handle the leading and tailing 
+            bucket. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">)[</span><span class="s3">0</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">sample_weights </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">sample_weights </span><span class="s2">= </span><span class="s3">1.0</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">sample_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">broadcast_to</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">sample_weights</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">), </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s1">sample_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">sample_weights</span><span class="s2">, [-</span><span class="s3">1</span><span class="s2">])</span>
+    <span class="s0">if </span><span class="s1">label_weights </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s3">1.0</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, </span><span class="s3">0</span><span class="s2">)</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">broadcast_to</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">))</span>
+        <span class="s0">if not </span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, [-</span><span class="s3">1</span><span class="s2">])</span>
+    <span class="s1">weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span>
+        <span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">sample_weights</span><span class="s2">, </span><span class="s1">label_weights</span><span class="s2">), </span><span class="s1">y_true</span><span class="s2">.</span><span class="s1">dtype</span>
+    <span class="s2">)</span>
+
+    <span class="s6"># We shouldn't need this, but in case there are predict value that is out of</span>
+    <span class="s6"># the range of [0.0, 1.0]</span>
+    <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">clip</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">x_min</span><span class="s2">=</span><span class="s3">0.0</span><span class="s2">, </span><span class="s1">x_max</span><span class="s2">=</span><span class="s3">1.0</span><span class="s2">)</span>
+
+    <span class="s1">y_true </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, </span><span class="s4">&quot;bool&quot;</span><span class="s2">), </span><span class="s1">y_true</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">multi_label</span><span class="s2">:</span>
+        <span class="s1">y_true </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, [-</span><span class="s3">1</span><span class="s2">])</span>
+        <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, [-</span><span class="s3">1</span><span class="s2">])</span>
+
+    <span class="s1">true_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">)</span>
+    <span class="s1">false_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">((</span><span class="s3">1.0 </span><span class="s2">- </span><span class="s1">y_true</span><span class="s2">), </span><span class="s1">weights</span><span class="s2">)</span>
+
+    <span class="s6"># Compute the bucket indices for each prediction value.</span>
+    <span class="s6"># Since the predict value has to be strictly greater than the thresholds,</span>
+    <span class="s6"># eg, buckets like [0, 0.5], (0.5, 1], and 0.5 belongs to first bucket.</span>
+    <span class="s6"># We have to use math.ceil(val) - 1 for the bucket.</span>
+    <span class="s1">bucket_indices </span><span class="s2">= (</span>
+        <span class="s1">ops</span><span class="s2">.</span><span class="s1">ceil</span><span class="s2">(</span><span class="s1">y_pred </span><span class="s2">* (</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">) - </span><span class="s3">1</span><span class="s2">))</span>
+        <span class="s2">- </span><span class="s3">1</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">thresholds_with_epsilon</span><span class="s2">:</span>
+        <span class="s6"># In this case, the first bucket should actually take into account since</span>
+        <span class="s6"># the any prediction between [0.0, 1.0] should be larger than the first</span>
+        <span class="s6"># threshold. We change the bucket value from -1 to 0.</span>
+        <span class="s1">bucket_indices </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">relu</span><span class="s2">(</span><span class="s1">bucket_indices</span><span class="s2">)</span>
+
+    <span class="s1">bucket_indices </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">bucket_indices</span><span class="s2">, </span><span class="s4">&quot;int32&quot;</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">multi_label</span><span class="s2">:</span>
+        <span class="s6"># We need to run bucket segment sum for each of the label class. In the</span>
+        <span class="s6"># multi_label case, the rank of the label is 2. We first transpose it so</span>
+        <span class="s6"># that the label dim becomes the first and we can parallel run though</span>
+        <span class="s6"># them.</span>
+        <span class="s1">true_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">true_labels</span><span class="s2">)</span>
+        <span class="s1">false_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">false_labels</span><span class="s2">)</span>
+        <span class="s1">bucket_indices </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">bucket_indices</span><span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">gather_bucket</span><span class="s2">(</span><span class="s1">label_and_bucket_index</span><span class="s2">):</span>
+            <span class="s1">label</span><span class="s2">, </span><span class="s1">bucket_index </span><span class="s2">= (</span>
+                <span class="s1">label_and_bucket_index</span><span class="s2">[</span><span class="s3">0</span><span class="s2">],</span>
+                <span class="s1">label_and_bucket_index</span><span class="s2">[</span><span class="s3">1</span><span class="s2">],</span>
+            <span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">segment_sum</span><span class="s2">(</span>
+                <span class="s1">data</span><span class="s2">=</span><span class="s1">label</span><span class="s2">,</span>
+                <span class="s1">segment_ids</span><span class="s2">=</span><span class="s1">bucket_index</span><span class="s2">,</span>
+                <span class="s1">num_segments</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s1">tp_bucket_v </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">vectorized_map</span><span class="s2">(</span>
+            <span class="s1">gather_bucket</span><span class="s2">,</span>
+            <span class="s2">(</span><span class="s1">true_labels</span><span class="s2">, </span><span class="s1">bucket_indices</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">fp_bucket_v </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">vectorized_map</span><span class="s2">(</span>
+            <span class="s1">gather_bucket</span><span class="s2">, (</span><span class="s1">false_labels</span><span class="s2">, </span><span class="s1">bucket_indices</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">tp </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cumsum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">tp_bucket_v</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">1</span><span class="s2">)))</span>
+        <span class="s1">fp </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cumsum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">fp_bucket_v</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">1</span><span class="s2">)))</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">tp_bucket_v </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">segment_sum</span><span class="s2">(</span>
+            <span class="s1">data</span><span class="s2">=</span><span class="s1">true_labels</span><span class="s2">,</span>
+            <span class="s1">segment_ids</span><span class="s2">=</span><span class="s1">bucket_indices</span><span class="s2">,</span>
+            <span class="s1">num_segments</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">fp_bucket_v </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">segment_sum</span><span class="s2">(</span>
+            <span class="s1">data</span><span class="s2">=</span><span class="s1">false_labels</span><span class="s2">,</span>
+            <span class="s1">segment_ids</span><span class="s2">=</span><span class="s1">bucket_indices</span><span class="s2">,</span>
+            <span class="s1">num_segments</span><span class="s2">=</span><span class="s1">num_thresholds</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">tp </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cumsum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">tp_bucket_v</span><span class="s2">)))</span>
+        <span class="s1">fp </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cumsum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">flip</span><span class="s2">(</span><span class="s1">fp_bucket_v</span><span class="s2">)))</span>
+
+    <span class="s6"># fn = sum(true_labels) - tp</span>
+    <span class="s6"># tn = sum(false_labels) - fp</span>
+    <span class="s0">if </span><span class="s2">(</span>
+        <span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span>
+        <span class="s0">or </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">multi_label</span><span class="s2">:</span>
+            <span class="s1">total_true_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">true_labels</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">1</span><span class="s2">)</span>
+            <span class="s1">total_false_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">false_labels</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">1</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">total_true_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">true_labels</span><span class="s2">)</span>
+            <span class="s1">total_false_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">false_labels</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span><span class="s2">:</span>
+        <span class="s1">variable </span><span class="s2">= </span><span class="s1">variables_to_update</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">]</span>
+        <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">variable </span><span class="s2">+ </span><span class="s1">tp</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span><span class="s2">:</span>
+        <span class="s1">variable </span><span class="s2">= </span><span class="s1">variables_to_update</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES</span><span class="s2">]</span>
+        <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">variable </span><span class="s2">+ </span><span class="s1">fp</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span><span class="s2">:</span>
+        <span class="s1">variable </span><span class="s2">= </span><span class="s1">variables_to_update</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES</span><span class="s2">]</span>
+        <span class="s1">tn </span><span class="s2">= </span><span class="s1">total_false_labels </span><span class="s2">- </span><span class="s1">fp</span>
+        <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">variable </span><span class="s2">+ </span><span class="s1">tn</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span><span class="s2">:</span>
+        <span class="s1">variable </span><span class="s2">= </span><span class="s1">variables_to_update</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES</span><span class="s2">]</span>
+        <span class="s1">fn </span><span class="s2">= </span><span class="s1">total_true_labels </span><span class="s2">- </span><span class="s1">tp</span>
+        <span class="s1">variable</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">variable </span><span class="s2">+ </span><span class="s1">fn</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">is_evenly_distributed_thresholds</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Check if the thresholds list is evenly distributed. 
+ 
+    We could leverage evenly distributed thresholds to use less memory when 
+    calculate metrcis like AUC where each individual threshold need to be 
+    evaluated. 
+ 
+    Args: 
+      thresholds: A python list or tuple, or 1D numpy array whose value is 
+        ranged in [0, 1]. 
+ 
+    Returns: 
+      boolean, whether the values in the inputs are evenly distributed. 
+    &quot;&quot;&quot;</span>
+    <span class="s6"># Check the list value and see if it is evenly distributed.</span>
+    <span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">num_thresholds </span><span class="s2">&lt; </span><span class="s3">3</span><span class="s2">:</span>
+        <span class="s0">return False</span>
+    <span class="s1">even_thresholds </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">arange</span><span class="s2">(</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">np</span><span class="s2">.</span><span class="s1">float32</span><span class="s2">) / (</span>
+        <span class="s1">num_thresholds </span><span class="s2">- </span><span class="s3">1</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">allclose</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">, </span><span class="s1">even_thresholds</span><span class="s2">, </span><span class="s1">atol</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">())</span>
+
+
+<span class="s0">def </span><span class="s1">update_confusion_matrix_variables</span><span class="s2">(</span>
+    <span class="s1">variables_to_update</span><span class="s2">,</span>
+    <span class="s1">y_true</span><span class="s2">,</span>
+    <span class="s1">y_pred</span><span class="s2">,</span>
+    <span class="s1">thresholds</span><span class="s2">,</span>
+    <span class="s1">top_k</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">class_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">multi_label</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">label_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">thresholds_distributed_evenly</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Updates the given confusion matrix variables. 
+ 
+    For every pair of values in y_true and y_pred: 
+ 
+    true_positive: y_true == True and y_pred &gt; thresholds 
+    false_negatives: y_true == True and y_pred &lt;= thresholds 
+    true_negatives: y_true == False and y_pred &lt;= thresholds 
+    false_positive: y_true == False and y_pred &gt; thresholds 
+ 
+    The results will be weighted and added together. When multiple thresholds 
+    are provided, we will repeat the same for every threshold. 
+ 
+    For estimation of these metrics over a stream of data, the function creates 
+    an `update_op` operation that updates the given variables. 
+ 
+    If `sample_weight` is `None`, weights default to 1. 
+    Use weights of 0 to mask values. 
+ 
+    Args: 
+      variables_to_update: Dictionary with 'tp', 'fn', 'tn', 'fp' as valid keys 
+        and corresponding variables to update as values. 
+      y_true: A `Tensor` whose shape matches `y_pred`. Will be cast to `bool`. 
+      y_pred: A floating point `Tensor` of arbitrary shape and whose values are 
+        in the range `[0, 1]`. 
+      thresholds: A float value, float tensor, python list, or tuple of float 
+        thresholds in `[0, 1]`, or NEG_INF (used when top_k is set). 
+      top_k: Optional int, indicates that the positive labels should be limited 
+        to the top k predictions. 
+      class_id: Optional int, limits the prediction and labels to the class 
+        specified by this argument. 
+      sample_weight: Optional `Tensor` whose rank is either 0, or the same rank 
+        as `y_true`, and must be broadcastable to `y_true` (i.e., all dimensions 
+        must be either `1`, or the same as the corresponding `y_true` 
+        dimension). 
+      multi_label: Optional boolean indicating whether multidimensional 
+        prediction/labels should be treated as multilabel responses, or 
+        flattened into a single label. When True, the values of 
+        `variables_to_update` must have a second dimension equal to the number 
+        of labels in y_true and y_pred, and those tensors must not be 
+        RaggedTensors. 
+      label_weights: (optional) tensor of non-negative weights for multilabel 
+        data. The weights are applied when calculating TP, FP, FN, and TN 
+        without explicit multilabel handling (i.e. when the data is to be 
+        flattened). 
+      thresholds_distributed_evenly: Boolean, whether the thresholds are evenly 
+        distributed within the list. An optimized method will be used if this is 
+        the case. See _update_confusion_matrix_variables_optimized() for more 
+        details. 
+ 
+    Raises: 
+      ValueError: If `y_pred` and `y_true` have mismatched shapes, or if 
+        `sample_weight` is not `None` and its shape doesn't match `y_pred`, or 
+        if `variables_to_update` contains invalid keys. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">multi_label </span><span class="s0">and </span><span class="s1">label_weights </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">&quot;`label_weights` for multilabel data should be handled &quot;</span>
+            <span class="s4">&quot;outside of `update_confusion_matrix_variables` when &quot;</span>
+            <span class="s4">&quot;`multi_label` is True.&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">variables_to_update </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">return</span>
+    <span class="s0">if not </span><span class="s1">any</span><span class="s2">(</span>
+        <span class="s1">key </span><span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">variables_to_update </span><span class="s0">if </span><span class="s1">key </span><span class="s0">in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">ConfusionMatrix</span><span class="s2">)</span>
+    <span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">&quot;Please provide at least one valid confusion matrix &quot;</span>
+            <span class="s4">&quot;variable to update. Valid variable key options are: &quot;</span>
+            <span class="s4">f'&quot;</span><span class="s0">{</span><span class="s1">list</span><span class="s2">(</span><span class="s1">ConfusionMatrix</span><span class="s2">)</span><span class="s0">}</span><span class="s4">&quot;. '</span>
+            <span class="s4">f'Received: &quot;</span><span class="s0">{</span><span class="s1">variables_to_update</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()</span><span class="s0">}</span><span class="s4">&quot;'</span>
+        <span class="s2">)</span>
+
+    <span class="s1">variable_dtype </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">variables_to_update</span><span class="s2">.</span><span class="s1">values</span><span class="s2">())[</span><span class="s3">0</span><span class="s2">].</span><span class="s1">dtype</span>
+
+    <span class="s1">y_true </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">variable_dtype</span><span class="s2">)</span>
+    <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">variable_dtype</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">thresholds_distributed_evenly</span><span class="s2">:</span>
+        <span class="s6"># Check whether the thresholds has any leading or tailing epsilon added</span>
+        <span class="s6"># for floating point imprecision. The leading and tailing threshold will</span>
+        <span class="s6"># be handled bit differently as the corner case.  At this point,</span>
+        <span class="s6"># thresholds should be a list/array with more than 2 items, and ranged</span>
+        <span class="s6"># between [0, 1]. See is_evenly_distributed_thresholds() for more</span>
+        <span class="s6"># details.</span>
+        <span class="s1">thresholds_with_epsilon </span><span class="s2">= </span><span class="s1">thresholds</span><span class="s2">[</span><span class="s3">0</span><span class="s2">] &lt; </span><span class="s3">0.0 </span><span class="s0">or </span><span class="s1">thresholds</span><span class="s2">[-</span><span class="s3">1</span><span class="s2">] &gt; </span><span class="s3">1.0</span>
+
+    <span class="s1">thresholds </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">variable_dtype</span><span class="s2">)</span>
+    <span class="s1">num_thresholds </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">)[</span><span class="s3">0</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">multi_label</span><span class="s2">:</span>
+        <span class="s1">one_thresh </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span>
+            <span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s3">1</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;int32&quot;</span><span class="s2">),</span>
+            <span class="s1">len</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">),</span>
+        <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">one_thresh </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s0">True</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;bool&quot;</span><span class="s2">)</span>
+
+    <span class="s1">invalid_keys </span><span class="s2">= [</span>
+        <span class="s1">key </span><span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">variables_to_update </span><span class="s0">if </span><span class="s1">key </span><span class="s0">not in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">ConfusionMatrix</span><span class="s2">)</span>
+    <span class="s2">]</span>
+    <span class="s0">if </span><span class="s1">invalid_keys</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">f'Invalid keys: &quot;</span><span class="s0">{</span><span class="s1">invalid_keys</span><span class="s0">}</span><span class="s4">&quot;. '</span>
+            <span class="s4">f'Valid variable key options are: &quot;</span><span class="s0">{</span><span class="s1">list</span><span class="s2">(</span><span class="s1">ConfusionMatrix</span><span class="s2">)</span><span class="s0">}</span><span class="s4">&quot;'</span>
+        <span class="s2">)</span>
+
+    <span class="s1">y_pred</span><span class="s2">, </span><span class="s1">y_true </span><span class="s2">= </span><span class="s1">squeeze_or_expand_to_same_rank</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">y_true</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">sample_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">variable_dtype</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=-</span><span class="s3">1</span>
+        <span class="s2">)</span>
+        <span class="s1">_</span><span class="s2">, </span><span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">squeeze_or_expand_to_same_rank</span><span class="s2">(</span>
+            <span class="s1">y_true</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">expand_rank_1</span><span class="s2">=</span><span class="s0">False</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">top_k </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">_filter_top_k</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">top_k</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">class_id </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s3">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;When class_id is provided, y_pred must be a 2D array &quot;</span>
+                <span class="s4">&quot;with shape (num_samples, num_classes), found shape: &quot;</span>
+                <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s6"># Preserve dimension to match with sample_weight</span>
+        <span class="s1">y_true </span><span class="s2">= </span><span class="s1">y_true</span><span class="s2">[..., </span><span class="s1">class_id</span><span class="s2">, </span><span class="s0">None</span><span class="s2">]</span>
+        <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">y_pred</span><span class="s2">[..., </span><span class="s1">class_id</span><span class="s2">, </span><span class="s0">None</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">thresholds_distributed_evenly</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_update_confusion_matrix_variables_optimized</span><span class="s2">(</span>
+            <span class="s1">variables_to_update</span><span class="s2">,</span>
+            <span class="s1">y_true</span><span class="s2">,</span>
+            <span class="s1">y_pred</span><span class="s2">,</span>
+            <span class="s1">thresholds</span><span class="s2">,</span>
+            <span class="s1">multi_label</span><span class="s2">=</span><span class="s1">multi_label</span><span class="s2">,</span>
+            <span class="s1">sample_weights</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+            <span class="s1">label_weights</span><span class="s2">=</span><span class="s1">label_weights</span><span class="s2">,</span>
+            <span class="s1">thresholds_with_epsilon</span><span class="s2">=</span><span class="s1">thresholds_with_epsilon</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if None in </span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">:</span>
+        <span class="s1">pred_shape </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">)</span>
+        <span class="s1">num_predictions </span><span class="s2">= </span><span class="s1">pred_shape</span><span class="s2">[</span><span class="s3">0</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s3">1</span><span class="s2">:</span>
+            <span class="s1">num_labels </span><span class="s2">= </span><span class="s3">1</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">num_labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">prod</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">pred_shape</span><span class="s2">[</span><span class="s3">1</span><span class="s2">:]), </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">0</span><span class="s2">), </span><span class="s4">&quot;int32&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">thresh_label_tile </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">one_thresh</span><span class="s2">, </span><span class="s1">num_labels</span><span class="s2">, </span><span class="s3">1</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">pred_shape </span><span class="s2">= </span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span>
+        <span class="s1">num_predictions </span><span class="s2">= </span><span class="s1">pred_shape</span><span class="s2">[</span><span class="s3">0</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s3">1</span><span class="s2">:</span>
+            <span class="s1">num_labels </span><span class="s2">= </span><span class="s3">1</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">num_labels </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">prod</span><span class="s2">(</span><span class="s1">pred_shape</span><span class="s2">[</span><span class="s3">1</span><span class="s2">:], </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">0</span><span class="s2">).</span><span class="s1">astype</span><span class="s2">(</span><span class="s4">&quot;int32&quot;</span><span class="s2">)</span>
+        <span class="s1">thresh_label_tile </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">one_thresh</span><span class="s2">, </span><span class="s1">num_labels</span><span class="s2">, </span><span class="s3">1</span><span class="s2">)</span>
+
+    <span class="s6"># Reshape predictions and labels, adding a dim for thresholding.</span>
+    <span class="s0">if </span><span class="s1">multi_label</span><span class="s2">:</span>
+        <span class="s1">predictions_extra_dim </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, </span><span class="s3">0</span><span class="s2">)</span>
+        <span class="s1">labels_extra_dim </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;bool&quot;</span><span class="s2">), </span><span class="s3">0</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s6"># Flatten predictions and labels when not multilabel.</span>
+        <span class="s1">predictions_extra_dim </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">, [</span><span class="s3">1</span><span class="s2">, -</span><span class="s3">1</span><span class="s2">])</span>
+        <span class="s1">labels_extra_dim </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">y_true</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;bool&quot;</span><span class="s2">), [</span><span class="s3">1</span><span class="s2">, -</span><span class="s3">1</span><span class="s2">])</span>
+
+    <span class="s6"># Tile the thresholds for every prediction.</span>
+    <span class="s0">if </span><span class="s1">multi_label</span><span class="s2">:</span>
+        <span class="s1">thresh_pretile_shape </span><span class="s2">= [</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s3">1</span><span class="s2">, -</span><span class="s3">1</span><span class="s2">]</span>
+        <span class="s1">thresh_tiles </span><span class="s2">= [</span><span class="s3">1</span><span class="s2">, </span><span class="s1">num_predictions</span><span class="s2">, </span><span class="s1">thresh_label_tile</span><span class="s2">]</span>
+        <span class="s1">data_tiles </span><span class="s2">= [</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s3">1</span><span class="s2">, </span><span class="s3">1</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">thresh_pretile_shape </span><span class="s2">= [</span><span class="s1">num_thresholds</span><span class="s2">, -</span><span class="s3">1</span><span class="s2">]</span>
+        <span class="s1">thresh_tiles </span><span class="s2">= [</span><span class="s3">1</span><span class="s2">, </span><span class="s1">num_predictions </span><span class="s2">* </span><span class="s1">num_labels</span><span class="s2">]</span>
+        <span class="s1">data_tiles </span><span class="s2">= [</span><span class="s1">num_thresholds</span><span class="s2">, </span><span class="s3">1</span><span class="s2">]</span>
+
+    <span class="s1">thresh_tiled </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tile</span><span class="s2">(</span>
+        <span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">thresholds</span><span class="s2">, </span><span class="s1">thresh_pretile_shape</span><span class="s2">), </span><span class="s1">thresh_tiles</span>
+    <span class="s2">)</span>
+
+    <span class="s6"># Tile the predictions for every threshold.</span>
+    <span class="s1">preds_tiled </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tile</span><span class="s2">(</span><span class="s1">predictions_extra_dim</span><span class="s2">, </span><span class="s1">data_tiles</span><span class="s2">)</span>
+
+    <span class="s6"># Compare predictions and threshold.</span>
+    <span class="s1">pred_is_pos </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">greater</span><span class="s2">(</span><span class="s1">preds_tiled</span><span class="s2">, </span><span class="s1">thresh_tiled</span><span class="s2">)</span>
+
+    <span class="s6"># Tile labels by number of thresholds</span>
+    <span class="s1">label_is_pos </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tile</span><span class="s2">(</span><span class="s1">labels_extra_dim</span><span class="s2">, </span><span class="s1">data_tiles</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">sample_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">broadcast_to</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">y_pred</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">), </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">weights_tiled </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tile</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">thresh_tiles</span><span class="s2">), </span><span class="s1">data_tiles</span>
+        <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">weights_tiled </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">if </span><span class="s1">label_weights </span><span class="s0">is not None and not </span><span class="s1">multi_label</span><span class="s2">:</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, </span><span class="s3">0</span><span class="s2">)</span>
+        <span class="s1">label_weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">broadcast_to</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">y_pred</span><span class="s2">))</span>
+        <span class="s1">label_weights_tiled </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">tile</span><span class="s2">(</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">label_weights</span><span class="s2">, </span><span class="s1">thresh_tiles</span><span class="s2">), </span><span class="s1">data_tiles</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">weights_tiled </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">weights_tiled </span><span class="s2">= </span><span class="s1">label_weights_tiled</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">weights_tiled </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span><span class="s1">weights_tiled</span><span class="s2">, </span><span class="s1">label_weights_tiled</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">weighted_assign_add</span><span class="s2">(</span><span class="s1">label</span><span class="s2">, </span><span class="s1">pred</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">, </span><span class="s1">var</span><span class="s2">):</span>
+        <span class="s1">label_and_pred </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">logical_and</span><span class="s2">(</span><span class="s1">label</span><span class="s2">, </span><span class="s1">pred</span><span class="s2">), </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">var</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">weights </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">label_and_pred </span><span class="s2">*= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">var</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s1">var</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">var </span><span class="s2">+ </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">label_and_pred</span><span class="s2">, </span><span class="s3">1</span><span class="s2">))</span>
+
+    <span class="s1">loop_vars </span><span class="s2">= {</span>
+        <span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_POSITIVES</span><span class="s2">: (</span><span class="s1">label_is_pos</span><span class="s2">, </span><span class="s1">pred_is_pos</span><span class="s2">),</span>
+    <span class="s2">}</span>
+    <span class="s1">update_tn </span><span class="s2">= </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span>
+    <span class="s1">update_fp </span><span class="s2">= </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span>
+    <span class="s1">update_fn </span><span class="s2">= </span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES </span><span class="s0">in </span><span class="s1">variables_to_update</span>
+
+    <span class="s0">if </span><span class="s1">update_fn </span><span class="s0">or </span><span class="s1">update_tn</span><span class="s2">:</span>
+        <span class="s1">pred_is_neg </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">logical_not</span><span class="s2">(</span><span class="s1">pred_is_pos</span><span class="s2">)</span>
+        <span class="s1">loop_vars</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_NEGATIVES</span><span class="s2">] = (</span><span class="s1">label_is_pos</span><span class="s2">, </span><span class="s1">pred_is_neg</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">update_fp </span><span class="s0">or </span><span class="s1">update_tn</span><span class="s2">:</span>
+        <span class="s1">label_is_neg </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">logical_not</span><span class="s2">(</span><span class="s1">label_is_pos</span><span class="s2">)</span>
+        <span class="s1">loop_vars</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">FALSE_POSITIVES</span><span class="s2">] = (</span><span class="s1">label_is_neg</span><span class="s2">, </span><span class="s1">pred_is_pos</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">update_tn</span><span class="s2">:</span>
+            <span class="s1">loop_vars</span><span class="s2">[</span><span class="s1">ConfusionMatrix</span><span class="s2">.</span><span class="s1">TRUE_NEGATIVES</span><span class="s2">] = (</span>
+                <span class="s1">label_is_neg</span><span class="s2">,</span>
+                <span class="s1">pred_is_neg</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">matrix_cond</span><span class="s2">, (</span><span class="s1">label</span><span class="s2">, </span><span class="s1">pred</span><span class="s2">) </span><span class="s0">in </span><span class="s1">loop_vars</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+        <span class="s0">if </span><span class="s1">matrix_cond </span><span class="s0">in </span><span class="s1">variables_to_update</span><span class="s2">:</span>
+            <span class="s1">weighted_assign_add</span><span class="s2">(</span>
+                <span class="s1">label</span><span class="s2">, </span><span class="s1">pred</span><span class="s2">, </span><span class="s1">weights_tiled</span><span class="s2">, </span><span class="s1">variables_to_update</span><span class="s2">[</span><span class="s1">matrix_cond</span><span class="s2">]</span>
+            <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_filter_top_k</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">k</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Filters top-k values in the last dim of x and set the rest to NEG_INF. 
+ 
+    Used for computing top-k prediction values in dense labels (which has the 
+    same shape as predictions) for recall and precision top-k metrics. 
+ 
+    Args: 
+      x: tensor with any dimensions. 
+      k: the number of values to keep. 
+ 
+    Returns: 
+      tensor with same shape and dtype as x. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">_</span><span class="s2">, </span><span class="s1">top_k_idx </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">top_k</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">k</span><span class="s2">)</span>
+    <span class="s1">top_k_mask </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span>
+        <span class="s1">ops</span><span class="s2">.</span><span class="s1">one_hot</span><span class="s2">(</span><span class="s1">top_k_idx</span><span class="s2">, </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)[-</span><span class="s3">1</span><span class="s2">], </span><span class="s1">axis</span><span class="s2">=-</span><span class="s3">1</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=-</span><span class="s3">2</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">x </span><span class="s2">* </span><span class="s1">top_k_mask </span><span class="s2">+ </span><span class="s1">NEG_INF </span><span class="s2">* (</span><span class="s3">1 </span><span class="s2">- </span><span class="s1">top_k_mask</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">confusion_matrix</span><span class="s2">(</span>
+    <span class="s1">labels</span><span class="s2">,</span>
+    <span class="s1">predictions</span><span class="s2">,</span>
+    <span class="s1">num_classes</span><span class="s2">,</span>
+    <span class="s1">weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;int32&quot;</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Computes the confusion matrix from predictions and labels. 
+ 
+    The matrix columns represent the prediction labels and the rows represent 
+    the real labels. The confusion matrix is always a 2-D array of shape 
+    `(n, n)`, where `n` is the number of valid labels for a given classification 
+    task. Both prediction and labels must be 1-D arrays of the same shape in 
+    order for this function to work. 
+ 
+    If `num_classes` is `None`, then `num_classes` will be set to one plus the 
+    maximum value in either predictions or labels. Class labels are expected to 
+    start at 0. For example, if `num_classes` is 3, then the possible labels 
+    would be `[0, 1, 2]`. 
+ 
+    If `weights` is not `None`, then each prediction contributes its 
+    corresponding weight to the total value of the confusion matrix cell. 
+ 
+    For example: 
+ 
+    ```python 
+    keras.metrics.metrics_utils.confusion_matrix([1, 2, 4], [2, 2, 4]) ==&gt; 
+        [[0 0 0 0 0] 
+        [0 0 1 0 0] 
+        [0 0 1 0 0] 
+        [0 0 0 0 0] 
+        [0 0 0 0 1]] 
+    ``` 
+ 
+    Note that the possible labels are assumed to be `[0, 1, 2, 3, 4]`, 
+    resulting in a 5x5 confusion matrix. 
+ 
+    Args: 
+        labels: 1-D tensor of real labels for the classification task. 
+        predictions: 1-D tensor of predictions for a given classification. 
+        num_classes: The possible number of labels the classification 
+            task can have. 
+        weights: An optional tensor whose shape matches `predictions`. 
+        dtype: Data type of the confusion matrix. 
+ 
+    Returns: 
+        A tensor of type `dtype` with shape `(n, n)` representing the confusion 
+        matrix, where `n` is the number of possible labels in the classification 
+        task. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s1">predictions </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">predictions</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s1">labels</span><span class="s2">, </span><span class="s1">predictions </span><span class="s2">= </span><span class="s1">squeeze_or_expand_to_same_rank</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">, </span><span class="s1">predictions</span><span class="s2">)</span>
+
+    <span class="s1">predictions </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">predictions</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s1">labels </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">weights </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">weights </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">)</span>
+
+    <span class="s1">indices </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">([</span><span class="s1">labels</span><span class="s2">, </span><span class="s1">predictions</span><span class="s2">], </span><span class="s1">axis</span><span class="s2">=</span><span class="s3">1</span><span class="s2">)</span>
+    <span class="s1">values </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">ones_like</span><span class="s2">(</span><span class="s1">predictions</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">) </span><span class="s0">if </span><span class="s1">weights </span><span class="s0">is None else </span><span class="s1">weights</span>
+    <span class="s1">indices </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;int64&quot;</span><span class="s2">)</span>
+    <span class="s1">values </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s1">num_classes </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">num_classes</span><span class="s2">)</span>
+    <span class="s1">confusion_matrix </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">scatter</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, (</span><span class="s1">num_classes</span><span class="s2">, </span><span class="s1">num_classes</span><span class="s2">))</span>
+    <span class="s0">return </span><span class="s1">confusion_matrix</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,817 @@
+<html>
+<head>
+<title>registry.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+registry.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2022-2024 MetaOPT Team. All Rights Reserved.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+<span class="s0"># ==============================================================================</span>
+<span class="s2">&quot;&quot;&quot;Registry for custom pytree node types.&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">annotations</span>
+
+<span class="s3">import </span><span class="s1">contextlib</span>
+<span class="s3">import </span><span class="s1">dataclasses</span>
+<span class="s3">import </span><span class="s1">functools</span>
+<span class="s3">import </span><span class="s1">inspect</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">import </span><span class="s1">warnings</span>
+<span class="s3">from </span><span class="s1">collections </span><span class="s3">import </span><span class="s1">OrderedDict</span><span class="s4">, </span><span class="s1">defaultdict</span><span class="s4">, </span><span class="s1">deque</span><span class="s4">, </span><span class="s1">namedtuple</span>
+<span class="s3">from </span><span class="s1">operator </span><span class="s3">import </span><span class="s1">itemgetter</span><span class="s4">, </span><span class="s1">methodcaller</span>
+<span class="s3">from </span><span class="s1">threading </span><span class="s3">import </span><span class="s1">Lock</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s4">(</span>
+    <span class="s1">TYPE_CHECKING</span><span class="s4">,</span>
+    <span class="s1">Any</span><span class="s4">,</span>
+    <span class="s1">Callable</span><span class="s4">,</span>
+    <span class="s1">ClassVar</span><span class="s4">,</span>
+    <span class="s1">Generator</span><span class="s4">,</span>
+    <span class="s1">Iterable</span><span class="s4">,</span>
+    <span class="s1">NamedTuple</span><span class="s4">,</span>
+    <span class="s1">Sequence</span><span class="s4">,</span>
+    <span class="s1">Type</span><span class="s4">,</span>
+    <span class="s1">overload</span><span class="s4">,</span>
+<span class="s4">)</span>
+<span class="s3">from </span><span class="s1">typing_extensions </span><span class="s3">import </span><span class="s1">TypeAlias  </span><span class="s0"># Python 3.10+</span>
+<span class="s3">from </span><span class="s1">typing_extensions </span><span class="s3">import </span><span class="s1">deprecated  </span><span class="s0"># Python 3.13+</span>
+
+<span class="s3">from </span><span class="s1">optree </span><span class="s3">import </span><span class="s1">_C</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">accessor </span><span class="s3">import </span><span class="s4">(</span>
+    <span class="s1">AutoEntry</span><span class="s4">,</span>
+    <span class="s1">MappingEntry</span><span class="s4">,</span>
+    <span class="s1">NamedTupleEntry</span><span class="s4">,</span>
+    <span class="s1">PyTreeEntry</span><span class="s4">,</span>
+    <span class="s1">SequenceEntry</span><span class="s4">,</span>
+    <span class="s1">StructSequenceEntry</span><span class="s4">,</span>
+<span class="s4">)</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">typing </span><span class="s3">import </span><span class="s4">(</span>
+    <span class="s1">KT</span><span class="s4">,</span>
+    <span class="s1">VT</span><span class="s4">,</span>
+    <span class="s1">CustomTreeNode</span><span class="s4">,</span>
+    <span class="s1">FlattenFunc</span><span class="s4">,</span>
+    <span class="s1">PyTree</span><span class="s4">,</span>
+    <span class="s1">T</span><span class="s4">,</span>
+    <span class="s1">UnflattenFunc</span><span class="s4">,</span>
+    <span class="s1">is_namedtuple_class</span><span class="s4">,</span>
+    <span class="s1">is_structseq_class</span><span class="s4">,</span>
+    <span class="s1">structseq</span><span class="s4">,</span>
+<span class="s4">)</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">utils </span><span class="s3">import </span><span class="s1">safe_zip</span><span class="s4">, </span><span class="s1">total_order_sorted</span><span class="s4">, </span><span class="s1">unzip2</span>
+
+
+<span class="s3">if </span><span class="s1">TYPE_CHECKING</span><span class="s4">:</span>
+    <span class="s3">import </span><span class="s1">builtins</span>
+
+
+<span class="s1">__all__ </span><span class="s4">= [</span>
+    <span class="s5">'register_pytree_node'</span><span class="s4">,</span>
+    <span class="s5">'register_pytree_node_class'</span><span class="s4">,</span>
+    <span class="s5">'unregister_pytree_node'</span><span class="s4">,</span>
+    <span class="s5">'dict_insertion_ordered'</span><span class="s4">,</span>
+<span class="s4">]</span>
+
+
+<span class="s1">SLOTS </span><span class="s4">= {</span><span class="s5">'slots'</span><span class="s4">: </span><span class="s3">True</span><span class="s4">} </span><span class="s3">if </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">version_info </span><span class="s4">&gt;= (</span><span class="s6">3</span><span class="s4">, </span><span class="s6">10</span><span class="s4">) </span><span class="s3">else </span><span class="s4">{}  </span><span class="s0"># Python 3.10+</span>
+
+
+<span class="s4">@</span><span class="s1">dataclasses</span><span class="s4">.</span><span class="s1">dataclass</span><span class="s4">(</span><span class="s1">init</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">repr</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">eq</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, </span><span class="s1">frozen</span><span class="s4">=</span><span class="s3">True</span><span class="s4">, **</span><span class="s1">SLOTS</span><span class="s4">)</span>
+<span class="s3">class </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;A dataclass that stores the information of a pytree node type.&quot;&quot;&quot;</span>
+
+    <span class="s1">type</span><span class="s4">: </span><span class="s1">builtins</span><span class="s4">.</span><span class="s1">type</span>
+    <span class="s1">flatten_func</span><span class="s4">: </span><span class="s1">FlattenFunc</span>
+    <span class="s1">unflatten_func</span><span class="s4">: </span><span class="s1">UnflattenFunc</span>
+
+    <span class="s3">if </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">version_info </span><span class="s4">&gt;= (</span><span class="s6">3</span><span class="s4">, </span><span class="s6">10</span><span class="s4">):</span>
+        <span class="s1">_</span><span class="s4">: </span><span class="s1">dataclasses</span><span class="s4">.</span><span class="s1">KW_ONLY  </span><span class="s0"># Python 3.10+</span>
+
+    <span class="s1">path_entry_type</span><span class="s4">: </span><span class="s1">builtins</span><span class="s4">.</span><span class="s1">type</span><span class="s4">[</span><span class="s1">PyTreeEntry</span><span class="s4">] = </span><span class="s1">AutoEntry</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str </span><span class="s4">= </span><span class="s5">''</span>
+
+
+<span class="s3">del </span><span class="s1">SLOTS</span>
+
+
+<span class="s0"># pylint: disable-next=missing-class-docstring,too-few-public-methods</span>
+<span class="s3">class </span><span class="s1">GlobalNamespace</span><span class="s4">:  </span><span class="s0"># pragma: no cover</span>
+    <span class="s1">__slots__</span><span class="s4">: </span><span class="s1">ClassVar</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[()]] = ()</span>
+
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s5">'&lt;GLOBAL NAMESPACE&gt;'</span>
+
+
+<span class="s1">__GLOBAL_NAMESPACE</span><span class="s4">: </span><span class="s1">str </span><span class="s4">= </span><span class="s1">GlobalNamespace</span><span class="s4">()  </span><span class="s0"># type: ignore[assignment]</span>
+<span class="s1">__REGISTRY_LOCK</span><span class="s4">: </span><span class="s1">Lock </span><span class="s4">= </span><span class="s1">Lock</span><span class="s4">()</span>
+<span class="s3">del </span><span class="s1">GlobalNamespace</span>
+
+
+<span class="s1">CustomTreeNodeT</span><span class="s4">: </span><span class="s1">TypeAlias </span><span class="s4">= </span><span class="s1">Type</span><span class="s4">[</span><span class="s1">CustomTreeNode</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]]</span>
+
+
+<span class="s3">def </span><span class="s1">register_pytree_node</span><span class="s4">(</span>
+    <span class="s1">cls</span><span class="s4">: </span><span class="s1">CustomTreeNodeT</span><span class="s4">,</span>
+    <span class="s1">flatten_func</span><span class="s4">: </span><span class="s1">FlattenFunc</span><span class="s4">,</span>
+    <span class="s1">unflatten_func</span><span class="s4">: </span><span class="s1">UnflattenFunc</span><span class="s4">,</span>
+    <span class="s4">*,</span>
+    <span class="s1">path_entry_type</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">PyTreeEntry</span><span class="s4">] = </span><span class="s1">AutoEntry</span><span class="s4">,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; CustomTreeNodeT</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Extend the set of types that are considered internal nodes in pytrees. 
+ 
+    See also :func:`register_pytree_node_class` and :func:`unregister_pytree_node`. 
+ 
+    The ``namespace`` argument is used to avoid collisions that occur when different libraries 
+    register the same Python type with different behaviors. It is recommended to add a unique prefix 
+    to the namespace to avoid conflicts with other libraries. Namespaces can also be used to specify 
+    the same class in different namespaces for different use cases. 
+ 
+    .. warning:: 
+        For safety reasons, a ``namespace`` must be specified while registering a custom type. It is 
+        used to isolate the behavior of flattening and unflattening a pytree node type. This is to 
+        prevent accidental collisions between different libraries that may register the same type. 
+ 
+    Args: 
+        cls (type): A Python type to treat as an internal pytree node. 
+        flatten_func (callable): A function to be used during flattening, taking an instance of ``cls`` 
+            and returning a triple or optionally a pair, with (1) an iterable for the children to be 
+            flattened recursively, and (2) some hashable auxiliary data to be stored in the treespec 
+            and to be passed to the ``unflatten_func``, and (3) (optional) an iterable for the tree 
+            path entries to the corresponding children. If the entries are not provided or given by 
+            :data:`None`, then `range(len(children))` will be used. 
+        unflatten_func (callable): A function taking two arguments: the auxiliary data that was 
+            returned by ``flatten_func`` and stored in the treespec, and the unflattened children. 
+            The function should return an instance of ``cls``. 
+        path_entry_type (type, optional): The type of the path entry to be used in the treespec. 
+            (default: :class:`AutoEntry`) 
+        namespace (str): A non-empty string that uniquely identifies the namespace of the type registry. 
+            This is used to isolate the registry from other modules that might register a different 
+            custom behavior for the same type. 
+ 
+    Returns: 
+        The same type as the input ``cls``. 
+ 
+    Raises: 
+        TypeError: If the input type is not a class. 
+        TypeError: If the path entry class is not a subclass of :class:`PyTreeEntry`. 
+        TypeError: If the namespace is not a string. 
+        ValueError: If the namespace is an empty string. 
+        ValueError: If the type is already registered in the registry. 
+ 
+    Examples: 
+        &gt;&gt;&gt; # Registry a Python type with lambda functions 
+        &gt;&gt;&gt; register_pytree_node( 
+        ...     set, 
+        ...     lambda s: (sorted(s), None, None), 
+        ...     lambda _, children: set(children), 
+        ...     namespace='set', 
+        ... ) 
+        &lt;class 'set'&gt; 
+ 
+        &gt;&gt;&gt; # Register a Python type into a namespace 
+        &gt;&gt;&gt; import torch 
+        &gt;&gt;&gt; register_pytree_node( 
+        ...     torch.Tensor, 
+        ...     flatten_func=lambda tensor: ( 
+        ...         (tensor.cpu().detach().numpy(),), 
+        ...         {'dtype': tensor.dtype, 'device': tensor.device, 'requires_grad': tensor.requires_grad}, 
+        ...     ), 
+        ...     unflatten_func=lambda metadata, children: torch.tensor(children[0], **metadata), 
+        ...     namespace='torch2numpy', 
+        ... ) 
+        &lt;class 'torch.Tensor'&gt; 
+ 
+        &gt;&gt;&gt; # doctest: +SKIP 
+        &gt;&gt;&gt; tree = {'weight': torch.ones(size=(1, 2)).cuda(), 'bias': torch.zeros(size=(2,))} 
+        &gt;&gt;&gt; tree 
+        {'weight': tensor([[1., 1.]], device='cuda:0'), 'bias': tensor([0., 0.])} 
+ 
+        &gt;&gt;&gt; # Flatten without specifying the namespace 
+        &gt;&gt;&gt; tree_flatten(tree)  # `torch.Tensor`s are leaf nodes 
+        ([tensor([0., 0.]), tensor([[1., 1.]], device='cuda:0')], PyTreeSpec({'bias': *, 'weight': *})) 
+ 
+        &gt;&gt;&gt; # Flatten with the namespace 
+        &gt;&gt;&gt; tree_flatten(tree, namespace='torch2numpy') 
+        ( 
+            [array([0., 0.], dtype=float32), array([[1., 1.]], dtype=float32)], 
+            PyTreeSpec( 
+                { 
+                    'bias': CustomTreeNode(Tensor[{'dtype': torch.float32, 'device': device(type='cpu'), 'requires_grad': False}], [*]), 
+                    'weight': CustomTreeNode(Tensor[{'dtype': torch.float32, 'device': device(type='cuda', index=0), 'requires_grad': False}], [*]) 
+                }, 
+                namespace='torch2numpy' 
+            ) 
+        ) 
+ 
+        &gt;&gt;&gt; # Register the same type with a different namespace for different behaviors 
+        &gt;&gt;&gt; def tensor2flatparam(tensor): 
+        ...     return [torch.nn.Parameter(tensor.reshape(-1))], tensor.shape, None 
+        ... 
+        ... def flatparam2tensor(metadata, children): 
+        ...     return children[0].reshape(metadata) 
+        ... 
+        ... register_pytree_node( 
+        ...     torch.Tensor, 
+        ...     flatten_func=tensor2flatparam, 
+        ...     unflatten_func=flatparam2tensor, 
+        ...     namespace='tensor2flatparam', 
+        ... ) 
+        &lt;class 'torch.Tensor'&gt; 
+ 
+        &gt;&gt;&gt; # Flatten with the new namespace 
+        &gt;&gt;&gt; tree_flatten(tree, namespace='tensor2flatparam') 
+        ( 
+            [ 
+                Parameter containing: tensor([0., 0.], requires_grad=True), 
+                Parameter containing: tensor([1., 1.], device='cuda:0', requires_grad=True) 
+            ], 
+            PyTreeSpec( 
+                { 
+                    'bias': CustomTreeNode(Tensor[torch.Size([2])], [*]), 
+                    'weight': CustomTreeNode(Tensor[torch.Size([1, 2])], [*]) 
+                }, 
+                namespace='tensor2flatparam' 
+            ) 
+        ) 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if not </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'Expected a class, got </span><span class="s3">{</span><span class="s1">cls</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if not </span><span class="s4">(</span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">path_entry_type</span><span class="s4">) </span><span class="s3">and </span><span class="s1">issubclass</span><span class="s4">(</span><span class="s1">path_entry_type</span><span class="s4">, </span><span class="s1">PyTreeEntry</span><span class="s4">)):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'Expected a subclass of PyTreeEntry, got </span><span class="s3">{</span><span class="s1">path_entry_type</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is not </span><span class="s1">__GLOBAL_NAMESPACE </span><span class="s3">and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'The namespace must be a string, got </span><span class="s3">{</span><span class="s1">namespace</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s4">== </span><span class="s5">''</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'The namespace cannot be an empty string.'</span><span class="s4">)</span>
+
+    <span class="s1">registration_key</span><span class="s4">: </span><span class="s1">type </span><span class="s4">| </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">type</span><span class="s4">]</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is </span><span class="s1">__GLOBAL_NAMESPACE</span><span class="s4">:</span>
+        <span class="s1">registration_key </span><span class="s4">= </span><span class="s1">cls</span>
+        <span class="s1">namespace </span><span class="s4">= </span><span class="s5">''</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s1">registration_key </span><span class="s4">= (</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">cls</span><span class="s4">)</span>
+
+    <span class="s3">with </span><span class="s1">__REGISTRY_LOCK</span><span class="s4">:</span>
+        <span class="s1">_C</span><span class="s4">.</span><span class="s1">register_node</span><span class="s4">(</span>
+            <span class="s1">cls</span><span class="s4">,</span>
+            <span class="s1">flatten_func</span><span class="s4">,</span>
+            <span class="s1">unflatten_func</span><span class="s4">,</span>
+            <span class="s1">path_entry_type</span><span class="s4">,</span>
+            <span class="s1">namespace</span><span class="s4">,</span>
+        <span class="s4">)</span>
+        <span class="s1">_NODETYPE_REGISTRY</span><span class="s4">[</span><span class="s1">registration_key</span><span class="s4">] = </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span>
+            <span class="s1">cls</span><span class="s4">,</span>
+            <span class="s1">flatten_func</span><span class="s4">,</span>
+            <span class="s1">unflatten_func</span><span class="s4">,</span>
+            <span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">path_entry_type</span><span class="s4">,</span>
+            <span class="s1">namespace</span><span class="s4">=</span><span class="s1">namespace</span><span class="s4">,</span>
+        <span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">cls</span>
+
+
+<span class="s4">@</span><span class="s1">overload</span>
+<span class="s3">def </span><span class="s1">register_pytree_node_class</span><span class="s4">(</span>
+    <span class="s1">cls</span><span class="s4">: </span><span class="s1">str </span><span class="s4">| </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s4">*,</span>
+    <span class="s1">path_entry_type</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">PyTreeEntry</span><span class="s4">] | </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str </span><span class="s4">| </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; Callable</span><span class="s4">[[</span><span class="s1">CustomTreeNodeT</span><span class="s4">], </span><span class="s1">CustomTreeNodeT</span><span class="s4">]: ...</span>
+
+
+<span class="s4">@</span><span class="s1">overload</span>
+<span class="s3">def </span><span class="s1">register_pytree_node_class</span><span class="s4">(</span>
+    <span class="s1">cls</span><span class="s4">: </span><span class="s1">CustomTreeNodeT</span><span class="s4">,</span>
+    <span class="s4">*,</span>
+    <span class="s1">path_entry_type</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">PyTreeEntry</span><span class="s4">] | </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; CustomTreeNodeT</span><span class="s4">: ...</span>
+
+
+<span class="s3">def </span><span class="s1">register_pytree_node_class</span><span class="s4">(  </span><span class="s0"># noqa: C901</span>
+    <span class="s1">cls</span><span class="s4">: </span><span class="s1">CustomTreeNodeT </span><span class="s4">| </span><span class="s1">str </span><span class="s4">| </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s4">*,</span>
+    <span class="s1">path_entry_type</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">PyTreeEntry</span><span class="s4">] | </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str </span><span class="s4">| </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; CustomTreeNodeT </span><span class="s4">| </span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">CustomTreeNodeT</span><span class="s4">], </span><span class="s1">CustomTreeNodeT</span><span class="s4">]:</span>
+    <span class="s2">&quot;&quot;&quot;Extend the set of types that are considered internal nodes in pytrees. 
+ 
+    See also :func:`register_pytree_node` and :func:`unregister_pytree_node`. 
+ 
+    The ``namespace`` argument is used to avoid collisions that occur when different libraries 
+    register the same Python type with different behaviors. It is recommended to add a unique prefix 
+    to the namespace to avoid conflicts with other libraries. Namespaces can also be used to specify 
+    the same class in different namespaces for different use cases. 
+ 
+    .. warning:: 
+        For safety reasons, a ``namespace`` must be specified while registering a custom type. It is 
+        used to isolate the behavior of flattening and unflattening a pytree node type. This is to 
+        prevent accidental collisions between different libraries that may register the same type. 
+ 
+    Args: 
+        cls (type, optional): A Python type to treat as an internal pytree node. 
+        path_entry_type (type, optional): The type of the path entry to be used in the treespec. 
+            (default: :class:`AutoEntry`) 
+        namespace (str, optional): A non-empty string that uniquely identifies the namespace of the 
+            type registry. This is used to isolate the registry from other modules that might 
+            register a different custom behavior for the same type. 
+ 
+    Returns: 
+        The same type as the input ``cls`` if the argument presents. Otherwise, return a decorator 
+        function that registers the class as a pytree node. 
+ 
+    Raises: 
+        TypeError: If the path entry class is not a subclass of :class:`PyTreeEntry`. 
+        TypeError: If the namespace is not a string. 
+        ValueError: If the namespace is an empty string. 
+        ValueError: If the type is already registered in the registry. 
+ 
+    This function is a thin wrapper around :func:`register_pytree_node`, and provides a 
+    class-oriented interface:: 
+ 
+        @register_pytree_node_class(namespace='foo') 
+        class Special: 
+            TREE_PATH_ENTRY_TYPE = GetAttrEntry 
+ 
+            def __init__(self, x, y): 
+                self.x = x 
+                self.y = y 
+ 
+            def tree_flatten(self): 
+                return ((self.x, self.y), None, ('x', 'y')) 
+ 
+            @classmethod 
+            def tree_unflatten(cls, metadata, children): 
+                return cls(*children) 
+ 
+        @register_pytree_node_class('mylist') 
+        class MyList(UserList): 
+            TREE_PATH_ENTRY_TYPE = SequenceEntry 
+ 
+            def tree_flatten(self): 
+                return self.data, None, None 
+ 
+            @classmethod 
+            def tree_unflatten(cls, metadata, children): 
+                return cls(*children) 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">cls </span><span class="s3">is </span><span class="s1">__GLOBAL_NAMESPACE </span><span class="s3">or </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+        <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'Cannot specify `namespace` when the first argument is a string.'</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">cls </span><span class="s4">== </span><span class="s5">''</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'The namespace cannot be an empty string.'</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">(</span>
+            <span class="s1">register_pytree_node_class</span><span class="s4">,</span>
+            <span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">path_entry_type</span><span class="s4">,</span>
+            <span class="s1">namespace</span><span class="s4">=</span><span class="s1">cls</span><span class="s4">,</span>
+        <span class="s4">)  </span><span class="s0"># type: ignore[return-value]</span>
+
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is None</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'Must specify `namespace` when the first argument is a class.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is not </span><span class="s1">__GLOBAL_NAMESPACE </span><span class="s3">and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'The namespace must be a string, got </span><span class="s3">{</span><span class="s1">namespace</span><span class="s3">!r}</span><span class="s5">'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s4">== </span><span class="s5">''</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'The namespace cannot be an empty string.'</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">cls </span><span class="s3">is None</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">(</span>
+            <span class="s1">register_pytree_node_class</span><span class="s4">,</span>
+            <span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">path_entry_type</span><span class="s4">,</span>
+            <span class="s1">namespace</span><span class="s4">=</span><span class="s1">namespace</span><span class="s4">,</span>
+        <span class="s4">)  </span><span class="s0"># type: ignore[return-value]</span>
+    <span class="s3">if not </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'Expected a class, got </span><span class="s3">{</span><span class="s1">cls</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">path_entry_type </span><span class="s3">is None</span><span class="s4">:</span>
+        <span class="s1">path_entry_type </span><span class="s4">= </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s5">'TREE_PATH_ENTRY_TYPE'</span><span class="s4">, </span><span class="s1">AutoEntry</span><span class="s4">)</span>
+    <span class="s3">if not </span><span class="s4">(</span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">path_entry_type</span><span class="s4">) </span><span class="s3">and </span><span class="s1">issubclass</span><span class="s4">(</span><span class="s1">path_entry_type</span><span class="s4">, </span><span class="s1">PyTreeEntry</span><span class="s4">)):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'Expected a subclass of PyTreeEntry, got </span><span class="s3">{</span><span class="s1">path_entry_type</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s1">register_pytree_node</span><span class="s4">(</span>
+        <span class="s1">cls</span><span class="s4">,</span>
+        <span class="s1">methodcaller</span><span class="s4">(</span><span class="s5">'tree_flatten'</span><span class="s4">),</span>
+        <span class="s1">cls</span><span class="s4">.</span><span class="s1">tree_unflatten</span><span class="s4">,</span>
+        <span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">path_entry_type</span><span class="s4">,</span>
+        <span class="s1">namespace</span><span class="s4">=</span><span class="s1">namespace</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">cls</span>
+
+
+<span class="s3">def </span><span class="s1">unregister_pytree_node</span><span class="s4">(</span>
+    <span class="s1">cls</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">CustomTreeNode</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]],</span>
+    <span class="s4">*,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; PyTreeNodeRegistryEntry</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Remove a type from the pytree node registry. 
+ 
+    See also :func:`register_pytree_node` and :func:`register_pytree_node_class`. 
+ 
+    This function is the inverse operation of function :func:`register_pytree_node`. 
+ 
+    Args: 
+        cls (type): A Python type to remove from the pytree node registry. 
+        namespace (str): The namespace of the pytree node registry to remove the type from. 
+ 
+    Returns: 
+        The removed registry entry. 
+ 
+    Raises: 
+        TypeError: If the input type is not a class. 
+        TypeError: If the namespace is not a string. 
+        ValueError: If the namespace is an empty string. 
+        ValueError: If the type is a built-in type that cannot be unregistered. 
+        ValueError: If the type is not found in the registry. 
+ 
+    Examples: 
+        &gt;&gt;&gt; # Register a Python type with lambda functions 
+        &gt;&gt;&gt; register_pytree_node( 
+        ...     set, 
+        ...     lambda s: (sorted(s), None, None), 
+        ...     lambda _, children: set(children), 
+        ...     namespace='temp', 
+        ... ) 
+        &lt;class 'set'&gt; 
+ 
+        &gt;&gt;&gt; # Unregister the Python type 
+        &gt;&gt;&gt; unregister_pytree_node(set, namespace='temp') 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if not </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'Expected a class, got </span><span class="s3">{</span><span class="s1">cls</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is not </span><span class="s1">__GLOBAL_NAMESPACE </span><span class="s3">and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'The namespace must be a string, got </span><span class="s3">{</span><span class="s1">namespace</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s4">== </span><span class="s5">''</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'The namespace cannot be an empty string.'</span><span class="s4">)</span>
+
+    <span class="s1">registration_key</span><span class="s4">: </span><span class="s1">type </span><span class="s4">| </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">type</span><span class="s4">]</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is </span><span class="s1">__GLOBAL_NAMESPACE</span><span class="s4">:</span>
+        <span class="s1">registration_key </span><span class="s4">= </span><span class="s1">cls</span>
+        <span class="s1">namespace </span><span class="s4">= </span><span class="s5">''</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s1">registration_key </span><span class="s4">= (</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">cls</span><span class="s4">)</span>
+
+    <span class="s3">with </span><span class="s1">__REGISTRY_LOCK</span><span class="s4">:</span>
+        <span class="s1">_C</span><span class="s4">.</span><span class="s1">unregister_node</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">namespace</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">_NODETYPE_REGISTRY</span><span class="s4">.</span><span class="s1">pop</span><span class="s4">(</span><span class="s1">registration_key</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_sorted_items</span><span class="s4">(</span><span class="s1">items</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]]) </span><span class="s1">-&gt; list</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]]:</span>
+    <span class="s3">return </span><span class="s1">total_order_sorted</span><span class="s4">(</span><span class="s1">items</span><span class="s4">, </span><span class="s1">key</span><span class="s4">=</span><span class="s1">itemgetter</span><span class="s4">(</span><span class="s6">0</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_none_flatten</span><span class="s4">(</span><span class="s1">none</span><span class="s4">: </span><span class="s3">None</span><span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[()], </span><span class="s3">None</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s4">(), </span><span class="s3">None</span>
+
+
+<span class="s3">def </span><span class="s1">_none_unflatten</span><span class="s4">(</span><span class="s1">_</span><span class="s4">: </span><span class="s3">None</span><span class="s4">, </span><span class="s1">children</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">Any</span><span class="s4">]) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+    <span class="s1">sentinel </span><span class="s4">= </span><span class="s1">object</span><span class="s4">()</span>
+    <span class="s3">if </span><span class="s1">next</span><span class="s4">(</span><span class="s1">iter</span><span class="s4">(</span><span class="s1">children</span><span class="s4">), </span><span class="s1">sentinel</span><span class="s4">) </span><span class="s3">is not </span><span class="s1">sentinel</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'Expected no children.'</span><span class="s4">)</span>
+    <span class="s3">return None  </span><span class="s0"># noqa: RET501</span>
+
+
+<span class="s3">def </span><span class="s1">_tuple_flatten</span><span class="s4">(</span><span class="s1">tup</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...], </span><span class="s3">None</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">tup</span><span class="s4">, </span><span class="s3">None</span>
+
+
+<span class="s3">def </span><span class="s1">_tuple_unflatten</span><span class="s4">(</span><span class="s1">_</span><span class="s4">: </span><span class="s3">None</span><span class="s4">, </span><span class="s1">children</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...]:</span>
+    <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">children</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_list_flatten</span><span class="s4">(</span><span class="s1">lst</span><span class="s4">: </span><span class="s1">list</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">list</span><span class="s4">[</span><span class="s1">T</span><span class="s4">], </span><span class="s3">None</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">lst</span><span class="s4">, </span><span class="s3">None</span>
+
+
+<span class="s3">def </span><span class="s1">_list_unflatten</span><span class="s4">(</span><span class="s1">_</span><span class="s4">: </span><span class="s3">None</span><span class="s4">, </span><span class="s1">children</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; list</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">list</span><span class="s4">(</span><span class="s1">children</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_dict_flatten</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">, ...], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, ...]]:</span>
+    <span class="s1">keys</span><span class="s4">, </span><span class="s1">values </span><span class="s4">= </span><span class="s1">unzip2</span><span class="s4">(</span><span class="s1">_sorted_items</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">.</span><span class="s1">items</span><span class="s4">()))</span>
+    <span class="s3">return </span><span class="s1">values</span><span class="s4">, </span><span class="s1">list</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">), </span><span class="s1">keys</span>
+
+
+<span class="s3">def </span><span class="s1">_dict_unflatten</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">: </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">], </span><span class="s1">values</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">]) </span><span class="s1">-&gt; dict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">dict</span><span class="s4">(</span><span class="s1">safe_zip</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">, </span><span class="s1">values</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_dict_insertion_ordered_flatten</span><span class="s4">(</span>
+    <span class="s1">dct</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">, ...], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, ...]]:</span>
+    <span class="s1">keys</span><span class="s4">, </span><span class="s1">values </span><span class="s4">= </span><span class="s1">unzip2</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+    <span class="s3">return </span><span class="s1">values</span><span class="s4">, </span><span class="s1">list</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">), </span><span class="s1">keys</span>
+
+
+<span class="s3">def </span><span class="s1">_dict_insertion_ordered_unflatten</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">: </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">], </span><span class="s1">values</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">]) </span><span class="s1">-&gt; dict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">dict</span><span class="s4">(</span><span class="s1">safe_zip</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">, </span><span class="s1">values</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_ordereddict_flatten</span><span class="s4">(</span>
+    <span class="s1">dct</span><span class="s4">: </span><span class="s1">OrderedDict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">, ...], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, ...]]:</span>
+    <span class="s1">keys</span><span class="s4">, </span><span class="s1">values </span><span class="s4">= </span><span class="s1">unzip2</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+    <span class="s3">return </span><span class="s1">values</span><span class="s4">, </span><span class="s1">list</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">), </span><span class="s1">keys</span>
+
+
+<span class="s3">def </span><span class="s1">_ordereddict_unflatten</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">: </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">], </span><span class="s1">values</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">]) </span><span class="s1">-&gt; OrderedDict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">OrderedDict</span><span class="s4">(</span><span class="s1">safe_zip</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">, </span><span class="s1">values</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_defaultdict_flatten</span><span class="s4">(</span>
+    <span class="s1">dct</span><span class="s4">: </span><span class="s1">defaultdict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">, ...], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[], </span><span class="s1">VT</span><span class="s4">] | </span><span class="s3">None</span><span class="s4">, </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">]], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, ...]]:</span>
+    <span class="s1">values</span><span class="s4">, </span><span class="s1">keys</span><span class="s4">, </span><span class="s1">entries </span><span class="s4">= </span><span class="s1">_dict_flatten</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">values</span><span class="s4">, (</span><span class="s1">dct</span><span class="s4">.</span><span class="s1">default_factory</span><span class="s4">, </span><span class="s1">keys</span><span class="s4">), </span><span class="s1">entries</span>
+
+
+<span class="s3">def </span><span class="s1">_defaultdict_unflatten</span><span class="s4">(</span>
+    <span class="s1">metadata</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[], </span><span class="s1">VT</span><span class="s4">], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">]],</span>
+    <span class="s1">values</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; defaultdict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]:</span>
+    <span class="s1">default_factory</span><span class="s4">, </span><span class="s1">keys </span><span class="s4">= </span><span class="s1">metadata</span>
+    <span class="s3">return </span><span class="s1">defaultdict</span><span class="s4">(</span><span class="s1">default_factory</span><span class="s4">, </span><span class="s1">_dict_unflatten</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">, </span><span class="s1">values</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_defaultdict_insertion_ordered_flatten</span><span class="s4">(</span>
+    <span class="s1">dct</span><span class="s4">: </span><span class="s1">defaultdict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">, ...], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[], </span><span class="s1">VT</span><span class="s4">] | </span><span class="s3">None</span><span class="s4">, </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">]], </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, ...]]:</span>
+    <span class="s1">values</span><span class="s4">, </span><span class="s1">keys</span><span class="s4">, </span><span class="s1">entries </span><span class="s4">= </span><span class="s1">_dict_insertion_ordered_flatten</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">values</span><span class="s4">, (</span><span class="s1">dct</span><span class="s4">.</span><span class="s1">default_factory</span><span class="s4">, </span><span class="s1">keys</span><span class="s4">), </span><span class="s1">entries</span>
+
+
+<span class="s3">def </span><span class="s1">_defaultdict_insertion_ordered_unflatten</span><span class="s4">(</span>
+    <span class="s1">metadata</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[], </span><span class="s1">VT</span><span class="s4">], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">]],</span>
+    <span class="s1">values</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">VT</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; defaultdict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]:</span>
+    <span class="s1">default_factory</span><span class="s4">, </span><span class="s1">keys </span><span class="s4">= </span><span class="s1">metadata</span>
+    <span class="s3">return </span><span class="s1">defaultdict</span><span class="s4">(</span><span class="s1">default_factory</span><span class="s4">, </span><span class="s1">_dict_insertion_ordered_unflatten</span><span class="s4">(</span><span class="s1">keys</span><span class="s4">, </span><span class="s1">values</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_deque_flatten</span><span class="s4">(</span><span class="s1">deq</span><span class="s4">: </span><span class="s1">deque</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">deque</span><span class="s4">[</span><span class="s1">T</span><span class="s4">], </span><span class="s1">int </span><span class="s4">| </span><span class="s3">None</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">deq</span><span class="s4">, </span><span class="s1">deq</span><span class="s4">.</span><span class="s1">maxlen</span>
+
+
+<span class="s3">def </span><span class="s1">_deque_unflatten</span><span class="s4">(</span><span class="s1">maxlen</span><span class="s4">: </span><span class="s1">int </span><span class="s4">| </span><span class="s3">None</span><span class="s4">, </span><span class="s1">children</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; deque</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">deque</span><span class="s4">(</span><span class="s1">children</span><span class="s4">, </span><span class="s1">maxlen</span><span class="s4">=</span><span class="s1">maxlen</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_namedtuple_flatten</span><span class="s4">(</span><span class="s1">tup</span><span class="s4">: </span><span class="s1">NamedTuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...], </span><span class="s1">type</span><span class="s4">[</span><span class="s1">NamedTuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]]]:  </span><span class="s0"># type: ignore[type-arg]</span>
+    <span class="s3">return </span><span class="s1">tup</span><span class="s4">, </span><span class="s1">type</span><span class="s4">(</span><span class="s1">tup</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_namedtuple_unflatten</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">NamedTuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]], </span><span class="s1">children</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; NamedTuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]:  </span><span class="s0"># type: ignore[type-arg]</span>
+    <span class="s3">return </span><span class="s1">cls</span><span class="s4">(*</span><span class="s1">children</span><span class="s4">)  </span><span class="s0"># type: ignore[call-overload]</span>
+
+
+<span class="s3">def </span><span class="s1">_structseq_flatten</span><span class="s4">(</span><span class="s1">seq</span><span class="s4">: </span><span class="s1">structseq</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">T</span><span class="s4">, ...], </span><span class="s1">type</span><span class="s4">[</span><span class="s1">structseq</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]]]:</span>
+    <span class="s3">return </span><span class="s1">seq</span><span class="s4">, </span><span class="s1">type</span><span class="s4">(</span><span class="s1">seq</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_structseq_unflatten</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">structseq</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]], </span><span class="s1">children</span><span class="s4">: </span><span class="s1">Iterable</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]) </span><span class="s1">-&gt; structseq</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]:</span>
+    <span class="s3">return </span><span class="s1">cls</span><span class="s4">(</span><span class="s1">children</span><span class="s4">)</span>
+
+
+<span class="s0"># pylint: disable=all</span>
+<span class="s1">_NODETYPE_REGISTRY</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">type </span><span class="s4">| </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">type</span><span class="s4">], </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">] = {  </span><span class="s0"># fmt: off</span>
+    <span class="s1">type</span><span class="s4">(</span><span class="s3">None</span><span class="s4">): </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">type</span><span class="s4">(</span><span class="s3">None</span><span class="s4">), </span><span class="s1">_none_flatten</span><span class="s4">, </span><span class="s1">_none_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">PyTreeEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">tuple</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">tuple</span><span class="s4">, </span><span class="s1">_tuple_flatten</span><span class="s4">, </span><span class="s1">_tuple_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">SequenceEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">list</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">list</span><span class="s4">, </span><span class="s1">_list_flatten</span><span class="s4">, </span><span class="s1">_list_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">SequenceEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">dict</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">dict</span><span class="s4">, </span><span class="s1">_dict_flatten</span><span class="s4">, </span><span class="s1">_dict_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">MappingEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">namedtuple</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">namedtuple</span><span class="s4">, </span><span class="s1">_namedtuple_flatten</span><span class="s4">, </span><span class="s1">_namedtuple_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">NamedTupleEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type,dict-item] # noqa: PYI024</span>
+    <span class="s1">OrderedDict</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">OrderedDict</span><span class="s4">, </span><span class="s1">_ordereddict_flatten</span><span class="s4">, </span><span class="s1">_ordereddict_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">MappingEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">defaultdict</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">defaultdict</span><span class="s4">, </span><span class="s1">_defaultdict_flatten</span><span class="s4">, </span><span class="s1">_defaultdict_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">MappingEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">deque</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">deque</span><span class="s4">, </span><span class="s1">_deque_flatten</span><span class="s4">, </span><span class="s1">_deque_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">SequenceEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">structseq</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span><span class="s1">structseq</span><span class="s4">, </span><span class="s1">_structseq_flatten</span><span class="s4">, </span><span class="s1">_structseq_unflatten</span><span class="s4">, </span><span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">StructSequenceEntry</span><span class="s4">),  </span><span class="s0"># type: ignore[arg-type]</span>
+<span class="s4">}</span>
+<span class="s0"># pylint: enable=all</span>
+
+
+<span class="s3">def </span><span class="s1">_pytree_node_registry_get</span><span class="s4">(</span>
+    <span class="s1">cls</span><span class="s4">: </span><span class="s1">type</span><span class="s4">,</span>
+    <span class="s4">*,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str </span><span class="s4">= </span><span class="s5">''</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; PyTreeNodeRegistryEntry </span><span class="s4">| </span><span class="s3">None</span><span class="s4">:</span>
+    <span class="s1">handler</span><span class="s4">: </span><span class="s1">PyTreeNodeRegistryEntry </span><span class="s4">| </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is not </span><span class="s1">__GLOBAL_NAMESPACE </span><span class="s3">and </span><span class="s1">namespace </span><span class="s4">!= </span><span class="s5">''</span><span class="s4">:</span>
+        <span class="s1">handler </span><span class="s4">= </span><span class="s1">_NODETYPE_REGISTRY</span><span class="s4">.</span><span class="s1">get</span><span class="s4">((</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">cls</span><span class="s4">))</span>
+        <span class="s3">if </span><span class="s1">handler </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">handler</span>
+
+    <span class="s3">if </span><span class="s1">_C</span><span class="s4">.</span><span class="s1">is_dict_insertion_ordered</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">):</span>
+        <span class="s3">if </span><span class="s1">cls </span><span class="s3">is </span><span class="s1">dict</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span>
+                <span class="s1">dict</span><span class="s4">,</span>
+                <span class="s1">_dict_insertion_ordered_flatten</span><span class="s4">,  </span><span class="s0"># type: ignore[arg-type]</span>
+                <span class="s1">_dict_insertion_ordered_unflatten</span><span class="s4">,  </span><span class="s0"># type: ignore[arg-type]</span>
+                <span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">MappingEntry</span><span class="s4">,</span>
+            <span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">cls </span><span class="s3">is </span><span class="s1">defaultdict</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">PyTreeNodeRegistryEntry</span><span class="s4">(</span>
+                <span class="s1">defaultdict</span><span class="s4">,</span>
+                <span class="s1">_defaultdict_insertion_ordered_flatten</span><span class="s4">,  </span><span class="s0"># type: ignore[arg-type]</span>
+                <span class="s1">_defaultdict_insertion_ordered_unflatten</span><span class="s4">,  </span><span class="s0"># type: ignore[arg-type]</span>
+                <span class="s1">path_entry_type</span><span class="s4">=</span><span class="s1">MappingEntry</span><span class="s4">,</span>
+            <span class="s4">)</span>
+
+    <span class="s1">handler </span><span class="s4">= </span><span class="s1">_NODETYPE_REGISTRY</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">handler </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s1">handler</span>
+    <span class="s3">if </span><span class="s1">is_structseq_class</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">_NODETYPE_REGISTRY</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">structseq</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">is_namedtuple_class</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">_NODETYPE_REGISTRY</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">namedtuple</span><span class="s4">)  </span><span class="s0"># type: ignore[call-overload] # noqa: PYI024</span>
+    <span class="s3">return None</span>
+
+
+<span class="s1">register_pytree_node</span><span class="s4">.</span><span class="s1">get </span><span class="s4">= </span><span class="s1">_pytree_node_registry_get  </span><span class="s0"># type: ignore[attr-defined]</span>
+<span class="s3">del </span><span class="s1">_pytree_node_registry_get</span>
+
+
+<span class="s4">@</span><span class="s1">contextlib</span><span class="s4">.</span><span class="s1">contextmanager</span>
+<span class="s3">def </span><span class="s1">dict_insertion_ordered</span><span class="s4">(</span><span class="s1">mode</span><span class="s4">: </span><span class="s1">bool</span><span class="s4">, *, </span><span class="s1">namespace</span><span class="s4">: </span><span class="s1">str</span><span class="s4">) </span><span class="s1">-&gt; Generator</span><span class="s4">[</span><span class="s3">None</span><span class="s4">, </span><span class="s3">None</span><span class="s4">, </span><span class="s3">None</span><span class="s4">]:</span>
+    <span class="s2">&quot;&quot;&quot;Context manager to temporarily set the dictionary sorting mode. 
+ 
+    This context manager is used to temporarily set the dictionary sorting mode for a specific 
+    namespace. The dictionary sorting mode is used to determine whether the keys of a dictionary 
+    should be sorted or keeping the insertion order when flattening a pytree. 
+ 
+    &gt;&gt;&gt; tree = {'b': (2, [3, 4]), 'a': 1, 'c': None, 'd': 5} 
+    &gt;&gt;&gt; tree_flatten(tree)  # doctest: +IGNORE_WHITESPACE 
+    ( 
+        [1, 2, 3, 4, 5], 
+        PyTreeSpec({'a': *, 'b': (*, [*, *]), 'c': None, 'd': *}) 
+    ) 
+    &gt;&gt;&gt; with dict_insertion_ordered(True, namespace='some-namespace'):  # doctest: +IGNORE_WHITESPACE 
+    ...     tree_flatten(tree, namespace='some-namespace') 
+    ( 
+        [2, 3, 4, 1, 5], 
+        PyTreeSpec({'b': (*, [*, *]), 'a': *, 'c': None, 'd': *}, namespace='some-namespace') 
+    ) 
+ 
+    Args: 
+        mode (bool): The dictionary sorting mode to set. 
+        namespace (str): The namespace to set the dictionary sorting mode for. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is not </span><span class="s1">__GLOBAL_NAMESPACE </span><span class="s3">and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'The namespace must be a string, got </span><span class="s3">{</span><span class="s1">namespace</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s4">== </span><span class="s5">''</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'The namespace cannot be an empty string.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">namespace </span><span class="s3">is </span><span class="s1">__GLOBAL_NAMESPACE</span><span class="s4">:</span>
+        <span class="s1">namespace </span><span class="s4">= </span><span class="s5">''</span>
+
+    <span class="s3">with </span><span class="s1">__REGISTRY_LOCK</span><span class="s4">:</span>
+        <span class="s1">prev </span><span class="s4">= </span><span class="s1">_C</span><span class="s4">.</span><span class="s1">is_dict_insertion_ordered</span><span class="s4">(</span><span class="s1">namespace</span><span class="s4">, </span><span class="s1">inherit_global_namespace</span><span class="s4">=</span><span class="s3">False</span><span class="s4">)</span>
+        <span class="s1">_C</span><span class="s4">.</span><span class="s1">set_dict_insertion_ordered</span><span class="s4">(</span><span class="s1">bool</span><span class="s4">(</span><span class="s1">mode</span><span class="s4">), </span><span class="s1">namespace</span><span class="s4">)</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s3">yield</span>
+    <span class="s3">finally</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">__REGISTRY_LOCK</span><span class="s4">:</span>
+            <span class="s1">_C</span><span class="s4">.</span><span class="s1">set_dict_insertion_ordered</span><span class="s4">(</span><span class="s1">prev</span><span class="s4">, </span><span class="s1">namespace</span><span class="s4">)</span>
+
+
+<span class="s0">####################################################################################################</span>
+
+<span class="s3">with </span><span class="s1">warnings</span><span class="s4">.</span><span class="s1">catch_warnings</span><span class="s4">():</span>
+    <span class="s1">warnings</span><span class="s4">.</span><span class="s1">filterwarnings</span><span class="s4">(</span><span class="s5">'ignore'</span><span class="s4">, </span><span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">, </span><span class="s1">module</span><span class="s4">=</span><span class="s1">__name__</span><span class="s4">, </span><span class="s1">append</span><span class="s4">=</span><span class="s3">False</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The function `_sorted_keys` is deprecated and will be removed in a future version.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">def </span><span class="s1">_sorted_keys</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">, </span><span class="s1">VT</span><span class="s4">]) </span><span class="s1">-&gt; list</span><span class="s4">[</span><span class="s1">KT</span><span class="s4">]:</span>
+        <span class="s3">return </span><span class="s1">total_order_sorted</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The key path API is deprecated and will be removed in a future version. '</span>
+        <span class="s5">'Please use the accessor API instead.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">class </span><span class="s1">KeyPathEntry</span><span class="s4">(</span><span class="s1">NamedTuple</span><span class="s4">):</span>
+        <span class="s1">key</span><span class="s4">: </span><span class="s1">Any</span>
+
+        <span class="s3">def </span><span class="s1">__add__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">other</span><span class="s4">: </span><span class="s1">object</span><span class="s4">) </span><span class="s1">-&gt; KeyPath</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">KeyPathEntry</span><span class="s4">):</span>
+                <span class="s3">return </span><span class="s1">KeyPath</span><span class="s4">((</span><span class="s1">self</span><span class="s4">, </span><span class="s1">other</span><span class="s4">))</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">KeyPath</span><span class="s4">):</span>
+                <span class="s3">return </span><span class="s1">KeyPath</span><span class="s4">((</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">other</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">))</span>
+            <span class="s3">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s3">def </span><span class="s1">__eq__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">other</span><span class="s4">: </span><span class="s1">object</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">) </span><span class="s3">and </span><span class="s1">self</span><span class="s4">.</span><span class="s1">key </span><span class="s4">== </span><span class="s1">other</span><span class="s4">.</span><span class="s1">key</span>
+
+        <span class="s3">def </span><span class="s1">pprint</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+            <span class="s2">&quot;&quot;&quot;Pretty name of the key path entry.&quot;&quot;&quot;</span>
+            <span class="s3">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The key path API is deprecated and will be removed in a future version. '</span>
+        <span class="s5">'Please use the accessor API instead.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">class </span><span class="s1">KeyPath</span><span class="s4">(</span><span class="s1">NamedTuple</span><span class="s4">):</span>
+        <span class="s1">keys</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">KeyPathEntry</span><span class="s4">, ...] = ()</span>
+
+        <span class="s3">def </span><span class="s1">__add__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">other</span><span class="s4">: </span><span class="s1">object</span><span class="s4">) </span><span class="s1">-&gt; KeyPath</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">KeyPathEntry</span><span class="s4">):</span>
+                <span class="s3">return </span><span class="s1">KeyPath</span><span class="s4">((*</span><span class="s1">self</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">, </span><span class="s1">other</span><span class="s4">))</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">KeyPath</span><span class="s4">):</span>
+                <span class="s3">return </span><span class="s1">KeyPath</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">keys </span><span class="s4">+ </span><span class="s1">other</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">NotImplemented</span>
+
+        <span class="s3">def </span><span class="s1">__eq__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">other</span><span class="s4">: </span><span class="s1">object</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">KeyPath</span><span class="s4">) </span><span class="s3">and </span><span class="s1">self</span><span class="s4">.</span><span class="s1">keys </span><span class="s4">== </span><span class="s1">other</span><span class="s4">.</span><span class="s1">keys</span>
+
+        <span class="s3">def </span><span class="s1">pprint</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+            <span class="s2">&quot;&quot;&quot;Pretty name of the key path.&quot;&quot;&quot;</span>
+            <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s5">' tree root'</span>
+            <span class="s3">return </span><span class="s5">''</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">k</span><span class="s4">.</span><span class="s1">pprint</span><span class="s4">() </span><span class="s3">for </span><span class="s1">k </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The key path API is deprecated and will be removed in a future version. '</span>
+        <span class="s5">'Please use the accessor API instead.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">class </span><span class="s1">GetitemKeyPathEntry</span><span class="s4">(</span><span class="s1">KeyPathEntry</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;The key path entry class for sequences and dictionaries.&quot;&quot;&quot;</span>
+
+        <span class="s3">def </span><span class="s1">pprint</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+            <span class="s2">&quot;&quot;&quot;Pretty name of the key path entry.&quot;&quot;&quot;</span>
+            <span class="s3">return </span><span class="s5">f'[</span><span class="s3">{</span><span class="s1">self</span><span class="s4">.</span><span class="s1">key</span><span class="s3">!r}</span><span class="s5">]'</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The key path API is deprecated and will be removed in a future version. '</span>
+        <span class="s5">'Please use the accessor API instead.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">class </span><span class="s1">AttributeKeyPathEntry</span><span class="s4">(</span><span class="s1">KeyPathEntry</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;The key path entry class for namedtuples.&quot;&quot;&quot;</span>
+
+        <span class="s3">def </span><span class="s1">pprint</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+            <span class="s2">&quot;&quot;&quot;Pretty name of the key path entry.&quot;&quot;&quot;</span>
+            <span class="s3">return </span><span class="s5">f'.</span><span class="s3">{</span><span class="s1">self</span><span class="s4">.</span><span class="s1">key</span><span class="s3">}</span><span class="s5">'</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The key path API is deprecated and will be removed in a future version. '</span>
+        <span class="s5">'Please use the accessor API instead.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">class </span><span class="s1">FlattenedKeyPathEntry</span><span class="s4">(</span><span class="s1">KeyPathEntry</span><span class="s4">):  </span><span class="s0"># fallback</span>
+        <span class="s2">&quot;&quot;&quot;The fallback key path entry class.&quot;&quot;&quot;</span>
+
+        <span class="s3">def </span><span class="s1">pprint</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+            <span class="s2">&quot;&quot;&quot;Pretty name of the key path entry.&quot;&quot;&quot;</span>
+            <span class="s3">return </span><span class="s5">f'[&lt;flat index </span><span class="s3">{</span><span class="s1">self</span><span class="s4">.</span><span class="s1">key</span><span class="s3">}</span><span class="s5">&gt;]'</span>
+
+    <span class="s1">KeyPathHandler </span><span class="s4">= </span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">PyTree</span><span class="s4">], </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">KeyPathEntry</span><span class="s4">]]</span>
+    <span class="s1">_KEYPATH_REGISTRY</span><span class="s4">: </span><span class="s1">dict</span><span class="s4">[</span><span class="s1">type</span><span class="s4">[</span><span class="s1">CustomTreeNode</span><span class="s4">], </span><span class="s1">KeyPathHandler</span><span class="s4">] = {}</span>
+
+    <span class="s4">@</span><span class="s1">deprecated</span><span class="s4">(</span>
+        <span class="s5">'The key path API is deprecated and will be removed in a future version. '</span>
+        <span class="s5">'Please use the accessor API instead.'</span><span class="s4">,</span>
+        <span class="s1">category</span><span class="s4">=</span><span class="s1">FutureWarning</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s3">def </span><span class="s1">register_keypaths</span><span class="s4">(</span>
+        <span class="s1">cls</span><span class="s4">: </span><span class="s1">type</span><span class="s4">[</span><span class="s1">CustomTreeNode</span><span class="s4">[</span><span class="s1">T</span><span class="s4">]],</span>
+        <span class="s1">handler</span><span class="s4">: </span><span class="s1">KeyPathHandler</span><span class="s4">,</span>
+    <span class="s4">) </span><span class="s1">-&gt; KeyPathHandler</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Register a key path handler for a custom pytree node type.&quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">isclass</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">f'Expected a class, got </span><span class="s3">{</span><span class="s1">cls</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">cls </span><span class="s3">in </span><span class="s1">_KEYPATH_REGISTRY</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">f'Key path handler for </span><span class="s3">{</span><span class="s1">cls</span><span class="s3">!r} </span><span class="s5">has already been registered.'</span><span class="s4">)</span>
+
+        <span class="s1">_KEYPATH_REGISTRY</span><span class="s4">[</span><span class="s1">cls</span><span class="s4">] = </span><span class="s1">handler</span>
+        <span class="s3">return </span><span class="s1">handler</span>
+
+    <span class="s1">register_keypaths</span><span class="s4">(</span><span class="s1">tuple</span><span class="s4">, </span><span class="s3">lambda </span><span class="s1">tup</span><span class="s4">: </span><span class="s1">list</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">GetitemKeyPathEntry</span><span class="s4">, </span><span class="s1">range</span><span class="s4">(</span><span class="s1">len</span><span class="s4">(</span><span class="s1">tup</span><span class="s4">)))))  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">register_keypaths</span><span class="s4">(</span><span class="s1">list</span><span class="s4">, </span><span class="s3">lambda </span><span class="s1">lst</span><span class="s4">: </span><span class="s1">list</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">GetitemKeyPathEntry</span><span class="s4">, </span><span class="s1">range</span><span class="s4">(</span><span class="s1">len</span><span class="s4">(</span><span class="s1">lst</span><span class="s4">)))))  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">register_keypaths</span><span class="s4">(</span><span class="s1">dict</span><span class="s4">, </span><span class="s3">lambda </span><span class="s1">dct</span><span class="s4">: </span><span class="s1">list</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">GetitemKeyPathEntry</span><span class="s4">, </span><span class="s1">_sorted_keys</span><span class="s4">(</span><span class="s1">dct</span><span class="s4">))))  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">register_keypaths</span><span class="s4">(</span><span class="s1">OrderedDict</span><span class="s4">, </span><span class="s3">lambda </span><span class="s1">odct</span><span class="s4">: </span><span class="s1">list</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">GetitemKeyPathEntry</span><span class="s4">, </span><span class="s1">odct</span><span class="s4">)))  </span><span class="s0"># type: ignore[arg-type,call-overload]</span>
+    <span class="s1">register_keypaths</span><span class="s4">(</span><span class="s1">defaultdict</span><span class="s4">, </span><span class="s3">lambda </span><span class="s1">ddct</span><span class="s4">: </span><span class="s1">list</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">GetitemKeyPathEntry</span><span class="s4">, </span><span class="s1">_sorted_keys</span><span class="s4">(</span><span class="s1">ddct</span><span class="s4">))))  </span><span class="s0"># type: ignore[arg-type]</span>
+    <span class="s1">register_keypaths</span><span class="s4">(</span><span class="s1">deque</span><span class="s4">, </span><span class="s3">lambda </span><span class="s1">dq</span><span class="s4">: </span><span class="s1">list</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">GetitemKeyPathEntry</span><span class="s4">, </span><span class="s1">range</span><span class="s4">(</span><span class="s1">len</span><span class="s4">(</span><span class="s1">dq</span><span class="s4">)))))  </span><span class="s0"># type: ignore[arg-type]</span>
+
+    <span class="s1">register_keypaths</span><span class="s4">.</span><span class="s1">get </span><span class="s4">= </span><span class="s1">_KEYPATH_REGISTRY</span><span class="s4">.</span><span class="s1">get  </span><span class="s0"># type: ignore[attr-defined]</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,967 @@
+<html>
+<head>
+<title>xslt.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+xslt.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># XSLT</span>
+<span class="s0">from lxml.includes cimport xslt</span>
+
+
+<span class="s0">cdef class XSLTError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;Base class of all XSLT errors.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class XSLTParseError(XSLTError):</span>
+    <span class="s0">&quot;&quot;&quot;Error parsing a stylesheet document.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class XSLTApplyError(XSLTError):</span>
+    <span class="s0">&quot;&quot;&quot;Error running an XSL transformation.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">class XSLTSaveError(XSLTError, SerialisationError):</span>
+    <span class="s0">&quot;&quot;&quot;Error serialising an XSLT result.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class XSLTExtensionError(XSLTError):</span>
+    <span class="s0">&quot;&quot;&quot;Error registering an XSLT extension.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0"># version information</span>
+<span class="s0">LIBXSLT_COMPILED_VERSION = __unpackIntVersion(xslt.LIBXSLT_VERSION)</span>
+<span class="s0">LIBXSLT_VERSION = __unpackIntVersion(xslt.xsltLibxsltVersion)</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># Where do we store what?</span>
+<span class="s0">#</span>
+<span class="s0"># xsltStylesheet-&gt;doc-&gt;_private</span>
+<span class="s0">#    == _XSLTResolverContext for XSL stylesheet</span>
+<span class="s0">#</span>
+<span class="s0"># xsltTransformContext-&gt;_private</span>
+<span class="s0">#    == _XSLTResolverContext for transformed document</span>
+<span class="s0">#</span>
+<span class="s0">################################################################################</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XSLT document loaders</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _XSLTResolverContext(_ResolverContext):</span>
+    <span class="s0">cdef xmlDoc* _c_style_doc</span>
+    <span class="s0">cdef _BaseParser _parser</span>
+
+    <span class="s0">cdef _XSLTResolverContext _copy(self):</span>
+        <span class="s0">cdef _XSLTResolverContext context</span>
+        <span class="s0">context = _XSLTResolverContext()</span>
+        <span class="s0">_initXSLTResolverContext(context, self._parser)</span>
+        <span class="s0">context._c_style_doc = self._c_style_doc</span>
+        <span class="s0">return context</span>
+
+<span class="s0">cdef _initXSLTResolverContext(_XSLTResolverContext context,</span>
+                              <span class="s0">_BaseParser parser):</span>
+    <span class="s0">_initResolverContext(context, parser.resolvers)</span>
+    <span class="s0">context._parser = parser</span>
+    <span class="s0">context._c_style_doc = NULL</span>
+
+<span class="s0">cdef xmlDoc* _xslt_resolve_from_python(const_xmlChar* c_uri, void* c_context,</span>
+                                       <span class="s0">int parse_options, int* error) with gil:</span>
+    <span class="s0"># call the Python document loaders</span>
+    <span class="s0">cdef _XSLTResolverContext context</span>
+    <span class="s0">cdef _ResolverRegistry resolvers</span>
+    <span class="s0">cdef _InputDocument doc_ref</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">cdef xmlDoc* c_return_doc = NULL</span>
+
+    <span class="s0">error[0] = 0</span>
+    <span class="s0">context = &lt;_XSLTResolverContext&gt;c_context</span>
+
+    <span class="s0"># shortcut if we resolve the stylesheet itself</span>
+    <span class="s0">c_doc = context._c_style_doc</span>
+    <span class="s0">try:</span>
+        <span class="s0">if c_doc is not NULL and c_doc.URL is not NULL:</span>
+            <span class="s0">if tree.xmlStrcmp(c_uri, c_doc.URL) == 0:</span>
+                <span class="s0">c_return_doc = _copyDoc(c_doc, 1)</span>
+                <span class="s0">return c_return_doc  # 'goto', see 'finally' below</span>
+
+        <span class="s0"># delegate to the Python resolvers</span>
+        <span class="s0">resolvers = context._resolvers</span>
+        <span class="s0">if tree.xmlStrncmp(&lt;unsigned char*&gt;'string://__STRING__XSLT__/', c_uri, 26) == 0:</span>
+            <span class="s0">c_uri += 26</span>
+        <span class="s0">uri = _decodeFilename(c_uri)</span>
+        <span class="s0">doc_ref = resolvers.resolve(uri, None, context)</span>
+
+        <span class="s0">if doc_ref is not None:</span>
+            <span class="s0">if doc_ref._type == PARSER_DATA_STRING:</span>
+                <span class="s0">c_return_doc = _parseDoc(</span>
+                    <span class="s0">doc_ref._data_bytes, doc_ref._filename, context._parser)</span>
+            <span class="s0">elif doc_ref._type == PARSER_DATA_FILENAME:</span>
+                <span class="s0">c_return_doc = _parseDocFromFile(</span>
+                    <span class="s0">doc_ref._filename, context._parser)</span>
+            <span class="s0">elif doc_ref._type == PARSER_DATA_FILE:</span>
+                <span class="s0">c_return_doc = _parseDocFromFilelike(</span>
+                    <span class="s0">doc_ref._file, doc_ref._filename, context._parser)</span>
+            <span class="s0">elif doc_ref._type == PARSER_DATA_EMPTY:</span>
+                <span class="s0">c_return_doc = _newXMLDoc()</span>
+            <span class="s0">if c_return_doc is not NULL and c_return_doc.URL is NULL:</span>
+                <span class="s0">c_return_doc.URL = tree.xmlStrdup(c_uri)</span>
+    <span class="s0">except:</span>
+        <span class="s0">error[0] = 1</span>
+        <span class="s0">context._store_raised()</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return c_return_doc  # and swallow any further exceptions</span>
+
+
+<span class="s0">cdef void _xslt_store_resolver_exception(const_xmlChar* c_uri, void* context,</span>
+                                         <span class="s0">xslt.xsltLoadType c_type) noexcept with gil:</span>
+    <span class="s0">try:</span>
+        <span class="s0">message = f&quot;Cannot resolve URI {_decodeFilename(c_uri)}&quot;</span>
+        <span class="s0">if c_type == xslt.XSLT_LOAD_DOCUMENT:</span>
+            <span class="s0">exception = XSLTApplyError(message)</span>
+        <span class="s0">else:</span>
+            <span class="s0">exception = XSLTParseError(message)</span>
+        <span class="s0">(&lt;_XSLTResolverContext&gt;context)._store_exception(exception)</span>
+    <span class="s0">except BaseException as e:</span>
+        <span class="s0">(&lt;_XSLTResolverContext&gt;context)._store_exception(e)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # and swallow any further exceptions</span>
+
+
+<span class="s0">cdef xmlDoc* _xslt_doc_loader(const_xmlChar* c_uri, tree.xmlDict* c_dict,</span>
+                              <span class="s0">int parse_options, void* c_ctxt,</span>
+                              <span class="s0">xslt.xsltLoadType c_type) noexcept nogil:</span>
+    <span class="s0"># nogil =&gt; no Python objects here, may be called without thread context !</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">cdef xmlDoc* result</span>
+    <span class="s0">cdef void* c_pcontext</span>
+    <span class="s0">cdef int error = 0</span>
+    <span class="s0"># find resolver contexts of stylesheet and transformed doc</span>
+    <span class="s0">if c_type == xslt.XSLT_LOAD_DOCUMENT:</span>
+        <span class="s0"># transformation time</span>
+        <span class="s0">c_pcontext = (&lt;xslt.xsltTransformContext*&gt;c_ctxt)._private</span>
+    <span class="s0">elif c_type == xslt.XSLT_LOAD_STYLESHEET:</span>
+        <span class="s0"># include/import resolution while parsing</span>
+        <span class="s0">c_pcontext = (&lt;xslt.xsltStylesheet*&gt;c_ctxt).doc._private</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_pcontext = NULL</span>
+
+    <span class="s0">if c_pcontext is NULL:</span>
+        <span class="s0"># can't call Python without context, fall back to default loader</span>
+        <span class="s0">return XSLT_DOC_DEFAULT_LOADER(</span>
+            <span class="s0">c_uri, c_dict, parse_options, c_ctxt, c_type)</span>
+
+    <span class="s0">c_doc = _xslt_resolve_from_python(c_uri, c_pcontext, parse_options, &amp;error)</span>
+    <span class="s0">if c_doc is NULL and not error:</span>
+        <span class="s0">c_doc = XSLT_DOC_DEFAULT_LOADER(</span>
+            <span class="s0">c_uri, c_dict, parse_options, c_ctxt, c_type)</span>
+        <span class="s0">if c_doc is NULL:</span>
+            <span class="s0">_xslt_store_resolver_exception(c_uri, c_pcontext, c_type)</span>
+
+    <span class="s0">if c_doc is not NULL and c_type == xslt.XSLT_LOAD_STYLESHEET:</span>
+        <span class="s0">c_doc._private = c_pcontext</span>
+    <span class="s0">return c_doc</span>
+
+<span class="s0">cdef xslt.xsltDocLoaderFunc XSLT_DOC_DEFAULT_LOADER = xslt.xsltDocDefaultLoader</span>
+<span class="s0">xslt.xsltSetLoaderFunc(&lt;xslt.xsltDocLoaderFunc&gt;_xslt_doc_loader)</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XSLT file/network access control</span>
+
+<span class="s0">cdef class XSLTAccessControl:</span>
+    <span class="s0">&quot;&quot;&quot;XSLTAccessControl(self, read_file=True, write_file=True, create_dir=True, read_network=True, write_network=True)</span>
+
+    <span class="s0">Access control for XSLT: reading/writing files, directories and</span>
+    <span class="s0">network I/O.  Access to a type of resource is granted or denied by</span>
+    <span class="s0">passing any of the following boolean keyword arguments.  All of</span>
+    <span class="s0">them default to True to allow access.</span>
+
+    <span class="s0">- read_file</span>
+    <span class="s0">- write_file</span>
+    <span class="s0">- create_dir</span>
+    <span class="s0">- read_network</span>
+    <span class="s0">- write_network</span>
+
+    <span class="s0">For convenience, there is also a class member `DENY_ALL` that</span>
+    <span class="s0">provides an XSLTAccessControl instance that is readily configured</span>
+    <span class="s0">to deny everything, and a `DENY_WRITE` member that denies all</span>
+    <span class="s0">write access but allows read access.</span>
+
+    <span class="s0">See `XSLT`.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xslt.xsltSecurityPrefs* _prefs</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._prefs = xslt.xsltNewSecurityPrefs()</span>
+        <span class="s0">if self._prefs is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+
+    <span class="s0">def __init__(self, *, bint read_file=True, bint write_file=True, bint create_dir=True,</span>
+                 <span class="s0">bint read_network=True, bint write_network=True):</span>
+        <span class="s0">self._setAccess(xslt.XSLT_SECPREF_READ_FILE, read_file)</span>
+        <span class="s0">self._setAccess(xslt.XSLT_SECPREF_WRITE_FILE, write_file)</span>
+        <span class="s0">self._setAccess(xslt.XSLT_SECPREF_CREATE_DIRECTORY, create_dir)</span>
+        <span class="s0">self._setAccess(xslt.XSLT_SECPREF_READ_NETWORK, read_network)</span>
+        <span class="s0">self._setAccess(xslt.XSLT_SECPREF_WRITE_NETWORK, write_network)</span>
+
+    <span class="s0">DENY_ALL = XSLTAccessControl(</span>
+        <span class="s0">read_file=False, write_file=False, create_dir=False,</span>
+        <span class="s0">read_network=False, write_network=False)</span>
+
+    <span class="s0">DENY_WRITE = XSLTAccessControl(</span>
+        <span class="s0">read_file=True, write_file=False, create_dir=False,</span>
+        <span class="s0">read_network=True, write_network=False)</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if self._prefs is not NULL:</span>
+            <span class="s0">xslt.xsltFreeSecurityPrefs(self._prefs)</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _setAccess(self, xslt.xsltSecurityOption option, bint allow):</span>
+        <span class="s0">cdef xslt.xsltSecurityCheck function</span>
+        <span class="s0">if allow:</span>
+            <span class="s0">function = xslt.xsltSecurityAllow</span>
+        <span class="s0">else:</span>
+            <span class="s0">function = xslt.xsltSecurityForbid</span>
+        <span class="s0">xslt.xsltSetSecurityPrefs(self._prefs, option, function)</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef void _register_in_context(self, xslt.xsltTransformContext* ctxt) noexcept:</span>
+        <span class="s0">xslt.xsltSetCtxtSecurityPrefs(self._prefs, ctxt)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def options(self):</span>
+        <span class="s0">&quot;&quot;&quot;The access control configuration as a map of options.&quot;&quot;&quot;</span>
+        <span class="s0">return {</span>
+            <span class="s0">'read_file': self._optval(xslt.XSLT_SECPREF_READ_FILE),</span>
+            <span class="s0">'write_file': self._optval(xslt.XSLT_SECPREF_WRITE_FILE),</span>
+            <span class="s0">'create_dir': self._optval(xslt.XSLT_SECPREF_CREATE_DIRECTORY),</span>
+            <span class="s0">'read_network': self._optval(xslt.XSLT_SECPREF_READ_NETWORK),</span>
+            <span class="s0">'write_network': self._optval(xslt.XSLT_SECPREF_WRITE_NETWORK),</span>
+        <span class="s0">}</span>
+
+    <span class="s0">@cython.final</span>
+    <span class="s0">cdef _optval(self, xslt.xsltSecurityOption option):</span>
+        <span class="s0">cdef xslt.xsltSecurityCheck function</span>
+        <span class="s0">function = xslt.xsltGetSecurityPrefs(self._prefs, option)</span>
+        <span class="s0">if function is &lt;xslt.xsltSecurityCheck&gt;xslt.xsltSecurityAllow:</span>
+            <span class="s0">return True</span>
+        <span class="s0">elif function is &lt;xslt.xsltSecurityCheck&gt;xslt.xsltSecurityForbid:</span>
+            <span class="s0">return False</span>
+        <span class="s0">else:</span>
+            <span class="s0">return None</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">items = sorted(self.options.items())</span>
+        <span class="s0">return &quot;%s(%s)&quot; % (</span>
+            <span class="s0">python._fqtypename(self).decode('UTF-8').split('.')[-1],</span>
+            <span class="s0">', '.join([&quot;%s=%r&quot; % item for item in items]))</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XSLT</span>
+
+<span class="s0">cdef int _register_xslt_function(void* ctxt, name_utf, ns_utf) noexcept:</span>
+    <span class="s0">if ns_utf is None:</span>
+        <span class="s0">return 0</span>
+    <span class="s0"># libxml2 internalises the strings if ctxt has a dict</span>
+    <span class="s0">return xslt.xsltRegisterExtFunction(</span>
+        <span class="s0">&lt;xslt.xsltTransformContext*&gt;ctxt, _xcstr(name_utf), _xcstr(ns_utf),</span>
+        <span class="s0">&lt;xslt.xmlXPathFunction&gt;_xpath_function_call)</span>
+
+<span class="s0">cdef dict EMPTY_DICT = {}</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">cdef class _XSLTContext(_BaseContext):</span>
+    <span class="s0">cdef xslt.xsltTransformContext* _xsltCtxt</span>
+    <span class="s0">cdef _ReadOnlyElementProxy _extension_element_proxy</span>
+    <span class="s0">cdef dict _extension_elements</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._xsltCtxt = NULL</span>
+        <span class="s0">self._extension_elements = EMPTY_DICT</span>
+
+    <span class="s0">def __init__(self, namespaces, extensions, error_log, enable_regexp,</span>
+                 <span class="s0">build_smart_strings):</span>
+        <span class="s0">if extensions is not None and extensions:</span>
+            <span class="s0">for ns_name_tuple, extension in extensions.items():</span>
+                <span class="s0">if ns_name_tuple[0] is None:</span>
+                    <span class="s0">raise XSLTExtensionError, \</span>
+                        <span class="s0">&quot;extensions must not have empty namespaces&quot;</span>
+                <span class="s0">if isinstance(extension, XSLTExtension):</span>
+                    <span class="s0">if self._extension_elements is EMPTY_DICT:</span>
+                        <span class="s0">self._extension_elements = {}</span>
+                        <span class="s0">extensions = extensions.copy()</span>
+                    <span class="s0">ns_utf   = _utf8(ns_name_tuple[0])</span>
+                    <span class="s0">name_utf = _utf8(ns_name_tuple[1])</span>
+                    <span class="s0">self._extension_elements[(ns_utf, name_utf)] = extension</span>
+                    <span class="s0">del extensions[ns_name_tuple]</span>
+        <span class="s0">_BaseContext.__init__(self, namespaces, extensions, error_log, enable_regexp,</span>
+                              <span class="s0">build_smart_strings)</span>
+
+    <span class="s0">cdef _BaseContext _copy(self):</span>
+        <span class="s0">cdef _XSLTContext context</span>
+        <span class="s0">context = &lt;_XSLTContext&gt;_BaseContext._copy(self)</span>
+        <span class="s0">context._extension_elements = self._extension_elements</span>
+        <span class="s0">return context</span>
+
+    <span class="s0">cdef register_context(self, xslt.xsltTransformContext* xsltCtxt,</span>
+                               <span class="s0">_Document doc):</span>
+        <span class="s0">self._xsltCtxt = xsltCtxt</span>
+        <span class="s0">self._set_xpath_context(xsltCtxt.xpathCtxt)</span>
+        <span class="s0">self._register_context(doc)</span>
+        <span class="s0">self.registerLocalFunctions(xsltCtxt, _register_xslt_function)</span>
+        <span class="s0">self.registerGlobalFunctions(xsltCtxt, _register_xslt_function)</span>
+        <span class="s0">_registerXSLTExtensions(xsltCtxt, self._extension_elements)</span>
+
+    <span class="s0">cdef free_context(self):</span>
+        <span class="s0">self._cleanup_context()</span>
+        <span class="s0">self._release_context()</span>
+        <span class="s0">if self._xsltCtxt is not NULL:</span>
+            <span class="s0">xslt.xsltFreeTransformContext(self._xsltCtxt)</span>
+            <span class="s0">self._xsltCtxt = NULL</span>
+        <span class="s0">self._release_temp_refs()</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">@cython.internal</span>
+<span class="s0">@cython.freelist(8)</span>
+<span class="s0">cdef class _XSLTQuotedStringParam:</span>
+    <span class="s0">&quot;&quot;&quot;A wrapper class for literal XSLT string parameters that require</span>
+    <span class="s0">quote escaping.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef bytes strval</span>
+    <span class="s0">def __cinit__(self, strval):</span>
+        <span class="s0">self.strval = _utf8(strval)</span>
+
+
+<span class="s0">@cython.no_gc_clear</span>
+<span class="s0">cdef class XSLT:</span>
+    <span class="s0">&quot;&quot;&quot;XSLT(self, xslt_input, extensions=None, regexp=True, access_control=None)</span>
+
+    <span class="s0">Turn an XSL document into an XSLT object.</span>
+
+    <span class="s0">Calling this object on a tree or Element will execute the XSLT::</span>
+
+        <span class="s0">transform = etree.XSLT(xsl_tree)</span>
+        <span class="s0">result = transform(xml_tree)</span>
+
+    <span class="s0">Keyword arguments of the constructor:</span>
+
+    <span class="s0">- extensions: a dict mapping ``(namespace, name)`` pairs to</span>
+      <span class="s0">extension functions or extension elements</span>
+    <span class="s0">- regexp: enable exslt regular expression support in XPath</span>
+      <span class="s0">(default: True)</span>
+    <span class="s0">- access_control: access restrictions for network or file</span>
+      <span class="s0">system (see `XSLTAccessControl`)</span>
+
+    <span class="s0">Keyword arguments of the XSLT call:</span>
+
+    <span class="s0">- profile_run: enable XSLT profiling and make the profile available</span>
+      <span class="s0">as XML document in ``result.xslt_profile`` (default: False)</span>
+
+    <span class="s0">Other keyword arguments of the call are passed to the stylesheet</span>
+    <span class="s0">as parameters.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _XSLTContext _context</span>
+    <span class="s0">cdef xslt.xsltStylesheet* _c_style</span>
+    <span class="s0">cdef _XSLTResolverContext _xslt_resolver_context</span>
+    <span class="s0">cdef XSLTAccessControl _access_control</span>
+    <span class="s0">cdef _ErrorLog _error_log</span>
+
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._c_style = NULL</span>
+
+    <span class="s0">def __init__(self, xslt_input, *, extensions=None, regexp=True,</span>
+                 <span class="s0">access_control=None):</span>
+        <span class="s0">cdef xslt.xsltStylesheet* c_style = NULL</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef _Element root_node</span>
+
+        <span class="s0">doc = _documentOrRaise(xslt_input)</span>
+        <span class="s0">root_node = _rootNodeOrRaise(xslt_input)</span>
+
+        <span class="s0"># set access control or raise TypeError</span>
+        <span class="s0">self._access_control = access_control</span>
+
+        <span class="s0"># make a copy of the document as stylesheet parsing modifies it</span>
+        <span class="s0">c_doc = _copyDocRoot(doc._c_doc, root_node._c_node)</span>
+
+        <span class="s0"># make sure we always have a stylesheet URL</span>
+        <span class="s0">if c_doc.URL is NULL:</span>
+            <span class="s0">doc_url_utf = python.PyUnicode_AsASCIIString(</span>
+                <span class="s0">f&quot;string://__STRING__XSLT__/{id(self)}.xslt&quot;)</span>
+            <span class="s0">c_doc.URL = tree.xmlStrdup(_xcstr(doc_url_utf))</span>
+
+        <span class="s0">self._error_log = _ErrorLog()</span>
+        <span class="s0">self._xslt_resolver_context = _XSLTResolverContext()</span>
+        <span class="s0">_initXSLTResolverContext(self._xslt_resolver_context, doc._parser)</span>
+        <span class="s0"># keep a copy in case we need to access the stylesheet via 'document()'</span>
+        <span class="s0">self._xslt_resolver_context._c_style_doc = _copyDoc(c_doc, 1)</span>
+        <span class="s0">c_doc._private = &lt;python.PyObject*&gt;self._xslt_resolver_context</span>
+
+        <span class="s0">with self._error_log:</span>
+            <span class="s0">orig_loader = _register_document_loader()</span>
+            <span class="s0">c_style = xslt.xsltParseStylesheetDoc(c_doc)</span>
+            <span class="s0">_reset_document_loader(orig_loader)</span>
+
+        <span class="s0">if c_style is NULL or c_style.errors:</span>
+            <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+            <span class="s0">if c_style is not NULL:</span>
+                <span class="s0">xslt.xsltFreeStylesheet(c_style)</span>
+            <span class="s0">self._xslt_resolver_context._raise_if_stored()</span>
+            <span class="s0"># last error seems to be the most accurate here</span>
+            <span class="s0">if self._error_log.last_error is not None and \</span>
+                    <span class="s0">self._error_log.last_error.message:</span>
+                <span class="s0">raise XSLTParseError(self._error_log.last_error.message,</span>
+                                     <span class="s0">self._error_log)</span>
+            <span class="s0">else:</span>
+                <span class="s0">raise XSLTParseError(</span>
+                    <span class="s0">self._error_log._buildExceptionMessage(</span>
+                        <span class="s0">&quot;Cannot parse stylesheet&quot;),</span>
+                    <span class="s0">self._error_log)</span>
+
+        <span class="s0">c_doc._private = NULL # no longer used!</span>
+        <span class="s0">self._c_style = c_style</span>
+        <span class="s0">self._context = _XSLTContext(None, extensions, self._error_log, regexp, True)</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">if self._xslt_resolver_context is not None and \</span>
+               <span class="s0">self._xslt_resolver_context._c_style_doc is not NULL:</span>
+            <span class="s0">tree.xmlFreeDoc(self._xslt_resolver_context._c_style_doc)</span>
+        <span class="s0"># this cleans up the doc copy as well</span>
+        <span class="s0">if self._c_style is not NULL:</span>
+            <span class="s0">xslt.xsltFreeStylesheet(self._c_style)</span>
+
+    <span class="s0">@property</span>
+    <span class="s0">def error_log(self):</span>
+        <span class="s0">&quot;&quot;&quot;The log of errors and warnings of an XSLT execution.&quot;&quot;&quot;</span>
+        <span class="s0">return self._error_log.copy()</span>
+
+    <span class="s0">@staticmethod</span>
+    <span class="s0">def strparam(strval):</span>
+        <span class="s0">&quot;&quot;&quot;strparam(strval)</span>
+
+        <span class="s0">Mark an XSLT string parameter that requires quote escaping</span>
+        <span class="s0">before passing it into the transformation.  Use it like this::</span>
+
+            <span class="s0">result = transform(doc, some_strval = XSLT.strparam(</span>
+                <span class="s0">'''it's \&quot;Monty Python's\&quot; ...'''))</span>
+
+        <span class="s0">Escaped string parameters can be reused without restriction.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return _XSLTQuotedStringParam(strval)</span>
+
+    <span class="s0">@staticmethod</span>
+    <span class="s0">def set_global_max_depth(int max_depth):</span>
+        <span class="s0">&quot;&quot;&quot;set_global_max_depth(max_depth)</span>
+
+        <span class="s0">The maximum traversal depth that the stylesheet engine will allow.</span>
+        <span class="s0">This does not only count the template recursion depth but also takes</span>
+        <span class="s0">the number of variables/parameters into account.  The required setting</span>
+        <span class="s0">for a run depends on both the stylesheet and the input data.</span>
+
+        <span class="s0">Example::</span>
+
+            <span class="s0">XSLT.set_global_max_depth(5000)</span>
+
+        <span class="s0">Note that this is currently a global, module-wide setting because</span>
+        <span class="s0">libxslt does not support it at a per-stylesheet level.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if max_depth &lt; 0:</span>
+            <span class="s0">raise ValueError(&quot;cannot set a maximum stylesheet traversal depth &lt; 0&quot;)</span>
+        <span class="s0">xslt.xsltMaxDepth = max_depth</span>
+
+    <span class="s0">def tostring(self, _ElementTree result_tree):</span>
+        <span class="s0">&quot;&quot;&quot;tostring(self, result_tree)</span>
+
+        <span class="s0">Save result doc to string based on stylesheet output method.</span>
+
+        <span class="s0">:deprecated: use str(result_tree) instead.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">return str(result_tree)</span>
+
+    <span class="s0">def __deepcopy__(self, memo):</span>
+        <span class="s0">return self.__copy__()</span>
+
+    <span class="s0">def __copy__(self):</span>
+        <span class="s0">return _copyXSLT(self)</span>
+
+    <span class="s0">def __call__(self, _input, *, profile_run=False, **kw):</span>
+        <span class="s0">&quot;&quot;&quot;__call__(self, _input, profile_run=False, **kw)</span>
+
+        <span class="s0">Execute the XSL transformation on a tree or Element.</span>
+
+        <span class="s0">Pass the ``profile_run`` option to get profile information</span>
+        <span class="s0">about the XSLT.  The result of the XSLT will have a property</span>
+        <span class="s0">xslt_profile that holds an XML tree with profiling data.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _XSLTContext context = None</span>
+        <span class="s0">cdef _XSLTResolverContext resolver_context</span>
+        <span class="s0">cdef _Document input_doc</span>
+        <span class="s0">cdef _Element root_node</span>
+        <span class="s0">cdef _Document result_doc</span>
+        <span class="s0">cdef _Document profile_doc = None</span>
+        <span class="s0">cdef xmlDoc* c_profile_doc</span>
+        <span class="s0">cdef xslt.xsltTransformContext* transform_ctxt</span>
+        <span class="s0">cdef xmlDoc* c_result = NULL</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef tree.xmlDict* c_dict</span>
+        <span class="s0">cdef const_char** params = NULL</span>
+
+        <span class="s0">assert self._c_style is not NULL, &quot;XSLT stylesheet not initialised&quot;</span>
+        <span class="s0">input_doc = _documentOrRaise(_input)</span>
+        <span class="s0">root_node = _rootNodeOrRaise(_input)</span>
+
+        <span class="s0">c_doc = _fakeRootDoc(input_doc._c_doc, root_node._c_node)</span>
+
+        <span class="s0">transform_ctxt = xslt.xsltNewTransformContext(self._c_style, c_doc)</span>
+        <span class="s0">if transform_ctxt is NULL:</span>
+            <span class="s0">_destroyFakeDoc(input_doc._c_doc, c_doc)</span>
+            <span class="s0">raise MemoryError()</span>
+
+        <span class="s0"># using the stylesheet dict is safer than using a possibly</span>
+        <span class="s0"># unrelated dict from the current thread.  Almost all</span>
+        <span class="s0"># non-input tag/attr names will come from the stylesheet</span>
+        <span class="s0"># anyway.</span>
+        <span class="s0">if transform_ctxt.dict is not NULL:</span>
+            <span class="s0">xmlparser.xmlDictFree(transform_ctxt.dict)</span>
+        <span class="s0">if kw:</span>
+            <span class="s0"># parameter values are stored in the dict</span>
+            <span class="s0"># =&gt; avoid unnecessarily cluttering the global dict</span>
+            <span class="s0">transform_ctxt.dict = xmlparser.xmlDictCreateSub(self._c_style.doc.dict)</span>
+            <span class="s0">if transform_ctxt.dict is NULL:</span>
+                <span class="s0">xslt.xsltFreeTransformContext(transform_ctxt)</span>
+                <span class="s0">raise MemoryError()</span>
+        <span class="s0">else:</span>
+            <span class="s0">transform_ctxt.dict = self._c_style.doc.dict</span>
+            <span class="s0">xmlparser.xmlDictReference(transform_ctxt.dict)</span>
+
+        <span class="s0">xslt.xsltSetCtxtParseOptions(</span>
+            <span class="s0">transform_ctxt, input_doc._parser._parse_options)</span>
+
+        <span class="s0">if profile_run:</span>
+            <span class="s0">transform_ctxt.profile = 1</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">context = self._context._copy()</span>
+            <span class="s0">context.register_context(transform_ctxt, input_doc)</span>
+
+            <span class="s0">resolver_context = self._xslt_resolver_context._copy()</span>
+            <span class="s0">transform_ctxt._private = &lt;python.PyObject*&gt;resolver_context</span>
+
+            <span class="s0">_convert_xslt_parameters(transform_ctxt, kw, &amp;params)</span>
+            <span class="s0">c_result = self._run_transform(</span>
+                <span class="s0">c_doc, params, context, transform_ctxt)</span>
+            <span class="s0">if params is not NULL:</span>
+                <span class="s0"># deallocate space for parameters</span>
+                <span class="s0">python.lxml_free(params)</span>
+
+            <span class="s0">if transform_ctxt.state != xslt.XSLT_STATE_OK:</span>
+                <span class="s0">if c_result is not NULL:</span>
+                    <span class="s0">tree.xmlFreeDoc(c_result)</span>
+                    <span class="s0">c_result = NULL</span>
+
+            <span class="s0">if transform_ctxt.profile:</span>
+                <span class="s0">c_profile_doc = xslt.xsltGetProfileInformation(transform_ctxt)</span>
+                <span class="s0">if c_profile_doc is not NULL:</span>
+                    <span class="s0">profile_doc = _documentFactory(</span>
+                        <span class="s0">c_profile_doc, input_doc._parser)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">if context is not None:</span>
+                <span class="s0">context.free_context()</span>
+            <span class="s0">_destroyFakeDoc(input_doc._c_doc, c_doc)</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">if resolver_context is not None and resolver_context._has_raised():</span>
+                <span class="s0">if c_result is not NULL:</span>
+                    <span class="s0">tree.xmlFreeDoc(c_result)</span>
+                    <span class="s0">c_result = NULL</span>
+                <span class="s0">resolver_context._raise_if_stored()</span>
+
+            <span class="s0">if context._exc._has_raised():</span>
+                <span class="s0">if c_result is not NULL:</span>
+                    <span class="s0">tree.xmlFreeDoc(c_result)</span>
+                    <span class="s0">c_result = NULL</span>
+                <span class="s0">context._exc._raise_if_stored()</span>
+
+            <span class="s0">if c_result is NULL:</span>
+                <span class="s0"># last error seems to be the most accurate here</span>
+                <span class="s0">error = self._error_log.last_error</span>
+                <span class="s0">if error is not None and error.message:</span>
+                    <span class="s0">if error.line &gt; 0:</span>
+                        <span class="s0">message = f&quot;{error.message}, line {error.line}&quot;</span>
+                    <span class="s0">else:</span>
+                        <span class="s0">message = error.message</span>
+                <span class="s0">elif error is not None and error.line &gt; 0:</span>
+                    <span class="s0">message = f&quot;Error applying stylesheet, line {error.line}&quot;</span>
+                <span class="s0">else:</span>
+                    <span class="s0">message = &quot;Error applying stylesheet&quot;</span>
+                <span class="s0">raise XSLTApplyError(message, self._error_log)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">if resolver_context is not None:</span>
+                <span class="s0">resolver_context.clear()</span>
+
+        <span class="s0">result_doc = _documentFactory(c_result, input_doc._parser)</span>
+
+        <span class="s0">c_dict = c_result.dict</span>
+        <span class="s0">xmlparser.xmlDictReference(c_dict)</span>
+        <span class="s0">__GLOBAL_PARSER_CONTEXT.initThreadDictRef(&amp;c_result.dict)</span>
+        <span class="s0">if c_dict is not c_result.dict or \</span>
+                <span class="s0">self._c_style.doc.dict is not c_result.dict or \</span>
+                <span class="s0">input_doc._c_doc.dict is not c_result.dict:</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">if c_dict is not c_result.dict:</span>
+                    <span class="s0">fixThreadDictNames(&lt;xmlNode*&gt;c_result,</span>
+                                       <span class="s0">c_dict, c_result.dict)</span>
+                <span class="s0">if self._c_style.doc.dict is not c_result.dict:</span>
+                    <span class="s0">fixThreadDictNames(&lt;xmlNode*&gt;c_result,</span>
+                                       <span class="s0">self._c_style.doc.dict, c_result.dict)</span>
+                <span class="s0">if input_doc._c_doc.dict is not c_result.dict:</span>
+                    <span class="s0">fixThreadDictNames(&lt;xmlNode*&gt;c_result,</span>
+                                       <span class="s0">input_doc._c_doc.dict, c_result.dict)</span>
+        <span class="s0">xmlparser.xmlDictFree(c_dict)</span>
+
+        <span class="s0">return _xsltResultTreeFactory(result_doc, self, profile_doc)</span>
+
+    <span class="s0">cdef xmlDoc* _run_transform(self, xmlDoc* c_input_doc,</span>
+                                <span class="s0">const_char** params, _XSLTContext context,</span>
+                                <span class="s0">xslt.xsltTransformContext* transform_ctxt):</span>
+        <span class="s0">cdef xmlDoc* c_result</span>
+        <span class="s0">xslt.xsltSetTransformErrorFunc(transform_ctxt, &lt;void*&gt;self._error_log,</span>
+                                       <span class="s0">&lt;xmlerror.xmlGenericErrorFunc&gt;_receiveXSLTError)</span>
+        <span class="s0">if self._access_control is not None:</span>
+            <span class="s0">self._access_control._register_in_context(transform_ctxt)</span>
+        <span class="s0">with self._error_log, nogil:</span>
+            <span class="s0">orig_loader = _register_document_loader()</span>
+            <span class="s0">c_result = xslt.xsltApplyStylesheetUser(</span>
+                <span class="s0">self._c_style, c_input_doc, params, NULL, NULL, transform_ctxt)</span>
+            <span class="s0">_reset_document_loader(orig_loader)</span>
+        <span class="s0">return c_result</span>
+
+
+<span class="s0">cdef _convert_xslt_parameters(xslt.xsltTransformContext* transform_ctxt,</span>
+                              <span class="s0">dict parameters, const_char*** params_ptr):</span>
+    <span class="s0">cdef Py_ssize_t i, parameter_count</span>
+    <span class="s0">cdef const_char** params</span>
+    <span class="s0">cdef tree.xmlDict* c_dict = transform_ctxt.dict</span>
+    <span class="s0">params_ptr[0] = NULL</span>
+    <span class="s0">parameter_count = len(parameters)</span>
+    <span class="s0">if parameter_count == 0:</span>
+        <span class="s0">return</span>
+    <span class="s0"># allocate space for parameters</span>
+    <span class="s0"># * 2 as we want an entry for both key and value,</span>
+    <span class="s0"># and + 1 as array is NULL terminated</span>
+    <span class="s0">params = &lt;const_char**&gt;python.lxml_malloc(parameter_count * 2 + 1, sizeof(const_char*))</span>
+    <span class="s0">if not params:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">try:</span>
+        <span class="s0">i = 0</span>
+        <span class="s0">for key, value in parameters.iteritems():</span>
+            <span class="s0">k = _utf8(key)</span>
+            <span class="s0">if isinstance(value, _XSLTQuotedStringParam):</span>
+                <span class="s0">v = (&lt;_XSLTQuotedStringParam&gt;value).strval</span>
+                <span class="s0">xslt.xsltQuoteOneUserParam(</span>
+                    <span class="s0">transform_ctxt, _xcstr(k), _xcstr(v))</span>
+            <span class="s0">else:</span>
+                <span class="s0">if isinstance(value, XPath):</span>
+                    <span class="s0">v = (&lt;XPath&gt;value)._path</span>
+                <span class="s0">else:</span>
+                    <span class="s0">v = _utf8(value)</span>
+                <span class="s0">params[i] = &lt;const_char*&gt;tree.xmlDictLookup(c_dict, _xcstr(k), len(k))</span>
+                <span class="s0">i += 1</span>
+                <span class="s0">params[i] = &lt;const_char*&gt;tree.xmlDictLookup(c_dict, _xcstr(v), len(v))</span>
+                <span class="s0">i += 1</span>
+    <span class="s0">except:</span>
+        <span class="s0">python.lxml_free(params)</span>
+        <span class="s0">raise</span>
+    <span class="s0">params[i] = NULL</span>
+    <span class="s0">params_ptr[0] = params</span>
+
+<span class="s0">cdef XSLT _copyXSLT(XSLT stylesheet):</span>
+    <span class="s0">cdef XSLT new_xslt</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">assert stylesheet._c_style is not NULL, &quot;XSLT stylesheet not initialised&quot;</span>
+    <span class="s0">new_xslt = XSLT.__new__(XSLT)</span>
+    <span class="s0">new_xslt._access_control = stylesheet._access_control</span>
+    <span class="s0">new_xslt._error_log = _ErrorLog()</span>
+    <span class="s0">new_xslt._context = stylesheet._context._copy()</span>
+
+    <span class="s0">new_xslt._xslt_resolver_context = stylesheet._xslt_resolver_context._copy()</span>
+    <span class="s0">new_xslt._xslt_resolver_context._c_style_doc = _copyDoc(</span>
+        <span class="s0">stylesheet._xslt_resolver_context._c_style_doc, 1)</span>
+
+    <span class="s0">c_doc = _copyDoc(stylesheet._c_style.doc, 1)</span>
+    <span class="s0">new_xslt._c_style = xslt.xsltParseStylesheetDoc(c_doc)</span>
+    <span class="s0">if new_xslt._c_style is NULL:</span>
+        <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+        <span class="s0">raise MemoryError()</span>
+
+    <span class="s0">return new_xslt</span>
+
+<span class="s0">@cython.final</span>
+<span class="s0">cdef class _XSLTResultTree(_ElementTree):</span>
+    <span class="s0">&quot;&quot;&quot;The result of an XSLT evaluation.</span>
+
+    <span class="s0">Use ``str()`` or ``bytes()`` (or ``unicode()`` in Python 2.x) to serialise to a string,</span>
+    <span class="s0">and the ``.write_output()`` method to write serialise to a file.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef XSLT _xslt</span>
+    <span class="s0">cdef _Document _profile</span>
+    <span class="s0">cdef xmlChar* _buffer</span>
+    <span class="s0">cdef Py_ssize_t _buffer_len</span>
+    <span class="s0">cdef Py_ssize_t _buffer_refcnt</span>
+
+    <span class="s0">def write_output(self, file, *, compression=0):</span>
+        <span class="s0">&quot;&quot;&quot;write_output(self, file, *, compression=0)</span>
+
+        <span class="s0">Serialise the XSLT output to a file or file-like object.</span>
+
+        <span class="s0">As opposed to the generic ``.write()`` method, ``.write_output()`` serialises</span>
+        <span class="s0">the result as defined by the ``&lt;xsl:output&gt;`` tag.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _FilelikeWriter writer = None</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef int r, rclose, c_compression</span>
+        <span class="s0">cdef const_xmlChar* c_encoding = NULL</span>
+        <span class="s0">cdef tree.xmlOutputBuffer* c_buffer</span>
+
+        <span class="s0">if self._context_node is not None:</span>
+            <span class="s0">doc = self._context_node._doc</span>
+        <span class="s0">else:</span>
+            <span class="s0">doc = None</span>
+        <span class="s0">if doc is None:</span>
+            <span class="s0">doc = self._doc</span>
+            <span class="s0">if doc is None:</span>
+                <span class="s0">raise XSLTSaveError(&quot;No document to serialise&quot;)</span>
+        <span class="s0">c_compression = compression or 0</span>
+        <span class="s0">xslt.LXML_GET_XSLT_ENCODING(c_encoding, self._xslt._c_style)</span>
+        <span class="s0">writer = _create_output_buffer(file, &lt;const_char*&gt;c_encoding, compression, &amp;c_buffer, close=False)</span>
+        <span class="s0">if writer is None:</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">r = xslt.xsltSaveResultTo(c_buffer, doc._c_doc, self._xslt._c_style)</span>
+                <span class="s0">rclose = tree.xmlOutputBufferClose(c_buffer)</span>
+        <span class="s0">else:</span>
+            <span class="s0">r = xslt.xsltSaveResultTo(c_buffer, doc._c_doc, self._xslt._c_style)</span>
+            <span class="s0">rclose = tree.xmlOutputBufferClose(c_buffer)</span>
+        <span class="s0">if writer is not None:</span>
+            <span class="s0">writer._exc_context._raise_if_stored()</span>
+        <span class="s0">if r &lt; 0 or rclose == -1:</span>
+            <span class="s0">python.PyErr_SetFromErrno(IOError)  # raises IOError</span>
+
+    <span class="s0">cdef _saveToStringAndSize(self, xmlChar** s, int* l):</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef int r</span>
+        <span class="s0">if self._context_node is not None:</span>
+            <span class="s0">doc = self._context_node._doc</span>
+        <span class="s0">else:</span>
+            <span class="s0">doc = None</span>
+        <span class="s0">if doc is None:</span>
+            <span class="s0">doc = self._doc</span>
+            <span class="s0">if doc is None:</span>
+                <span class="s0">s[0] = NULL</span>
+                <span class="s0">return</span>
+        <span class="s0">with nogil:</span>
+            <span class="s0">r = xslt.xsltSaveResultToString(s, l, doc._c_doc,</span>
+                                            <span class="s0">self._xslt._c_style)</span>
+        <span class="s0">if r == -1:</span>
+            <span class="s0">raise MemoryError()</span>
+
+    <span class="s0">def __str__(self):</span>
+        <span class="s0">cdef xmlChar* encoding</span>
+        <span class="s0">cdef xmlChar* s = NULL</span>
+        <span class="s0">cdef int l = 0</span>
+        <span class="s0">self._saveToStringAndSize(&amp;s, &amp;l)</span>
+        <span class="s0">if s is NULL:</span>
+            <span class="s0">return ''</span>
+        <span class="s0">encoding = self._xslt._c_style.encoding</span>
+        <span class="s0">try:</span>
+            <span class="s0">if encoding is NULL:</span>
+                <span class="s0">result = s[:l].decode('UTF-8')</span>
+            <span class="s0">else:</span>
+                <span class="s0">result = s[:l].decode(encoding)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">tree.xmlFree(s)</span>
+        <span class="s0">return _stripEncodingDeclaration(result)</span>
+
+    <span class="s0">def __getbuffer__(self, Py_buffer* buffer, int flags):</span>
+        <span class="s0">cdef int l = 0</span>
+        <span class="s0">if buffer is NULL:</span>
+            <span class="s0">return</span>
+        <span class="s0">if self._buffer is NULL or flags &amp; python.PyBUF_WRITABLE:</span>
+            <span class="s0">self._saveToStringAndSize(&lt;xmlChar**&gt;&amp;buffer.buf, &amp;l)</span>
+            <span class="s0">buffer.len = l</span>
+            <span class="s0">if self._buffer is NULL and not flags &amp; python.PyBUF_WRITABLE:</span>
+                <span class="s0">self._buffer = &lt;xmlChar*&gt;buffer.buf</span>
+                <span class="s0">self._buffer_len = l</span>
+                <span class="s0">self._buffer_refcnt = 1</span>
+        <span class="s0">else:</span>
+            <span class="s0">buffer.buf = self._buffer</span>
+            <span class="s0">buffer.len = self._buffer_len</span>
+            <span class="s0">self._buffer_refcnt += 1</span>
+        <span class="s0">if flags &amp; python.PyBUF_WRITABLE:</span>
+            <span class="s0">buffer.readonly = 0</span>
+        <span class="s0">else:</span>
+            <span class="s0">buffer.readonly = 1</span>
+        <span class="s0">if flags &amp; python.PyBUF_FORMAT:</span>
+            <span class="s0">buffer.format = &quot;B&quot;</span>
+        <span class="s0">else:</span>
+            <span class="s0">buffer.format = NULL</span>
+        <span class="s0">buffer.ndim = 0</span>
+        <span class="s0">buffer.shape = NULL</span>
+        <span class="s0">buffer.strides = NULL</span>
+        <span class="s0">buffer.suboffsets = NULL</span>
+        <span class="s0">buffer.itemsize = 1</span>
+        <span class="s0">buffer.internal = NULL</span>
+        <span class="s0">if buffer.obj is not self: # set by Cython?</span>
+            <span class="s0">buffer.obj = self</span>
+
+    <span class="s0">def __releasebuffer__(self, Py_buffer* buffer):</span>
+        <span class="s0">if buffer is NULL:</span>
+            <span class="s0">return</span>
+        <span class="s0">if &lt;xmlChar*&gt;buffer.buf is self._buffer:</span>
+            <span class="s0">self._buffer_refcnt -= 1</span>
+            <span class="s0">if self._buffer_refcnt == 0:</span>
+                <span class="s0">tree.xmlFree(&lt;char*&gt;self._buffer)</span>
+                <span class="s0">self._buffer = NULL</span>
+        <span class="s0">else:</span>
+            <span class="s0">tree.xmlFree(&lt;char*&gt;buffer.buf)</span>
+        <span class="s0">buffer.buf = NULL</span>
+
+    <span class="s0">property xslt_profile:</span>
+        <span class="s0">&quot;&quot;&quot;Return an ElementTree with profiling data for the stylesheet run.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">def __get__(self):</span>
+            <span class="s0">cdef object root</span>
+            <span class="s0">if self._profile is None:</span>
+                <span class="s0">return None</span>
+            <span class="s0">root = self._profile.getroot()</span>
+            <span class="s0">if root is None:</span>
+                <span class="s0">return None</span>
+            <span class="s0">return ElementTree(root)</span>
+
+        <span class="s0">def __del__(self):</span>
+            <span class="s0">self._profile = None</span>
+
+<span class="s0">cdef _xsltResultTreeFactory(_Document doc, XSLT xslt, _Document profile):</span>
+    <span class="s0">cdef _XSLTResultTree result</span>
+    <span class="s0">result = &lt;_XSLTResultTree&gt;_newElementTree(doc, None, _XSLTResultTree)</span>
+    <span class="s0">result._xslt = xslt</span>
+    <span class="s0">result._profile = profile</span>
+    <span class="s0">return result</span>
+
+<span class="s0"># functions like &quot;output&quot; and &quot;write&quot; are a potential security risk, but we</span>
+<span class="s0"># rely on the user to configure XSLTAccessControl as needed</span>
+<span class="s0">xslt.xsltRegisterAllExtras()</span>
+
+<span class="s0"># enable EXSLT support for XSLT</span>
+<span class="s0">xslt.exsltRegisterAll()</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># XSLT PI support</span>
+
+<span class="s0">cdef object _RE_PI_HREF = re.compile(r'\s+href\s*=\s*(?:\'([^\']*)\'|&quot;([^&quot;]*)&quot;)')</span>
+<span class="s0">cdef object _FIND_PI_HREF = _RE_PI_HREF.findall</span>
+<span class="s0">cdef object _REPLACE_PI_HREF = _RE_PI_HREF.sub</span>
+<span class="s0">cdef XPath __findStylesheetByID = None</span>
+
+<span class="s0">cdef _findStylesheetByID(_Document doc, id):</span>
+    <span class="s0">global __findStylesheetByID</span>
+    <span class="s0">if __findStylesheetByID is None:</span>
+        <span class="s0">__findStylesheetByID = XPath(</span>
+            <span class="s0">&quot;//xsl:stylesheet[@xml:id = $id]&quot;,</span>
+            <span class="s0">namespaces={&quot;xsl&quot; : &quot;http://www.w3.org/1999/XSL/Transform&quot;})</span>
+    <span class="s0">return __findStylesheetByID(doc, id=id)</span>
+
+<span class="s0">cdef class _XSLTProcessingInstruction(PIBase):</span>
+    <span class="s0">def parseXSL(self, parser=None):</span>
+        <span class="s0">&quot;&quot;&quot;parseXSL(self, parser=None)</span>
+
+        <span class="s0">Try to parse the stylesheet referenced by this PI and return</span>
+        <span class="s0">an ElementTree for it.  If the stylesheet is embedded in the</span>
+        <span class="s0">same document (referenced via xml:id), find and return an</span>
+        <span class="s0">ElementTree for the stylesheet Element.</span>
+
+        <span class="s0">The optional ``parser`` keyword argument can be passed to specify the</span>
+        <span class="s0">parser used to read from external stylesheet URLs.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">cdef _Document result_doc</span>
+        <span class="s0">cdef _Element  result_node</span>
+        <span class="s0">cdef bytes href_utf</span>
+        <span class="s0">cdef const_xmlChar* c_href</span>
+        <span class="s0">cdef xmlAttr* c_attr</span>
+        <span class="s0">_assertValidNode(self)</span>
+        <span class="s0">if self._c_node.content is NULL:</span>
+            <span class="s0">raise ValueError, &quot;PI lacks content&quot;</span>
+        <span class="s0">hrefs = _FIND_PI_HREF(' ' + (&lt;unsigned char*&gt;self._c_node.content).decode('UTF-8'))</span>
+        <span class="s0">if len(hrefs) != 1:</span>
+            <span class="s0">raise ValueError, &quot;malformed PI attributes&quot;</span>
+        <span class="s0">hrefs = hrefs[0]</span>
+        <span class="s0">href_utf = utf8(hrefs[0] or hrefs[1])</span>
+        <span class="s0">c_href = _xcstr(href_utf)</span>
+
+        <span class="s0">if c_href[0] != c'#':</span>
+            <span class="s0"># normal URL, try to parse from it</span>
+            <span class="s0">c_href = tree.xmlBuildURI(</span>
+                <span class="s0">c_href,</span>
+                <span class="s0">tree.xmlNodeGetBase(self._c_node.doc, self._c_node))</span>
+            <span class="s0">if c_href is not NULL:</span>
+                <span class="s0">try:</span>
+                    <span class="s0">href_utf = &lt;unsigned char*&gt;c_href</span>
+                <span class="s0">finally:</span>
+                    <span class="s0">tree.xmlFree(&lt;char*&gt;c_href)</span>
+            <span class="s0">result_doc = _parseDocumentFromURL(href_utf, parser)</span>
+            <span class="s0">return _elementTreeFactory(result_doc, None)</span>
+
+        <span class="s0"># ID reference to embedded stylesheet</span>
+        <span class="s0"># try XML:ID lookup</span>
+        <span class="s0">_assertValidDoc(self._doc)</span>
+        <span class="s0">c_href += 1 # skip leading '#'</span>
+        <span class="s0">c_attr = tree.xmlGetID(self._c_node.doc, c_href)</span>
+        <span class="s0">if c_attr is not NULL and c_attr.doc is self._c_node.doc:</span>
+            <span class="s0">result_node = _elementFactory(self._doc, c_attr.parent)</span>
+            <span class="s0">return _elementTreeFactory(result_node._doc, result_node)</span>
+
+        <span class="s0"># try XPath search</span>
+        <span class="s0">root = _findStylesheetByID(self._doc, funicode(c_href))</span>
+        <span class="s0">if not root:</span>
+            <span class="s0">raise ValueError, &quot;reference to non-existing embedded stylesheet&quot;</span>
+        <span class="s0">elif len(root) &gt; 1:</span>
+            <span class="s0">raise ValueError, &quot;ambiguous reference to embedded stylesheet&quot;</span>
+        <span class="s0">result_node = root[0]</span>
+        <span class="s0">return _elementTreeFactory(result_node._doc, result_node)</span>
+
+    <span class="s0">def set(self, key, value):</span>
+        <span class="s0">&quot;&quot;&quot;set(self, key, value)</span>
+
+        <span class="s0">Supports setting the 'href' pseudo-attribute in the text of</span>
+        <span class="s0">the processing instruction.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">if key != &quot;href&quot;:</span>
+            <span class="s0">raise AttributeError, \</span>
+                <span class="s0">&quot;only setting the 'href' attribute is supported on XSLT-PIs&quot;</span>
+        <span class="s0">if value is None:</span>
+            <span class="s0">attrib = &quot;&quot;</span>
+        <span class="s0">elif '&quot;' in value or '&gt;' in value:</span>
+            <span class="s0">raise ValueError, &quot;Invalid URL, must not contain '\&quot;' or '&gt;'&quot;</span>
+        <span class="s0">else:</span>
+            <span class="s0">attrib = f' href=&quot;{value}&quot;'</span>
+        <span class="s0">text = ' ' + self.text</span>
+        <span class="s0">if _FIND_PI_HREF(text):</span>
+            <span class="s0">self.text = _REPLACE_PI_HREF(attrib, text)</span>
+        <span class="s0">else:</span>
+            <span class="s0">self.text = text + attrib</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,399 @@
+<html>
+<head>
+<title>dot.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dot.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">merging</span><span class="s2">.</span><span class="s1">base_merge </span><span class="s0">import </span><span class="s1">Merge</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">numerical_utils </span><span class="s0">import </span><span class="s1">normalize</span>
+
+
+<span class="s0">def </span><span class="s1">batch_dot</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Batchwise dot product. 
+ 
+    `batch_dot` is used to compute dot product of `x` and `y` when 
+    `x` and `y` are data in batch, i.e. in a shape of `(batch_size, :)`. 
+    `batch_dot` results in a tensor or variable with less dimensions 
+    than the input. If the number of dimensions is reduced to 1, 
+    we use `expand_dims` to make sure that ndim is at least 2. 
+ 
+    Shape inference: 
+ 
+    Let `x`'s shape be `(100, 20)` and `y`'s shape be `(100, 30, 20)`. 
+    If `axes` is (1, 2), to find the output shape of resultant tensor, 
+    loop through each dimension in `x`'s shape and `y`'s shape: 
+ 
+    * `x.shape[0]` : 100 : append to output shape 
+    * `x.shape[1]` : 20 : do not append to output shape, dimension 1 of 
+        `x` has been summed over. (`dot_axes[0]` = 1) 
+    * `y.shape[0]` : 100 : do not append to output shape, always ignore 
+        first dimension of `y` 
+    * `y.shape[1]` : 30 : append to output shape 
+    * `y.shape[2]` : 20 : do not append to output shape, dimension 2 of 
+        `y` has been summed over. 
+        (`dot_axes[1]` = 2) `output_shape` = `(100, 30)` 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; x_batch = np.ones(shape=(32, 20, 1)) 
+    &gt;&gt;&gt; y_batch = np.ones(shape=(32, 30, 20)) 
+    &gt;&gt;&gt; xy_batch_dot = batch_dot(x_batch, y_batch, axes=(1, 2)) 
+ 
+    Args: 
+        x: Keras tensor or variable with `ndim &gt;= 2`. 
+        y: Keras tensor or variable with `ndim &gt;= 2`. 
+        axes: Tuple or list of integers with target dimensions, or single 
+            integer. The sizes of `x.shape[axes[0]]` and `y.shape[axes[1]]` 
+            should be equal. 
+ 
+    Returns: 
+        A tensor with shape equal to the concatenation of `x`'s shape 
+        (less the dimension that was summed over) and `y`'s shape (less the 
+        batch dimension and the dimension that was summed over). If the final 
+        rank is 1, we reshape it to `(batch_size, 1)`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">x_shape </span><span class="s2">= </span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span>
+    <span class="s1">y_shape </span><span class="s2">= </span><span class="s1">y</span><span class="s2">.</span><span class="s1">shape</span>
+
+    <span class="s1">x_ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x_shape</span><span class="s2">)</span>
+    <span class="s1">y_ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">y_shape</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">x_ndim </span><span class="s2">&lt; </span><span class="s4">2 </span><span class="s0">or </span><span class="s1">y_ndim </span><span class="s2">&lt; </span><span class="s4">2</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s5">f&quot;Cannot do batch_dot on inputs &quot;</span>
+            <span class="s5">f&quot;with rank &lt; 2. &quot;</span>
+            <span class="s5">f&quot;Received inputs with shapes &quot;</span>
+            <span class="s5">f&quot;</span><span class="s0">{</span><span class="s1">x_shape</span><span class="s0">} </span><span class="s5">and </span><span class="s0">{</span><span class="s1">y_shape</span><span class="s0">}</span><span class="s5">.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">x_batch_size </span><span class="s2">= </span><span class="s1">x_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+    <span class="s1">y_batch_size </span><span class="s2">= </span><span class="s1">y_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">x_batch_size </span><span class="s0">is not None and </span><span class="s1">y_batch_size </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">x_batch_size </span><span class="s2">!= </span><span class="s1">y_batch_size</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f&quot;Cannot do batch_dot on inputs &quot;</span>
+                <span class="s5">f&quot;with different batch sizes. &quot;</span>
+                <span class="s5">f&quot;Received inputs with shapes &quot;</span>
+                <span class="s5">f&quot;</span><span class="s0">{</span><span class="s1">x_shape</span><span class="s0">} </span><span class="s5">and </span><span class="s0">{</span><span class="s1">y_shape</span><span class="s0">}</span><span class="s5">.&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s1">axes </span><span class="s2">= [</span><span class="s1">axes</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">axes </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">y_ndim </span><span class="s2">== </span><span class="s4">2</span><span class="s2">:</span>
+            <span class="s1">axes </span><span class="s2">= [</span><span class="s1">x_ndim </span><span class="s2">- </span><span class="s4">1</span><span class="s2">, </span><span class="s1">y_ndim </span><span class="s2">- </span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">axes </span><span class="s2">= [</span><span class="s1">x_ndim </span><span class="s2">- </span><span class="s4">1</span><span class="s2">, </span><span class="s1">y_ndim </span><span class="s2">- </span><span class="s4">2</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">any</span><span class="s2">(</span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">a</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)) </span><span class="s0">for </span><span class="s1">a </span><span class="s0">in </span><span class="s1">axes</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s5">f&quot;Multiple target dimensions are not supported. &quot;</span>
+            <span class="s5">f&quot;Expected: None, int, (int, int), &quot;</span>
+            <span class="s5">f&quot;Provided: </span><span class="s0">{</span><span class="s1">axes</span><span class="s0">} </span><span class="s5">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># if tuple, convert to list.</span>
+    <span class="s1">axes </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">)</span>
+
+    <span class="s6"># convert negative indices.</span>
+    <span class="s0">if </span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">] &lt; </span><span class="s4">0</span><span class="s2">:</span>
+        <span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">] += </span><span class="s1">x_ndim</span>
+    <span class="s0">if </span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">] &lt; </span><span class="s4">0</span><span class="s2">:</span>
+        <span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">] += </span><span class="s1">y_ndim</span>
+
+    <span class="s6"># sanity checks</span>
+    <span class="s0">if </span><span class="s4">0 </span><span class="s0">in </span><span class="s1">axes</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s5">&quot;Cannot perform batch_dot over axis 0. &quot;</span>
+            <span class="s5">&quot;If your inputs are not batched, &quot;</span>
+            <span class="s5">&quot;add a dummy batch dimension to your &quot;</span>
+            <span class="s5">&quot;inputs using keras.ops.expand_dims(x, 0)&quot;</span>
+        <span class="s2">)</span>
+    <span class="s1">a0</span><span class="s2">, </span><span class="s1">a1 </span><span class="s2">= </span><span class="s1">axes</span>
+    <span class="s1">d1 </span><span class="s2">= </span><span class="s1">x_shape</span><span class="s2">[</span><span class="s1">a0</span><span class="s2">]</span>
+    <span class="s1">d2 </span><span class="s2">= </span><span class="s1">y_shape</span><span class="s2">[</span><span class="s1">a1</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">d1 </span><span class="s0">is not None and </span><span class="s1">d2 </span><span class="s0">is not None and </span><span class="s1">d1 </span><span class="s2">!= </span><span class="s1">d2</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s5">f&quot;Cannot do batch_dot on inputs with shapes &quot;</span>
+            <span class="s5">f&quot;</span><span class="s0">{</span><span class="s1">x_shape</span><span class="s0">} </span><span class="s5">and </span><span class="s0">{</span><span class="s1">y_shape</span><span class="s0">} </span><span class="s5">with axes=</span><span class="s0">{</span><span class="s1">axes</span><span class="s0">}</span><span class="s5">. &quot;</span>
+            <span class="s5">f&quot;x.shape[</span><span class="s0">{</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span><span class="s0">}</span><span class="s5">] != y.shape[</span><span class="s0">{</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span><span class="s0">}</span><span class="s5">] (</span><span class="s0">{</span><span class="s1">d1</span><span class="s0">} </span><span class="s5">!= </span><span class="s0">{</span><span class="s1">d2</span><span class="s0">}</span><span class="s5">).&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># backup ndims. Need them later.</span>
+    <span class="s1">orig_x_ndim </span><span class="s2">= </span><span class="s1">x_ndim</span>
+    <span class="s1">orig_y_ndim </span><span class="s2">= </span><span class="s1">y_ndim</span>
+
+    <span class="s6"># if rank is 2, expand to 3.</span>
+    <span class="s0">if </span><span class="s1">x_ndim </span><span class="s2">== </span><span class="s4">2</span><span class="s2">:</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s4">1</span><span class="s2">)</span>
+        <span class="s1">a0 </span><span class="s2">+= </span><span class="s4">1</span>
+        <span class="s1">x_ndim </span><span class="s2">+= </span><span class="s4">1</span>
+    <span class="s0">if </span><span class="s1">y_ndim </span><span class="s2">== </span><span class="s4">2</span><span class="s2">:</span>
+        <span class="s1">y </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">y</span><span class="s2">, </span><span class="s4">2</span><span class="s2">)</span>
+        <span class="s1">y_ndim </span><span class="s2">+= </span><span class="s4">1</span>
+
+    <span class="s6"># bring x's dimension to be reduced to last axis.</span>
+    <span class="s0">if </span><span class="s1">a0 </span><span class="s2">!= </span><span class="s1">x_ndim </span><span class="s2">- </span><span class="s4">1</span><span class="s2">:</span>
+        <span class="s1">pattern </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">x_ndim</span><span class="s2">))</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">a0</span><span class="s2">, </span><span class="s1">x_ndim </span><span class="s2">- </span><span class="s4">1</span><span class="s2">):</span>
+            <span class="s1">pattern</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] = </span><span class="s1">pattern</span><span class="s2">[</span><span class="s1">i </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">pattern</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">] = </span><span class="s1">a0</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">pattern</span><span class="s2">)</span>
+
+    <span class="s6"># bring y's dimension to be reduced to axis 1.</span>
+    <span class="s0">if </span><span class="s1">a1 </span><span class="s2">!= </span><span class="s4">1</span><span class="s2">:</span>
+        <span class="s1">pattern </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">y_ndim</span><span class="s2">))</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">a1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">, -</span><span class="s4">1</span><span class="s2">):</span>
+            <span class="s1">pattern</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] = </span><span class="s1">pattern</span><span class="s2">[</span><span class="s1">i </span><span class="s2">- </span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">pattern</span><span class="s2">[</span><span class="s4">1</span><span class="s2">] = </span><span class="s1">a1</span>
+        <span class="s1">y </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">y</span><span class="s2">, </span><span class="s1">pattern</span><span class="s2">)</span>
+
+    <span class="s6"># normalize both inputs to rank 3.</span>
+    <span class="s0">if </span><span class="s1">x_ndim </span><span class="s2">&gt; </span><span class="s4">3</span><span class="s2">:</span>
+        <span class="s6"># squash middle dimensions of x.</span>
+        <span class="s1">x_shape </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s1">x_mid_dims </span><span class="s2">= </span><span class="s1">x_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:-</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">x_squashed_shape </span><span class="s2">= (</span><span class="s1">x_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], -</span><span class="s4">1</span><span class="s2">, </span><span class="s1">x_shape</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">])</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">x_squashed_shape</span><span class="s2">)</span>
+        <span class="s1">x_squashed </span><span class="s2">= </span><span class="s0">True</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">x_squashed </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s0">if </span><span class="s1">y_ndim </span><span class="s2">&gt; </span><span class="s4">3</span><span class="s2">:</span>
+        <span class="s6"># squash trailing dimensions of y.</span>
+        <span class="s1">y_shape </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">y</span><span class="s2">)</span>
+        <span class="s1">y_trail_dims </span><span class="s2">= </span><span class="s1">y_shape</span><span class="s2">[</span><span class="s4">2</span><span class="s2">:]</span>
+        <span class="s1">y_squashed_shape </span><span class="s2">= (</span><span class="s1">y_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">y_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">], -</span><span class="s4">1</span><span class="s2">)</span>
+        <span class="s1">y </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">y</span><span class="s2">, </span><span class="s1">y_squashed_shape</span><span class="s2">)</span>
+        <span class="s1">y_squashed </span><span class="s2">= </span><span class="s0">True</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">y_squashed </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s1">result </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">matmul</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">)</span>
+
+    <span class="s6"># if inputs were squashed, we have to reshape the matmul output.</span>
+    <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">result</span><span class="s2">)</span>
+    <span class="s1">do_reshape </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s0">if </span><span class="s1">x_squashed</span><span class="s2">:</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">output_shape</span><span class="s2">[:</span><span class="s4">1</span><span class="s2">] + </span><span class="s1">x_mid_dims </span><span class="s2">+ </span><span class="s1">output_shape</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">:]</span>
+        <span class="s1">do_reshape </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">if </span><span class="s1">y_squashed</span><span class="s2">:</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">output_shape</span><span class="s2">[:-</span><span class="s4">1</span><span class="s2">] + </span><span class="s1">y_trail_dims</span>
+        <span class="s1">do_reshape </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">if </span><span class="s1">do_reshape</span><span class="s2">:</span>
+        <span class="s1">result </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">result</span><span class="s2">, </span><span class="s1">output_shape</span><span class="s2">)</span>
+
+    <span class="s6"># if the inputs were originally rank 2, we remove the added 1 dim.</span>
+    <span class="s0">if </span><span class="s1">orig_x_ndim </span><span class="s2">== </span><span class="s4">2</span><span class="s2">:</span>
+        <span class="s1">result </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">result</span><span class="s2">, </span><span class="s4">1</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">orig_y_ndim </span><span class="s2">== </span><span class="s4">2</span><span class="s2">:</span>
+        <span class="s1">result </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">result</span><span class="s2">, -</span><span class="s4">1</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">result</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.layers.Dot&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">Dot</span><span class="s2">(</span><span class="s1">Merge</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Computes element-wise dot product of two tensors. 
+ 
+    It takes a list of inputs of size 2, and the axes 
+    corresponding to each input along with the dot product 
+    is to be performed. 
+ 
+    Let's say `x` and `y` are the two input tensors with shapes 
+    `(2, 3, 5)` and `(2, 10, 3)`. The batch dimension should be 
+    of same size for both the inputs, and `axes` should correspond 
+    to the dimensions that have the same size in the corresponding 
+    inputs. e.g. with `axes=(1, 2)`, the dot product of `x`, and `y` 
+    will result in a tensor with shape `(2, 5, 10)` 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; x = np.arange(10).reshape(1, 5, 2) 
+    &gt;&gt;&gt; y = np.arange(10, 20).reshape(1, 2, 5) 
+    &gt;&gt;&gt; keras.layers.Dot(axes=(1, 2))([x, y]) 
+ 
+    Usage in a Keras model: 
+ 
+    &gt;&gt;&gt; x1 = keras.layers.Dense(8)(np.arange(10).reshape(5, 2)) 
+    &gt;&gt;&gt; x2 = keras.layers.Dense(8)(np.arange(10, 20).reshape(5, 2)) 
+    &gt;&gt;&gt; y = keras.layers.Dot(axes=1)([x1, x2]) 
+ 
+    Args: 
+        axes: Integer or tuple of integers, axis or axes along which to 
+            take the dot product. If a tuple, should be two integers 
+            corresponding to the desired axis from the first input and the 
+            desired axis from the second input, respectively. Note that the 
+            size of the two selected axes must match. 
+        normalize: Whether to L2-normalize samples along the dot product axis 
+            before taking the dot product. If set to `True`, then 
+            the output of the dot product is the cosine proximity 
+            between the two samples. 
+        **kwargs: Standard layer keyword arguments. 
+ 
+    Returns: 
+        A tensor, the dot product of the samples from the inputs. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">, </span><span class="s1">normalize</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(**</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+                <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+                    <span class="s5">f&quot;Invalid type for argument `axes`: it should be &quot;</span>
+                    <span class="s5">f&quot;a list or an int. Received: axes=</span><span class="s0">{</span><span class="s1">axes</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">) != </span><span class="s4">2</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s5">f&quot;Invalid format for argument `axes`: it should contain &quot;</span>
+                    <span class="s5">f&quot;two elements. Received: axes=</span><span class="s0">{</span><span class="s1">axes</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">int</span><span class="s2">) </span><span class="s0">or not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">], </span><span class="s1">int</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s5">f&quot;Invalid format for argument `axes`: list elements should &quot;</span>
+                    <span class="s5">f&quot;be integers. Received: axes=</span><span class="s0">{</span><span class="s1">axes</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">= </span><span class="s1">axes</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">normalize </span><span class="s2">= </span><span class="s1">normalize</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">supports_masking </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_reshape_required </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s6"># Used purely for shape validation.</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s0">not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], (</span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">))</span>
+            <span class="s0">or </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) != </span><span class="s4">2</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f&quot;A `Dot` layer should be called on a list of 2 inputs. &quot;</span>
+                <span class="s5">f&quot;Received: input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">shape1 </span><span class="s2">= </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s1">shape2 </span><span class="s2">= </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">shape1 </span><span class="s0">is None or </span><span class="s1">shape2 </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">&lt; </span><span class="s4">0</span><span class="s2">:</span>
+                <span class="s1">axes </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">% </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape1</span><span class="s2">), </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">% </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape2</span><span class="s2">)]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">axes </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">] * </span><span class="s4">2</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">axes </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span>
+        <span class="s0">if </span><span class="s1">shape1</span><span class="s2">[</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]] != </span><span class="s1">shape2</span><span class="s2">[</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]]:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f&quot;Incompatible input shapes: &quot;</span>
+                <span class="s5">f&quot;axis values </span><span class="s0">{</span><span class="s1">shape1</span><span class="s2">[</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]]</span><span class="s0">} </span><span class="s5">(at axis </span><span class="s0">{</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span><span class="s0">}</span><span class="s5">) != &quot;</span>
+                <span class="s5">f&quot;</span><span class="s0">{</span><span class="s1">shape2</span><span class="s2">[</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]]</span><span class="s0">} </span><span class="s5">(at axis </span><span class="s0">{</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span><span class="s0">}</span><span class="s5">). &quot;</span>
+                <span class="s5">f&quot;Full input shapes: </span><span class="s0">{</span><span class="s1">shape1</span><span class="s0">}</span><span class="s5">, </span><span class="s0">{</span><span class="s1">shape2</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">_merge_function</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">) != </span><span class="s4">2</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f&quot;A `Dot` layer should be called on exactly 2 inputs. &quot;</span>
+                <span class="s5">f&quot;Received: inputs=</span><span class="s0">{</span><span class="s1">inputs</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">x1 </span><span class="s2">= </span><span class="s1">inputs</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s1">x2 </span><span class="s2">= </span><span class="s1">inputs</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">&lt; </span><span class="s4">0</span><span class="s2">:</span>
+                <span class="s1">axes </span><span class="s2">= [</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">% </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x1</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">),</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">% </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x2</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">),</span>
+                <span class="s2">]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">axes </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">] * </span><span class="s4">2</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">axes </span><span class="s2">= []</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">)):</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] &lt; </span><span class="s4">0</span><span class="s2">:</span>
+                    <span class="s1">axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] % </span><span class="s1">len</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">shape</span><span class="s2">))</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">axes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">normalize</span><span class="s2">:</span>
+            <span class="s1">x1 </span><span class="s2">= </span><span class="s1">normalize</span><span class="s2">(</span><span class="s1">x1</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">])</span>
+            <span class="s1">x2 </span><span class="s2">= </span><span class="s1">normalize</span><span class="s2">(</span><span class="s1">x2</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">])</span>
+        <span class="s1">output </span><span class="s2">= </span><span class="s1">batch_dot</span><span class="s2">(</span><span class="s1">x1</span><span class="s2">, </span><span class="s1">x2</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">output</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">, (</span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">)) </span><span class="s0">or </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) != </span><span class="s4">2</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f&quot;A `Dot` layer should be called on a list of 2 inputs. &quot;</span>
+                <span class="s5">f&quot;Received: input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">shape1 </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">])</span>
+        <span class="s1">shape2 </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">])</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">&lt; </span><span class="s4">0</span><span class="s2">:</span>
+                <span class="s1">axes </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">% </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape1</span><span class="s2">), </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes </span><span class="s2">% </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape2</span><span class="s2">)]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">axes </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">] * </span><span class="s4">2</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">axes </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span>
+        <span class="s1">shape1</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">])</span>
+        <span class="s1">shape2</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">[</span><span class="s4">1</span><span class="s2">])</span>
+        <span class="s1">shape2</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">0</span><span class="s2">)</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">shape1 </span><span class="s2">+ </span><span class="s1">shape2</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">) == </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s1">output_shape </span><span class="s2">+= [</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">compute_mask</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">return None</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;axes&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">axes</span><span class="s2">,</span>
+            <span class="s5">&quot;normalize&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">normalize</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">list</span><span class="s2">(</span><span class="s1">base_config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()) + </span><span class="s1">list</span><span class="s2">(</span><span class="s1">config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()))</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s5">&quot;keras.layers.dot&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">dot</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">axes</span><span class="s2">=-</span><span class="s4">1</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Functional interface to the `Dot` layer. 
+ 
+    Args: 
+        inputs: A list of input tensors (at least 2). 
+        axes: Integer or tuple of integers, 
+            axis or axes along which to take the dot product. 
+        normalize: Whether to L2-normalize samples along the 
+            dot product axis before taking the dot product. 
+            If set to `True`, then the output of the dot product 
+            is the cosine proximity between the two samples. 
+        **kwargs: Standard layer keyword arguments. 
+ 
+    Returns: 
+        A tensor, the dot product of the samples from the inputs. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">Dot</span><span class="s2">(</span><span class="s1">axes</span><span class="s2">=</span><span class="s1">axes</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)(</span><span class="s1">inputs</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,195 @@
+<html>
+<head>
+<title>backup_and_restore.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+backup_and_restore.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">callbacks</span><span class="s2">.</span><span class="s1">callback </span><span class="s0">import </span><span class="s1">Callback</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">file_utils</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.callbacks.BackupAndRestore&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">BackupAndRestore</span><span class="s2">(</span><span class="s1">Callback</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Callback to back up and restore the training state. 
+ 
+    `BackupAndRestore` callback is intended to recover training from an 
+    interruption that has happened in the middle of a `Model.fit` execution, by 
+    backing up the training states in a temporary checkpoint file, at the end of 
+    each epoch. Each backup overwrites the previously written checkpoint file, 
+    so at any given time there is at most one such checkpoint file for 
+    backup/restoring purpose. 
+ 
+    If training restarts before completion, the training state (which includes 
+    the `Model` weights and epoch number) is restored to the most recently saved 
+    state at the beginning of a new `Model.fit` run. At the completion of a 
+    `Model.fit` run, the temporary checkpoint file is deleted. 
+ 
+    Note that the user is responsible to bring jobs back after the interruption. 
+    This callback is important for the backup and restore mechanism for fault 
+    tolerance purpose, and the model to be restored from a previous checkpoint 
+    is expected to be the same as the one used to back up. If user changes 
+    arguments passed to compile or fit, the checkpoint saved for fault tolerance 
+    can become invalid. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; class InterruptingCallback(keras.callbacks.Callback): 
+    ...   def on_epoch_begin(self, epoch, logs=None): 
+    ...     if epoch == 4: 
+    ...       raise RuntimeError('Interrupting!') 
+    &gt;&gt;&gt; callback = keras.callbacks.BackupAndRestore(backup_dir=&quot;/tmp/backup&quot;) 
+    &gt;&gt;&gt; model = keras.models.Sequential([keras.layers.Dense(10)]) 
+    &gt;&gt;&gt; model.compile(keras.optimizers.SGD(), loss='mse') 
+    &gt;&gt;&gt; try: 
+    ...   model.fit(np.arange(100).reshape(5, 20), np.zeros(5), epochs=10, 
+    ...             batch_size=1, callbacks=[callback, InterruptingCallback()], 
+    ...             verbose=0) 
+    ... except: 
+    ...   pass 
+    &gt;&gt;&gt; history = model.fit(np.arange(100).reshape(5, 20), np.zeros(5), 
+    ...                     epochs=10, batch_size=1, callbacks=[callback], 
+    ...                     verbose=0) 
+    &gt;&gt;&gt; # Only 6 more epochs are run, since first training got interrupted at 
+    &gt;&gt;&gt; # zero-indexed epoch 4, second training will continue from 4 to 9. 
+    &gt;&gt;&gt; len(history.history['loss']) 
+    &gt;&gt;&gt; 6 
+ 
+    Args: 
+        backup_dir: String, path of directory where to store the data 
+            needed to restore the model. The directory 
+            cannot be reused elsewhere to store other files, e.g. by the 
+            `BackupAndRestore` callback of another training run, 
+            or by another callback (e.g. `ModelCheckpoint`) 
+            of the same training run. 
+        save_freq: `&quot;epoch&quot;`, integer, or `False`. When set to `&quot;epoch&quot;` 
+          the callback saves the checkpoint at the end of each epoch. 
+          When set to an integer, the callback saves the checkpoint every 
+          `save_freq` batches. Set `save_freq=False` only if using 
+          preemption checkpointing (i.e. with `save_before_preemption=True`). 
+        delete_checkpoint: Boolean. This `BackupAndRestore` 
+          callback works by saving a checkpoint to back up the training state. 
+          If `delete_checkpoint=True`, the checkpoint will be deleted after 
+          training is finished. Use `False` if you'd like to keep the checkpoint 
+          for future usage. Defaults to `True`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">backup_dir</span><span class="s2">,</span>
+        <span class="s1">save_freq</span><span class="s2">=</span><span class="s3">&quot;epoch&quot;</span><span class="s2">,</span>
+        <span class="s1">delete_checkpoint</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">save_freq </span><span class="s2">= </span><span class="s1">save_freq</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">delete_checkpoint </span><span class="s2">= </span><span class="s1">delete_checkpoint</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_batches_seen_since_last_saving </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_last_batch_seen </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_current_epoch </span><span class="s2">= </span><span class="s5">0</span>
+
+        <span class="s0">if not </span><span class="s1">backup_dir</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">&quot;Empty `backup_dir` argument passed&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">backup_dir </span><span class="s2">= </span><span class="s1">backup_dir</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_weights_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">backup_dir</span><span class="s2">, </span><span class="s3">&quot;latest.weights.h5&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_training_metadata_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span>
+            <span class="s1">backup_dir</span><span class="s2">, </span><span class="s3">&quot;training_metadata.json&quot;</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">save_freq </span><span class="s2">!= </span><span class="s3">&quot;epoch&quot; </span><span class="s0">and not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">save_freq</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Invalid value for argument `save_freq`. &quot;</span>
+                <span class="s3">f&quot;Received: save_freq=</span><span class="s0">{</span><span class="s1">save_freq</span><span class="s0">}</span><span class="s3">. &quot;</span>
+                <span class="s3">&quot;Expected either 'epoch' or an integer value.&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">on_train_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Get training state from temporary file and restore it.&quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;To use the BackupAndRestore callback, &quot;</span>
+                <span class="s3">&quot;you model must be built before you call `fit()`. &quot;</span>
+                <span class="s3">f&quot;Model </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s0">} </span><span class="s3">is unbuilt. You can build it &quot;</span>
+                <span class="s3">&quot;beforehand by calling it on a batch of data.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_weights_path</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer </span><span class="s0">is not None</span>
+                <span class="s0">and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">built</span>
+            <span class="s2">):</span>
+                <span class="s6"># Make sure optimizer weights exist before loading.</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">trainable_variables</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">load_weights</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_weights_path</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_training_metadata_path</span><span class="s2">):</span>
+            <span class="s0">with </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">File</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_training_metadata_path</span><span class="s2">, </span><span class="s3">&quot;r&quot;</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+                <span class="s1">training_metadata </span><span class="s2">= </span><span class="s1">json</span><span class="s2">.</span><span class="s1">loads</span><span class="s2">(</span><span class="s1">f</span><span class="s2">.</span><span class="s1">read</span><span class="s2">())</span>
+            <span class="s1">epoch </span><span class="s2">= </span><span class="s1">training_metadata</span><span class="s2">[</span><span class="s3">&quot;epoch&quot;</span><span class="s2">]</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">_initial_epoch </span><span class="s2">= </span><span class="s1">epoch</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_current_epoch </span><span class="s2">= </span><span class="s1">epoch </span><span class="s2">+ </span><span class="s5">1</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_last_batch_seen </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">save_freq </span><span class="s2">== </span><span class="s3">&quot;epoch&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_save_model</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">on_train_batch_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_save_on_batch</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_save_model</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_save_model</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Saves the model. 
+ 
+        Args: 
+            epoch: the epoch this iteration is in. 
+            batch: the batch this iteration is in. `None` if the `save_freq` 
+                is set to `&quot;epoch&quot;`. 
+            logs: the `logs` dict passed in to `on_batch_end` or `on_epoch_end`. 
+        &quot;&quot;&quot;</span>
+        <span class="s6"># Create host directory if it doesn't exist.</span>
+        <span class="s0">if not </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">backup_dir</span><span class="s2">):</span>
+            <span class="s1">file_utils</span><span class="s2">.</span><span class="s1">makedirs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">backup_dir</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">save_weights</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_weights_path</span><span class="s2">, </span><span class="s1">overwrite</span><span class="s2">=</span><span class="s0">True</span><span class="s2">)</span>
+        <span class="s0">with </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">File</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_training_metadata_path</span><span class="s2">, </span><span class="s3">&quot;w&quot;</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+            <span class="s1">training_metadata </span><span class="s2">= {</span>
+                <span class="s3">&quot;epoch&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_current_epoch</span><span class="s2">,</span>
+                <span class="s3">&quot;batch&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_last_batch_seen</span><span class="s2">,</span>
+            <span class="s2">}</span>
+            <span class="s1">f</span><span class="s2">.</span><span class="s1">write</span><span class="s2">(</span><span class="s1">json</span><span class="s2">.</span><span class="s1">dumps</span><span class="s2">(</span><span class="s1">training_metadata</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">_should_save_on_batch</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Handles batch-level saving logic, supports steps_per_execution.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">save_freq </span><span class="s2">== </span><span class="s3">&quot;epoch&quot;</span><span class="s2">:</span>
+            <span class="s0">return False</span>
+        <span class="s0">if </span><span class="s1">batch </span><span class="s2">&lt;= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_last_batch_seen</span><span class="s2">:  </span><span class="s6"># New epoch.</span>
+            <span class="s1">add_batches </span><span class="s2">= </span><span class="s1">batch </span><span class="s2">+ </span><span class="s5">1  </span><span class="s6"># batches are zero-indexed.</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">add_batches </span><span class="s2">= </span><span class="s1">batch </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_last_batch_seen</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_batches_seen_since_last_saving </span><span class="s2">+= </span><span class="s1">add_batches</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_last_batch_seen </span><span class="s2">= </span><span class="s1">batch</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batches_seen_since_last_saving </span><span class="s2">&gt;= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">save_freq</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_batches_seen_since_last_saving </span><span class="s2">= </span><span class="s5">0</span>
+            <span class="s0">return True</span>
+        <span class="s0">return False</span>
+
+    <span class="s0">def </span><span class="s1">on_train_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">delete_checkpoint </span><span class="s0">and </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">backup_dir</span><span class="s2">):</span>
+            <span class="s1">file_utils</span><span class="s2">.</span><span class="s1">rmtree</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">backup_dir</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

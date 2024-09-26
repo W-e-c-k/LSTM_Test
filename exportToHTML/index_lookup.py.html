@@ -1,0 +1,1035 @@
+<html>
+<head>
+<title>index_lookup.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #6aab73;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+index_lookup.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">collections</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">argument_validation</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">numerical_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">tf_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+
+<span class="s0">class </span><span class="s1">IndexLookup</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Maps values from a vocabulary to integer indices. 
+ 
+    This layer translates a set of arbitrary hashables into an integer output 
+    via a table-based lookup, with optional out-of-vocabulary handling. This is 
+    the basis layer for both IntegerLookup and StringLookup; it holds the common 
+    logic but is not intended to be exported as part of the Keras API. 
+ 
+    Args: 
+        max_tokens: The maximum size of the vocabulary for this layer. 
+            If `None`, there is no cap on the size of the vocabulary. 
+            Note that this size includes the OOV and mask tokens. 
+        num_oov_indices: The number of out-of-vocabulary tokens to use. 
+            If this value is more than 1, OOV inputs are hashed to determine 
+            their OOV value. If this value is 0, 
+            OOV inputs will cause an error when calling the layer. 
+        mask_token: A token that represents masked inputs. 
+            When `output_mode` is `&quot;int&quot;`, 
+            the token is included in vocabulary and mapped to index 0. 
+            In other output modes, the token will not appear in the vocabulary 
+            and instances of the mask token in the input will be dropped. 
+            If set to `None`, no mask term will be added. 
+        oov_token: Only used when `invert` is `True`. 
+            The token to return for OOV indices. 
+        vocabulary: Optional. Either an array or a string path to a text file. 
+            If passing an array, can pass a tuple, list, 1D numpy array, 
+            or 1D tensor containing the vocbulary terms. 
+            If passing a file path, the file should contain one line per term 
+            in the vocabulary. If this argument is set, 
+            there is no need to `adapt` the layer. 
+        vocabulary_dtype: The dtype of the vocabulary terms. 
+            For example, `&quot;int64&quot;` or `&quot;string&quot;`. 
+        idf_weights: Only valid when `output_mode` is `&quot;tf_idf&quot;`. 
+            A tuple, list, 1D numpy array, or 1D tensor or the same length 
+            as the vocabulary, containing the floating point 
+            inverse document frequency weights, which will be multiplied 
+            by per sample term counts for the final TF-IDF 
+            weight. If the `vocabulary` argument is set, and `output_mode` 
+            is `&quot;tf_idf&quot;`, this argument must be supplied. 
+        invert: Only valid when `output_mode` is `&quot;int&quot;`. 
+            If `True`, this layer will map indices to vocabulary items 
+            instead of mapping vocabulary items to indices. 
+            Defaults to `False`. 
+        output_mode: Specification for the output of the layer. Values can be 
+            `&quot;int&quot;`, `&quot;one_hot&quot;`, `&quot;multi_hot&quot;`, `&quot;count&quot;`, or `&quot;tf_idf&quot;` 
+            configuring the layer as follows: 
+            - `&quot;int&quot;`: Return the raw integer indices of the input tokens. 
+            - `&quot;one_hot&quot;`: Encodes each individual element in the input into an 
+                array the same size as the vocabulary, containing a 1 
+                at the element index. If the last dimension is size 1, 
+                will encode on that dimension. 
+                If the last dimension is not size 1, 
+                will append a new dimension for the encoded output. 
+            - `&quot;multi_hot&quot;`: Encodes each sample in the input into 
+                a single array the same size as the vocabulary, 
+                containing a 1 for each vocabulary term present in the sample. 
+                Treats the last dimension as the sample dimension, 
+                if input shape is `(..., sample_length)`, output shape will 
+                be `(..., num_tokens)`. 
+            - `&quot;count&quot;`: As `&quot;multi_hot&quot;`, but the int array contains a count 
+                of the number of times the token at that index appeared 
+                in the sample. 
+            - `&quot;tf_idf&quot;`: As `&quot;multi_hot&quot;`, but the TF-IDF algorithm 
+                is applied to find the value in each token slot. 
+            Defaults to `&quot;int&quot;`. 
+        pad_to_max_tokens: Only valid when `output_mode` is `&quot;multi_hot&quot;`, 
+            `&quot;count&quot;`, or `&quot;tf_idf&quot;`. If `True`, the output will have its 
+            feature axis padded to `max_tokens` even if the number 
+            of unique tokens in the vocabulary is less than max_tokens, 
+            resulting in a tensor of shape `(batch_size, max_tokens)` 
+            regardless of vocabulary size. Defaults to `False`. 
+        sparse: Boolean. Only applicable to `&quot;one_hot&quot;`, `&quot;multi_hot&quot;`, 
+            `&quot;count&quot;` and `&quot;tf-idf&quot;` output modes. 
+            If `True`, returns a `SparseTensor` instead of a dense `Tensor`. 
+            Defaults to `False`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">max_tokens</span><span class="s2">,</span>
+        <span class="s1">num_oov_indices</span><span class="s2">,</span>
+        <span class="s1">mask_token</span><span class="s2">,</span>
+        <span class="s1">oov_token</span><span class="s2">,</span>
+        <span class="s1">vocabulary_dtype</span><span class="s2">,</span>
+        <span class="s1">vocabulary</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">idf_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">invert</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">output_mode</span><span class="s2">=</span><span class="s4">&quot;int&quot;</span><span class="s2">,</span>
+        <span class="s1">sparse</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">pad_to_max_tokens</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s5"># If max_tokens is set, the value must be greater than 1 - otherwise we</span>
+        <span class="s5"># are creating a 0-element vocab, which doesn't make sense.</span>
+        <span class="s0">if </span><span class="s1">max_tokens </span><span class="s0">is not None and </span><span class="s1">max_tokens </span><span class="s2">&lt;= </span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;If set, `max_tokens` must be greater than 1. &quot;</span>
+                <span class="s4">f&quot;Received: max_tokens=</span><span class="s0">{</span><span class="s1">max_tokens</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">pad_to_max_tokens </span><span class="s0">and </span><span class="s1">max_tokens </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;If pad_to_max_tokens is True, must set `max_tokens`. &quot;</span>
+                <span class="s4">f&quot;Received: max_tokens=</span><span class="s0">{</span><span class="s1">max_tokens</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">num_oov_indices </span><span class="s2">&lt; </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;`num_oov_indices` must be greater than or equal to 0. &quot;</span>
+                <span class="s4">f&quot;Received: num_oov_indices=</span><span class="s0">{</span><span class="s1">num_oov_indices</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s5"># Support deprecated names for output_modes.</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;binary&quot;</span><span class="s2">:</span>
+            <span class="s1">output_mode </span><span class="s2">= </span><span class="s4">&quot;multi_hot&quot;</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf-idf&quot;</span><span class="s2">:</span>
+            <span class="s1">output_mode </span><span class="s2">= </span><span class="s4">&quot;tf_idf&quot;</span>
+        <span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">validate_string_arg</span><span class="s2">(</span>
+            <span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s1">allowable_strings</span><span class="s2">=(</span>
+                <span class="s4">&quot;int&quot;</span><span class="s2">,</span>
+                <span class="s4">&quot;one_hot&quot;</span><span class="s2">,</span>
+                <span class="s4">&quot;multi_hot&quot;</span><span class="s2">,</span>
+                <span class="s4">&quot;count&quot;</span><span class="s2">,</span>
+                <span class="s4">&quot;tf_idf&quot;</span><span class="s2">,</span>
+            <span class="s2">),</span>
+            <span class="s1">caller_name</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">,</span>
+            <span class="s1">arg_name</span><span class="s2">=</span><span class="s4">&quot;output_mode&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">invert </span><span class="s0">and </span><span class="s1">output_mode </span><span class="s2">!= </span><span class="s4">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;`output_mode` must be `'int'` when `invert` is true. &quot;</span>
+                <span class="s4">f&quot;Received: output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">sparse </span><span class="s0">and </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;`sparse` may only be true if `output_mode` is &quot;</span>
+                <span class="s4">&quot;`'one_hot'`, `'multi_hot'`, `'count'` or `'tf_idf'`. &quot;</span>
+                <span class="s4">f&quot;Received: sparse=</span><span class="s0">{</span><span class="s1">sparse</span><span class="s0">} </span><span class="s4">and &quot;</span>
+                <span class="s4">f&quot;output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">idf_weights </span><span class="s0">is not None and </span><span class="s1">output_mode </span><span class="s2">!= </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;`idf_weights` should only be set if `output_mode` is &quot;</span>
+                <span class="s4">f&quot;`'tf_idf'`. Received: idf_weights=</span><span class="s0">{</span><span class="s1">idf_weights</span><span class="s0">} </span><span class="s4">and &quot;</span>
+                <span class="s4">f&quot;output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_convert_input_args </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_allow_non_tensor_positional_args </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">supports_jit </span><span class="s2">= </span><span class="s0">False</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">invert </span><span class="s2">= </span><span class="s1">invert</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s2">= </span><span class="s1">max_tokens</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices </span><span class="s2">= </span><span class="s1">num_oov_indices</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s2">= </span><span class="s1">mask_token</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token </span><span class="s2">= </span><span class="s1">oov_token</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">= </span><span class="s1">output_mode</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">sparse </span><span class="s2">= </span><span class="s1">sparse</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens </span><span class="s2">= </span><span class="s1">pad_to_max_tokens</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">as_dtype</span><span class="s2">(</span><span class="s1">vocabulary_dtype</span><span class="s2">).</span><span class="s1">name</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">&quot;vocabulary_size&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_vocabulary </span><span class="s2">= </span><span class="s1">vocabulary</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_idf_weights </span><span class="s2">= </span><span class="s1">idf_weights</span>
+
+        <span class="s5"># We set this hidden attr to</span>
+        <span class="s5"># persist the fact that we have have a non-adaptable layer with a</span>
+        <span class="s5"># manually set vocab.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span>
+            <span class="s4">&quot;has_input_vocabulary&quot;</span><span class="s2">, (</span><span class="s1">vocabulary </span><span class="s0">is not None</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">&quot;trainable&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s4">&quot;dtype&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">kwargs</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s4">f&quot;Unrecognized keyword argument(s): </span><span class="s0">{</span><span class="s1">kwargs</span><span class="s0">}</span><span class="s4">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">invert</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype </span><span class="s2">= </span><span class="s4">&quot;int64&quot;</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span>
+            <span class="s1">mask_key </span><span class="s2">= </span><span class="s6">0</span>
+            <span class="s1">mask_value </span><span class="s2">= </span><span class="s1">mask_token</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype </span><span class="s2">= </span><span class="s4">&quot;int64&quot;</span>
+            <span class="s1">mask_key </span><span class="s2">= </span><span class="s1">mask_token</span>
+            <span class="s5"># Masks should map to 0 for int output and be dropped otherwise. Max</span>
+            <span class="s5"># ints will be dropped from the bincount op.</span>
+            <span class="s1">mask_value </span><span class="s2">= (</span>
+                <span class="s6">0</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span>
+                <span class="s0">else </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">as_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span><span class="s2">).</span><span class="s1">max</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices </span><span class="s2">== </span><span class="s6">0</span><span class="s2">:</span>
+                <span class="s5"># If there are no OOV indices, we map OOV tokens to -1 and error</span>
+                <span class="s5"># out during call if we find a negative index.</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value </span><span class="s2">= -</span><span class="s6">1</span>
+            <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices </span><span class="s2">== </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s5"># If there is only one OOV index, we can set that index as the</span>
+                <span class="s5"># default value of the index_lookup table.</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_oov_start_index</span><span class="s2">()</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s5"># If we have multiple OOV values, we need to do a further</span>
+                <span class="s5"># hashing step; to make this easier, we set the OOV value to -1.</span>
+                <span class="s5"># (This lets us do a vectorized add and cast to boolean to</span>
+                <span class="s5"># determine locations where we need to do extra hashing.)</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value </span><span class="s2">= -</span><span class="s6">1</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_mask_key </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">mask_key</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_mask_value </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span>
+                <span class="s1">mask_value</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary </span><span class="s0">and </span><span class="s1">idf_weights </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;When specifying the `vocabulary` argument, &quot;</span>
+                    <span class="s4">&quot;in TF-IDF output mode, the `idf_weights` argument &quot;</span>
+                    <span class="s4">&quot;must also be provided.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">idf_weights </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Variable</span><span class="s2">(</span>
+                    <span class="s1">idf_weights</span><span class="s2">,</span>
+                    <span class="s1">dtype</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">(),</span>
+                    <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+                <span class="s2">)</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">value</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s1">vocabulary </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">set_vocabulary</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">, </span><span class="s1">idf_weights</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s5"># When restoring from a keras SavedModel, the loading code will</span>
+            <span class="s5"># expect to find and restore a lookup_table attribute on the layer.</span>
+            <span class="s5"># This table needs to be uninitialized as a StaticHashTable cannot</span>
+            <span class="s5"># be initialized twice.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_uninitialized_lookup_table</span><span class="s2">()</span>
+
+        <span class="s5"># Only set up adapt state if we did not receive a vocab on construction.</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary</span><span class="s2">:</span>
+            <span class="s5"># Set adapt state.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">experimental</span><span class="s2">.</span><span class="s1">MutableHashTable</span><span class="s2">(</span>
+                <span class="s1">key_dtype</span><span class="s2">=</span><span class="s1">vocabulary_dtype</span><span class="s2">,</span>
+                <span class="s1">value_dtype</span><span class="s2">=</span><span class="s4">&quot;int64&quot;</span><span class="s2">,</span>
+                <span class="s1">default_value</span><span class="s2">=</span><span class="s6">0</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">token_document_counts </span><span class="s2">= (</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">experimental</span><span class="s2">.</span><span class="s1">MutableHashTable</span><span class="s2">(</span>
+                        <span class="s1">key_dtype</span><span class="s2">=</span><span class="s1">vocabulary_dtype</span><span class="s2">,</span>
+                        <span class="s1">value_dtype</span><span class="s2">=</span><span class="s4">&quot;int64&quot;</span><span class="s2">,</span>
+                        <span class="s1">default_value</span><span class="s2">=</span><span class="s6">0</span><span class="s2">,</span>
+                    <span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">num_documents </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Variable</span><span class="s2">(</span>
+                    <span class="s6">0</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s4">&quot;int64&quot;</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span>
+                <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_vocabulary</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">include_special_tokens</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Returns the current vocabulary of the layer. 
+ 
+        Args: 
+            include_special_tokens: If `True`, the returned vocabulary 
+                will include mask and OOV tokens, 
+                and a term's index in the vocabulary 
+                will equal the term's index when calling the layer. 
+                If `False`, the returned vocabulary will not include 
+                any mask or OOV tokens. 
+        &quot;&quot;&quot;</span>
+        <span class="s5"># The lookup table data will not be sorted, so we will create a inverted</span>
+        <span class="s5"># lookup here, and use that to lookup a range of indices</span>
+        <span class="s5"># [0, vocab_size).</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table</span><span class="s2">.</span><span class="s1">size</span><span class="s2">() == </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s1">vocab</span><span class="s2">, </span><span class="s1">indices </span><span class="s2">= [], []</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">keys</span><span class="s2">, </span><span class="s1">values </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table</span><span class="s2">.</span><span class="s1">export</span><span class="s2">()</span>
+            <span class="s1">vocab</span><span class="s2">, </span><span class="s1">indices </span><span class="s2">= (</span><span class="s1">values</span><span class="s2">, </span><span class="s1">keys</span><span class="s2">) </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert </span><span class="s0">else </span><span class="s2">(</span><span class="s1">keys</span><span class="s2">, </span><span class="s1">values</span><span class="s2">)</span>
+            <span class="s1">vocab</span><span class="s2">, </span><span class="s1">indices </span><span class="s2">= (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_tensor_vocab_to_numpy</span><span class="s2">(</span><span class="s1">vocab</span><span class="s2">),</span>
+                <span class="s1">indices</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">(),</span>
+            <span class="s2">)</span>
+        <span class="s1">lookup </span><span class="s2">= </span><span class="s1">collections</span><span class="s2">.</span><span class="s1">defaultdict</span><span class="s2">(</span>
+            <span class="s0">lambda</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span><span class="s2">, </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">vocab</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">vocab </span><span class="s2">= [</span><span class="s1">lookup</span><span class="s2">[</span><span class="s1">x</span><span class="s2">] </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_size</span><span class="s2">())]</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">is not None and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s1">vocab</span><span class="s2">[</span><span class="s6">0</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token</span>
+        <span class="s0">if not </span><span class="s1">include_special_tokens</span><span class="s2">:</span>
+            <span class="s1">vocab </span><span class="s2">= </span><span class="s1">vocab</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">() :]</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype </span><span class="s2">== </span><span class="s4">&quot;string&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">[</span>
+                <span class="s1">i</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf-8&quot;</span><span class="s2">) </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">i</span><span class="s2">, </span><span class="s1">bytes</span><span class="s2">) </span><span class="s0">else </span><span class="s1">i </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">vocab</span>
+            <span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">vocab</span>
+
+    <span class="s0">def </span><span class="s1">vocabulary_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Gets the current size of the layer's vocabulary. 
+ 
+        Returns: 
+          The integer size of the vocabulary, including optional mask and oov 
+          indices. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">executing_eagerly</span><span class="s2">():</span>
+            <span class="s0">return </span><span class="s2">(</span>
+                <span class="s1">int</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table</span><span class="s2">.</span><span class="s1">size</span><span class="s2">().</span><span class="s1">numpy</span><span class="s2">())</span>
+                <span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">()</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table</span><span class="s2">.</span><span class="s1">size</span><span class="s2">() + </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s4">&quot;invert&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert</span><span class="s2">,</span>
+            <span class="s4">&quot;max_tokens&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens</span><span class="s2">,</span>
+            <span class="s4">&quot;num_oov_indices&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices</span><span class="s2">,</span>
+            <span class="s4">&quot;oov_token&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span><span class="s2">,</span>
+            <span class="s4">&quot;mask_token&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token</span><span class="s2">,</span>
+            <span class="s4">&quot;output_mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s4">&quot;sparse&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">,</span>
+            <span class="s4">&quot;pad_to_max_tokens&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens</span><span class="s2">,</span>
+            <span class="s4">&quot;vocabulary_dtype&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span><span class="s2">,</span>
+            <span class="s4">&quot;idf_weights&quot;</span><span class="s2">: </span><span class="s1">listify_tensors</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_idf_weights</span><span class="s2">),</span>
+            <span class="s4">&quot;vocabulary&quot;</span><span class="s2">: </span><span class="s1">listify_tensors</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_vocabulary</span><span class="s2">),</span>
+            <span class="s4">&quot;vocabulary_size&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">list</span><span class="s2">(</span><span class="s1">base_config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()) + </span><span class="s1">list</span><span class="s2">(</span><span class="s1">config</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()))</span>
+
+    <span class="s0">def </span><span class="s1">_record_vocabulary_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_ensure_vocab_size_unchanged</span><span class="s2">()</span>
+        <span class="s0">with </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">init_scope</span><span class="s2">():</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_size</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">set_vocabulary</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">vocabulary</span><span class="s2">, </span><span class="s1">idf_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Sets vocabulary (and optionally document frequency) for this layer. 
+ 
+        This method sets the vocabulary and idf weights for this layer directly, 
+        instead of analyzing a dataset through `adapt`. It should be used 
+        whenever the vocab (and optionally document frequency) information is 
+        already known.  If vocabulary data is already present in the layer, this 
+        method will replace it. 
+ 
+        Args: 
+            vocabulary: Either an array or a string path to a text file. 
+                If passing an array, can pass a tuple, list, 
+                1D numpy array, or 1D tensor containing the vocbulary terms. 
+                If passing a file path, the file should contain one line 
+                per term in the vocabulary. 
+            idf_weights: A tuple, list, 1D numpy array, or 1D tensor 
+                of inverse document frequency weights with equal 
+                length to vocabulary. Must be set if `output_mode` 
+                is `&quot;tf_idf&quot;`. Should not be set otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">idf_weights </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;`idf_weights` must be set if output_mode is 'tf_idf'.&quot;</span>
+                <span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">idf_weights </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;`idf_weights` should only be set if output_mode is &quot;</span>
+                <span class="s4">f&quot;`'tf_idf'`. Received: output_mode=</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s0">} </span><span class="s4">&quot;</span>
+                <span class="s4">f&quot;and idf_weights=</span><span class="s0">{</span><span class="s1">idf_weights</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s0">if not </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">f&quot;Vocabulary file </span><span class="s0">{</span><span class="s1">vocabulary</span><span class="s0">} </span><span class="s4">does not exist.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;output_mode `'tf_idf'` does not support loading a &quot;</span>
+                    <span class="s4">&quot;vocabulary from file.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_table_from_file</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_record_vocabulary_size</span><span class="s2">()</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if not </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">executing_eagerly</span><span class="s2">() </span><span class="s0">and </span><span class="s2">(</span>
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">) </span><span class="s0">or </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError</span><span class="s2">(</span>
+                <span class="s4">f&quot;Cannot set a tensor vocabulary on layer </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">} </span><span class="s4">&quot;</span>
+                <span class="s4">&quot;when not executing eagerly. &quot;</span>
+                <span class="s4">&quot;Create this layer or call `set_vocabulary()` &quot;</span>
+                <span class="s4">&quot;outside of any traced function.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s5"># TODO(mattdangerw): for better performance we should rewrite this</span>
+        <span class="s5"># entire function to operate on tensors and convert vocabulary to a</span>
+        <span class="s5"># tensor here.</span>
+        <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">):</span>
+            <span class="s1">vocabulary </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_tensor_vocab_to_numpy</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+            <span class="s1">vocabulary </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">):</span>
+            <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">()</span>
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+            <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">vocabulary</span><span class="s2">.</span><span class="s1">size </span><span class="s2">== </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Cannot set an empty vocabulary. &quot;</span>
+                <span class="s4">f&quot;Received: vocabulary=</span><span class="s0">{</span><span class="s1">vocabulary</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">oov_start </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_oov_start_index</span><span class="s2">()</span>
+        <span class="s1">token_start </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">()</span>
+        <span class="s1">special_tokens </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token</span><span class="s2">] * </span><span class="s1">oov_start </span><span class="s2">+ [</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span>
+        <span class="s2">] * </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices</span>
+        <span class="s1">found_special_tokens </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array_equal</span><span class="s2">(</span>
+            <span class="s1">special_tokens</span><span class="s2">, </span><span class="s1">vocabulary</span><span class="s2">[:</span><span class="s1">token_start</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">found_special_tokens</span><span class="s2">:</span>
+            <span class="s1">tokens </span><span class="s2">= </span><span class="s1">vocabulary</span><span class="s2">[</span><span class="s1">token_start</span><span class="s2">:]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">tokens </span><span class="s2">= </span><span class="s1">vocabulary</span>
+
+        <span class="s1">repeated_tokens </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_find_repeated_tokens</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">repeated_tokens</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;The passed vocabulary has at least one repeated &quot;</span>
+                <span class="s4">&quot;term. Please uniquify your dataset. The repeated terms &quot;</span>
+                <span class="s4">f&quot;are: </span><span class="s0">{</span><span class="s1">repeated_tokens</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">is not None and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">in </span><span class="s1">tokens</span><span class="s2">:</span>
+            <span class="s1">mask_index </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">argwhere</span><span class="s2">(</span><span class="s1">vocabulary </span><span class="s2">== </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token</span><span class="s2">)[-</span><span class="s6">1</span><span class="s2">]</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Found reserved mask token at unexpected location in &quot;</span>
+                <span class="s4">&quot;`vocabulary`. Note that passed `vocabulary` does not need to &quot;</span>
+                <span class="s4">&quot;include the OOV and mask tokens. Either remove all mask and &quot;</span>
+                <span class="s4">&quot;OOV tokens, or include them only at the start of the &quot;</span>
+                <span class="s4">f&quot;vocabulary in precisely this order: </span><span class="s0">{</span><span class="s1">special_tokens</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                <span class="s4">f&quot;Received: mask_token=</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token</span><span class="s0">} </span><span class="s4">at &quot;</span>
+                <span class="s4">f&quot;vocabulary index </span><span class="s0">{</span><span class="s1">mask_index</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s5"># Only error out for oov_token when invert=True. When invert=False,</span>
+        <span class="s5"># oov_token is unused during lookup.</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token </span><span class="s0">is not None</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token </span><span class="s0">in </span><span class="s1">tokens</span>
+        <span class="s2">):</span>
+            <span class="s1">oov_index </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">argwhere</span><span class="s2">(</span><span class="s1">vocabulary </span><span class="s2">== </span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span><span class="s2">)[-</span><span class="s6">1</span><span class="s2">]</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Found reserved OOV token at unexpected location in &quot;</span>
+                <span class="s4">&quot;`vocabulary`. Note that passed `vocabulary` does not need to &quot;</span>
+                <span class="s4">&quot;include the OOV and mask tokens. Either remove all mask and &quot;</span>
+                <span class="s4">&quot;OOV tokens, or include them only at the start of the &quot;</span>
+                <span class="s4">f&quot;vocabulary in precisely this order: </span><span class="s0">{</span><span class="s1">special_tokens</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                <span class="s4">f&quot;Received: oov_token=</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span><span class="s0">} </span><span class="s4">at &quot;</span>
+                <span class="s4">f&quot;vocabulary index </span><span class="s0">{</span><span class="s1">oov_index</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">new_vocab_size </span><span class="s2">= </span><span class="s1">token_start </span><span class="s2">+ </span><span class="s1">len</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s0">is not None and </span><span class="s2">(</span><span class="s1">new_vocab_size </span><span class="s2">&gt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Attempted to set a vocabulary larger than the maximum vocab &quot;</span>
+                <span class="s4">f&quot;size. Received vocabulary size is </span><span class="s0">{</span><span class="s1">new_vocab_size</span><span class="s0">}</span><span class="s4">; &quot;</span>
+                <span class="s4">f&quot;`max_tokens` is </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens</span><span class="s0">}</span><span class="s4">.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_table_from_tokens</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_record_vocabulary_size</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot; </span><span class="s0">and </span><span class="s1">idf_weights </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;`idf_weights` must be the same length as vocabulary. &quot;</span>
+                    <span class="s4">f&quot;len(idf_weights) is </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span><span class="s0">}</span><span class="s4">; &quot;</span>
+                    <span class="s4">f&quot;len(vocabulary) is </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">)</span><span class="s0">}</span><span class="s4">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_convert_to_ndarray</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">ndim </span><span class="s2">!= </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;TF-IDF data must be a 1-index array. &quot;</span>
+                    <span class="s4">f&quot;Received: type(idf_weights)=</span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span><span class="s0">}</span><span class="s4">&quot;</span>
+                <span class="s2">)</span>
+
+            <span class="s5"># If the passed vocabulary has no special tokens, we need to pad the</span>
+            <span class="s5"># front of idf_weights. We don't have real document frequencies for</span>
+            <span class="s5"># these tokens so we will use an average of all idf_weights passed</span>
+            <span class="s5"># in as a reasonable default.</span>
+            <span class="s0">if </span><span class="s1">found_special_tokens</span><span class="s2">:</span>
+                <span class="s1">front_padding </span><span class="s2">= </span><span class="s6">0</span>
+                <span class="s1">front_padding_value </span><span class="s2">= </span><span class="s6">0</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">front_padding </span><span class="s2">= </span><span class="s1">token_start</span>
+                <span class="s1">front_padding_value </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">average</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span>
+            <span class="s5"># If pad_to_max_tokens is true, and max_tokens is greater than our</span>
+            <span class="s5"># total vocab size, we need to pad the back of idf_weights with</span>
+            <span class="s5"># zeros as well.</span>
+            <span class="s1">back_padding_value </span><span class="s2">= </span><span class="s6">0</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">back_padding </span><span class="s2">= (</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s2">- </span><span class="s1">front_padding </span><span class="s2">- </span><span class="s1">len</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">back_padding </span><span class="s2">= </span><span class="s6">0</span>
+            <span class="s1">weights </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">pad</span><span class="s2">(</span>
+                <span class="s1">idf_weights</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s1">front_padding</span><span class="s2">, </span><span class="s1">back_padding</span><span class="s2">),</span>
+                <span class="s4">&quot;constant&quot;</span><span class="s2">,</span>
+                <span class="s1">constant_values</span><span class="s2">=(</span><span class="s1">front_padding_value</span><span class="s2">, </span><span class="s1">back_padding_value</span><span class="s2">),</span>
+            <span class="s2">)</span>
+            <span class="s1">weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">())</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Variable</span><span class="s2">(</span>
+                <span class="s1">weights</span><span class="s2">,</span>
+                <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">value</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">get_build_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{}</span>
+
+    <span class="s0">def </span><span class="s1">build_from_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">build</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">compute_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">variable_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">input_shape</span>
+        <span class="s1">depth </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens</span>
+            <span class="s0">else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">depth</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_spec</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s1">output_dtype </span><span class="s2">= </span><span class="s4">&quot;int64&quot;</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">output_dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">KerasTensor</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">output_dtype</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">adapt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">reset_state</span><span class="s2">()</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">steps </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">data </span><span class="s2">= </span><span class="s1">data</span><span class="s2">.</span><span class="s1">take</span><span class="s2">(</span><span class="s1">steps</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">batch </span><span class="s0">in </span><span class="s1">data</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">data </span><span class="s2">= </span><span class="s1">tf_utils</span><span class="s2">.</span><span class="s1">ensure_tensor</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">data</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">== </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s5"># A plain list of strings</span>
+                <span class="s5"># is treated as as many documents</span>
+                <span class="s1">data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, -</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">finalize_state</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f&quot;Cannot adapt layer '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s4">' after setting a static &quot;</span>
+                <span class="s4">&quot;vocabulary via `vocabulary` argument or &quot;</span>
+                <span class="s4">&quot;`set_vocabulary()` method.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">data </span><span class="s2">= </span><span class="s1">tf_utils</span><span class="s2">.</span><span class="s1">ensure_tensor</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">data</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">== </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s1">data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s6">0</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">data</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">== </span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s5"># Expand dims on axis 0 for tf-idf. A 1-d tensor</span>
+            <span class="s5"># is a single document.</span>
+            <span class="s1">data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s6">0</span><span class="s2">)</span>
+
+        <span class="s1">tokens</span><span class="s2">, </span><span class="s1">counts </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_tokens</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span>
+            <span class="s1">tokens</span><span class="s2">, </span><span class="s1">counts </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s5"># Dedupe each row of our dataset.</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">):</span>
+                <span class="s1">deduped_doc_data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">map_fn</span><span class="s2">(</span><span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">unique</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">data</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">deduped_doc_data </span><span class="s2">= [</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">unique</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)[</span><span class="s6">0</span><span class="s2">] </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">data</span><span class="s2">]</span>
+                <span class="s1">deduped_doc_data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">(</span><span class="s1">deduped_doc_data</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s6">0</span><span class="s2">)</span>
+            <span class="s5"># Flatten and count tokens.</span>
+            <span class="s1">tokens</span><span class="s2">, </span><span class="s1">counts </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_tokens</span><span class="s2">(</span><span class="s1">deduped_doc_data</span><span class="s2">)</span>
+
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">token_document_counts</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span>
+                <span class="s1">tokens</span><span class="s2">, </span><span class="s1">counts </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">token_document_counts</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">):</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">num_documents</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span><span class="s1">data</span><span class="s2">.</span><span class="s1">nrows</span><span class="s2">())</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">num_documents</span><span class="s2">.</span><span class="s1">assign_add</span><span class="s2">(</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">out_type</span><span class="s2">=</span><span class="s4">&quot;int64&quot;</span><span class="s2">)[</span><span class="s6">0</span><span class="s2">]</span>
+                <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">finalize_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary </span><span class="s0">or </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">size</span><span class="s2">(), </span><span class="s6">0</span><span class="s2">):</span>
+            <span class="s5"># Finalize idf_weights to a const for call even if we don't need to</span>
+            <span class="s5"># compute a new vocabulary.</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">value</span><span class="s2">()</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_record_vocabulary_size</span><span class="s2">()</span>
+            <span class="s0">return</span>
+
+        <span class="s5"># Remove special tokens from our counts.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">remove</span><span class="s2">(</span>
+                <span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">([</span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token</span><span class="s2">], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span><span class="s2">)</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">remove</span><span class="s2">(</span>
+                <span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">([</span><span class="s1">self</span><span class="s2">.</span><span class="s1">oov_token</span><span class="s2">], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span><span class="s2">)</span>
+            <span class="s2">)</span>
+
+        <span class="s1">tokens</span><span class="s2">, </span><span class="s1">counts </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">export</span><span class="s2">()</span>
+        <span class="s5"># To keep vocabs deterministic, we sort our tokens by count and break</span>
+        <span class="s5"># ties by sorting the tokens themselves. Tensorflow has no ops for</span>
+        <span class="s5"># sorting strings, so we need to use numpy for the sort.</span>
+        <span class="s1">sorted_indices </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">lexsort</span><span class="s2">((</span><span class="s1">tokens</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">(), </span><span class="s1">counts</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">()))[::-</span><span class="s6">1</span><span class="s2">]</span>
+        <span class="s1">token_start </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">()</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens</span><span class="s2">:</span>
+            <span class="s1">max_learned_tokens </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s2">- </span><span class="s1">token_start</span>
+            <span class="s1">sorted_indices </span><span class="s2">= </span><span class="s1">sorted_indices</span><span class="s2">[:</span><span class="s1">max_learned_tokens</span><span class="s2">]</span>
+        <span class="s1">tokens </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">gather</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">, </span><span class="s1">sorted_indices</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_table_from_tokens</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s1">token_document_counts </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">token_document_counts</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+            <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_inverse_document_frequency</span><span class="s2">(</span>
+                <span class="s1">token_document_counts</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_documents</span>
+            <span class="s2">)</span>
+            <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">())</span>
+            <span class="s5"># Pad the front of idf_weights with the average idf weight for OOV</span>
+            <span class="s5"># tokens.  We cannot compute the real idf weight of OOV in a single</span>
+            <span class="s5"># pass.</span>
+            <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">pad</span><span class="s2">(</span>
+                <span class="s1">idf_weights</span><span class="s2">,</span>
+                <span class="s2">[[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">(), </span><span class="s6">0</span><span class="s2">]],</span>
+                <span class="s1">constant_values</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reduce_mean</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">),</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s5"># Pad the back of idf_weights with zeros.</span>
+                <span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">pad</span><span class="s2">(</span>
+                    <span class="s1">idf_weights</span><span class="s2">,</span>
+                    <span class="s2">[[</span><span class="s6">0</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens </span><span class="s2">- </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">size</span><span class="s2">(</span><span class="s1">idf_weights</span><span class="s2">)]],</span>
+                    <span class="s1">constant_values</span><span class="s2">=</span><span class="s6">0</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Variable</span><span class="s2">(</span>
+                <span class="s1">idf_weights</span><span class="s2">,</span>
+                <span class="s1">dtype</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">(),</span>
+                <span class="s1">trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">value</span><span class="s2">()</span>
+
+        <span class="s5"># We call this here to save memory, now that we've built our vocabulary,</span>
+        <span class="s5"># we don't want to keep every token we've seen in separate lookup</span>
+        <span class="s5"># tables.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">reset_state</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_record_vocabulary_size</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">remove</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">token_counts</span><span class="s2">.</span><span class="s1">export</span><span class="s2">()[</span><span class="s6">0</span><span class="s2">])</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">token_document_counts</span><span class="s2">.</span><span class="s1">remove</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">token_document_counts</span><span class="s2">.</span><span class="s1">export</span><span class="s2">()[</span><span class="s6">0</span><span class="s2">]</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">num_documents</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s6">0</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf_backend</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_ensure_known_vocab_size</span><span class="s2">()</span>
+
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf_utils</span><span class="s2">.</span><span class="s1">ensure_tensor</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span><span class="s2">)</span>
+        <span class="s1">original_shape </span><span class="s2">= </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span>
+        <span class="s5"># Some ops will not handle scalar input, so uprank to rank 1.</span>
+        <span class="s0">if </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">== </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_expand_dims</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, -</span><span class="s6">1</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">SparseTensor</span><span class="s2">):</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">SparseTensor</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">.</span><span class="s1">indices</span><span class="s2">,</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_dense</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">values</span><span class="s2">),</span>
+                <span class="s1">inputs</span><span class="s2">.</span><span class="s1">dense_shape</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">):</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">ragged</span><span class="s2">.</span><span class="s1">map_flat_values</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_dense</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_dense</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s5"># If we received a scalar input, downrank back to a scalar.</span>
+            <span class="s0">if </span><span class="s1">original_shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">== </span><span class="s6">0</span><span class="s2">:</span>
+                <span class="s1">lookups </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">lookups</span><span class="s2">, -</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">lookups</span>
+
+        <span class="s1">depth </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">max_tokens</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens</span>
+            <span class="s0">else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size</span>
+        <span class="s2">)</span>
+        <span class="s1">idf_weights </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot; </span><span class="s0">else None</span>
+        <span class="s2">)</span>
+        <span class="s1">output </span><span class="s2">= </span><span class="s1">numerical_utils</span><span class="s2">.</span><span class="s1">encode_categorical_inputs</span><span class="s2">(</span>
+            <span class="s1">lookups</span><span class="s2">,</span>
+            <span class="s1">output_mode</span><span class="s2">=(</span>
+                <span class="s4">&quot;count&quot; </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot; </span><span class="s0">else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span>
+            <span class="s2">),</span>
+            <span class="s1">depth</span><span class="s2">=</span><span class="s1">depth</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span><span class="s2">,</span>
+            <span class="s1">sparse</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">,</span>
+            <span class="s1">backend_module</span><span class="s2">=</span><span class="s1">tf_backend</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">idf_weights </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;When `output_mode` is `'tf_idf'`, `idf_weights` must be &quot;</span>
+                    <span class="s4">&quot;provided.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">output </span><span class="s2">= </span><span class="s1">tf_backend</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">.</span><span class="s1">multiply</span><span class="s2">(</span>
+                <span class="s1">tf_backend</span><span class="s2">.</span><span class="s1">core</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">output</span><span class="s2">, </span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">), </span><span class="s1">idf_weights</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">output</span>
+
+    <span class="s0">def </span><span class="s1">_lookup_dense</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Lookup table values for a dense Tensor, handling masking and OOV.&quot;&quot;&quot;</span>
+        <span class="s5"># When executing eagerly and tracing keras.Input objects,</span>
+        <span class="s5"># do not call lookup.</span>
+        <span class="s5"># This is critical for restoring SavedModel, which will first trace</span>
+        <span class="s5"># layer.call and then attempt to restore the table. We need the table to</span>
+        <span class="s5"># be uninitialized for the restore to work, but calling the table</span>
+        <span class="s5"># uninitialized would error.</span>
+        <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">executing_eagerly</span><span class="s2">() </span><span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_keras_tensor</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">):</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">zeros_like</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">lookup_table</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">mask_locations </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_mask_key</span><span class="s2">)</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">mask_locations</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_mask_value</span><span class="s2">, </span><span class="s1">lookups</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">lookups</span>
+
+        <span class="s1">lookup_checks </span><span class="s2">= []</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices </span><span class="s2">== </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s5"># If we have zero oov indices, we need to check for oov inputs.</span>
+            <span class="s1">oov_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">lookups</span><span class="s2">, -</span><span class="s6">1</span><span class="s2">))</span>
+            <span class="s1">oov_inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">gather_nd</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">oov_indices</span><span class="s2">)</span>
+            <span class="s1">msg </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span>
+                <span class="s4">&quot;When `num_oov_indices=0` all inputs should be in vocabulary, &quot;</span>
+                <span class="s4">&quot;found OOV values {}, consider setting `num_oov_indices=1`.&quot;</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s1">oov_inputs</span><span class="s2">,),</span>
+            <span class="s2">)</span>
+            <span class="s1">assertion </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Assert</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">size</span><span class="s2">(</span><span class="s1">oov_indices</span><span class="s2">), </span><span class="s6">0</span><span class="s2">), [</span><span class="s1">msg</span><span class="s2">])</span>
+            <span class="s1">lookup_checks</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">assertion</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices </span><span class="s2">&gt; </span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s5"># If we have multiple oov indices, we need a further hashing step.</span>
+            <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">as_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span><span class="s2">).</span><span class="s1">is_integer</span><span class="s2">:</span>
+                <span class="s1">oov_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">math</span><span class="s2">.</span><span class="s1">floormod</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">oov_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">to_hash_bucket_fast</span><span class="s2">(</span>
+                    <span class="s1">inputs</span><span class="s2">, </span><span class="s1">num_buckets</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices</span>
+                <span class="s2">)</span>
+            <span class="s1">oov_indices </span><span class="s2">= </span><span class="s1">oov_indices </span><span class="s2">+ </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_oov_start_index</span><span class="s2">()</span>
+            <span class="s1">oov_locations </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">equal</span><span class="s2">(</span><span class="s1">lookups</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value</span><span class="s2">)</span>
+            <span class="s1">lookups </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">where</span><span class="s2">(</span><span class="s1">oov_locations</span><span class="s2">, </span><span class="s1">oov_indices</span><span class="s2">, </span><span class="s1">lookups</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">control_dependencies</span><span class="s2">(</span><span class="s1">lookup_checks</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">identity</span><span class="s2">(</span><span class="s1">lookups</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">save_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s1">store</span><span class="s2">[</span><span class="s4">&quot;idf_weights&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">load_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">store</span><span class="s2">[</span><span class="s4">&quot;idf_weights&quot;</span><span class="s2">])</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights_const </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">idf_weights</span><span class="s2">.</span><span class="s1">value</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">save_assets</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">dir_path</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_vocabulary </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s5"># Vocab saved in config.</span>
+            <span class="s5"># TODO: consider unifying both paths.</span>
+            <span class="s0">return</span>
+        <span class="s1">vocabulary </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">get_vocabulary</span><span class="s2">(</span><span class="s1">include_special_tokens</span><span class="s2">=</span><span class="s0">True</span><span class="s2">)</span>
+        <span class="s1">vocabulary_filepath </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">dir_path</span><span class="s2">, </span><span class="s4">&quot;vocabulary.txt&quot;</span><span class="s2">)</span>
+        <span class="s0">with </span><span class="s1">open</span><span class="s2">(</span><span class="s1">vocabulary_filepath</span><span class="s2">, </span><span class="s4">&quot;w&quot;</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+            <span class="s1">f</span><span class="s2">.</span><span class="s1">write</span><span class="s2">(</span><span class="s4">&quot;</span><span class="s0">\n</span><span class="s4">&quot;</span><span class="s2">.</span><span class="s1">join</span><span class="s2">([</span><span class="s1">str</span><span class="s2">(</span><span class="s1">w</span><span class="s2">) </span><span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">vocabulary</span><span class="s2">]))</span>
+
+    <span class="s0">def </span><span class="s1">load_assets</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">dir_path</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_vocabulary </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s5"># Vocab saved in config.</span>
+            <span class="s5"># TODO: consider unifying both paths.</span>
+            <span class="s0">return</span>
+        <span class="s1">vocabulary_filepath </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">dir_path</span><span class="s2">, </span><span class="s4">&quot;vocabulary.txt&quot;</span><span class="s2">)</span>
+        <span class="s5"># TODO: fix bug with include_special_tokens and set reload from file.</span>
+        <span class="s0">with </span><span class="s1">open</span><span class="s2">(</span><span class="s1">vocabulary_filepath</span><span class="s2">, </span><span class="s4">&quot;r&quot;</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+            <span class="s1">lines </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">read</span><span class="s2">().</span><span class="s1">split</span><span class="s2">(</span><span class="s4">&quot;</span><span class="s0">\n</span><span class="s4">&quot;</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">as_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_dtype</span><span class="s2">) == </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">string</span><span class="s2">:</span>
+                <span class="s1">values </span><span class="s2">= [</span><span class="s1">str</span><span class="s2">(</span><span class="s1">line</span><span class="s2">) </span><span class="s0">for </span><span class="s1">line </span><span class="s0">in </span><span class="s1">lines</span><span class="s2">]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">values </span><span class="s2">= [</span><span class="s1">int</span><span class="s2">(</span><span class="s1">line</span><span class="s2">) </span><span class="s0">for </span><span class="s1">line </span><span class="s0">in </span><span class="s1">lines</span><span class="s2">]</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;tf_idf&quot;</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">set_vocabulary</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">idf_weights</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">set_vocabulary</span><span class="s2">(</span><span class="s1">values</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_uninitialized_lookup_table</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">with </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">init_scope</span><span class="s2">():</span>
+            <span class="s1">initializer </span><span class="s2">= </span><span class="s1">get_null_initializer</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span>
+            <span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">StaticHashTable</span><span class="s2">(</span><span class="s1">initializer</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_lookup_table_from_tokens</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">tokens</span><span class="s2">):</span>
+        <span class="s0">with </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">init_scope</span><span class="s2">():</span>
+            <span class="s1">token_start </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">()</span>
+            <span class="s1">token_end </span><span class="s2">= </span><span class="s1">token_start </span><span class="s2">+ </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">size</span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">)</span>
+            <span class="s1">indices_dtype </span><span class="s2">= (</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert </span><span class="s0">else </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span>
+            <span class="s2">)</span>
+            <span class="s1">indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">range</span><span class="s2">(</span><span class="s1">token_start</span><span class="s2">, </span><span class="s1">token_end</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">indices_dtype</span><span class="s2">)</span>
+            <span class="s1">keys</span><span class="s2">, </span><span class="s1">values </span><span class="s2">= (</span>
+                <span class="s2">(</span><span class="s1">indices</span><span class="s2">, </span><span class="s1">tokens</span><span class="s2">) </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert </span><span class="s0">else </span><span class="s2">(</span><span class="s1">tokens</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">)</span>
+            <span class="s2">)</span>
+            <span class="s1">initializer </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">KeyValueTensorInitializer</span><span class="s2">(</span>
+                <span class="s1">keys</span><span class="s2">, </span><span class="s1">values</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span>
+            <span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">StaticHashTable</span><span class="s2">(</span><span class="s1">initializer</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_lookup_table_from_file</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">filename</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">invert</span><span class="s2">:</span>
+            <span class="s1">key_index </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">TextFileIndex</span><span class="s2">.</span><span class="s1">LINE_NUMBER</span>
+            <span class="s1">value_index </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">TextFileIndex</span><span class="s2">.</span><span class="s1">WHOLE_LINE</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">key_index </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">TextFileIndex</span><span class="s2">.</span><span class="s1">WHOLE_LINE</span>
+            <span class="s1">value_index </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">TextFileIndex</span><span class="s2">.</span><span class="s1">LINE_NUMBER</span>
+        <span class="s0">with </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">init_scope</span><span class="s2">():</span>
+            <span class="s1">initializer </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">TextFileInitializer</span><span class="s2">(</span>
+                <span class="s1">filename</span><span class="s2">=</span><span class="s1">filename</span><span class="s2">,</span>
+                <span class="s1">key_dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span><span class="s2">,</span>
+                <span class="s1">key_index</span><span class="s2">=</span><span class="s1">key_index</span><span class="s2">,</span>
+                <span class="s1">value_dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span><span class="s2">,</span>
+                <span class="s1">value_index</span><span class="s2">=</span><span class="s1">value_index</span><span class="s2">,</span>
+                <span class="s1">value_index_offset</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_token_start_index</span><span class="s2">(),</span>
+            <span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">StaticHashTable</span><span class="s2">(</span><span class="s1">initializer</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_default_value</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_convert_to_ndarray</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">x</span><span class="s2">) </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)) </span><span class="s0">else </span><span class="s1">x</span>
+
+    <span class="s0">def </span><span class="s1">_expand_dims</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">SparseTensor</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_oov_start_index</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">(</span>
+            <span class="s6">1</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">mask_token </span><span class="s0">is not None and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot;</span>
+            <span class="s0">else </span><span class="s6">0</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_token_start_index</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_oov_start_index</span><span class="s2">() + </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_oov_indices</span>
+
+    <span class="s0">def </span><span class="s1">_ensure_known_vocab_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot; </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError</span><span class="s2">(</span>
+                <span class="s4">f&quot;When using `output_mode=</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s4">` &quot;</span>
+                <span class="s4">&quot;and `pad_to_max_tokens=False`, &quot;</span>
+                <span class="s4">&quot;you must set the layer's vocabulary before calling it. Either &quot;</span>
+                <span class="s4">&quot;pass a `vocabulary` argument to the layer, or call `adapt` &quot;</span>
+                <span class="s4">&quot;with some sample data.&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_ensure_vocab_size_unchanged</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">== </span><span class="s4">&quot;int&quot; </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">pad_to_max_tokens</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s0">with </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">init_scope</span><span class="s2">():</span>
+            <span class="s1">new_vocab_size </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_size</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size </span><span class="s0">is not None</span>
+            <span class="s0">and </span><span class="s1">new_vocab_size </span><span class="s2">!= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">RuntimeError</span><span class="s2">(</span>
+                <span class="s4">f&quot;When using `output_mode=</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s4">` &quot;</span>
+                <span class="s4">&quot;and `pad_to_max_tokens=False`, &quot;</span>
+                <span class="s4">&quot;the vocabulary size cannot be changed after the layer is &quot;</span>
+                <span class="s4">f&quot;called. Old vocab size is </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_frozen_vocab_size</span><span class="s0">}</span><span class="s4">, &quot;</span>
+                <span class="s4">f&quot;new vocab size is </span><span class="s0">{</span><span class="s1">new_vocab_size</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_find_repeated_tokens</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">vocabulary</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Return all repeated tokens in a vocabulary.&quot;&quot;&quot;</span>
+        <span class="s1">vocabulary_set </span><span class="s2">= </span><span class="s1">set</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">vocabulary_set</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s2">[</span>
+                <span class="s1">item</span>
+                <span class="s0">for </span><span class="s1">item</span><span class="s2">, </span><span class="s1">count </span><span class="s0">in </span><span class="s1">collections</span><span class="s2">.</span><span class="s1">Counter</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">).</span><span class="s1">items</span><span class="s2">()</span>
+                <span class="s0">if </span><span class="s1">count </span><span class="s2">&gt; </span><span class="s6">1</span>
+            <span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">[]</span>
+
+    <span class="s0">def </span><span class="s1">_num_tokens</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Count the number of tokens in a ragged, sparse or dense tensor.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">SparseTensor</span><span class="s2">):</span>
+            <span class="s1">flat_values </span><span class="s2">= </span><span class="s1">data</span><span class="s2">.</span><span class="s1">values</span>
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">):</span>
+            <span class="s1">flat_values </span><span class="s2">= </span><span class="s1">data</span><span class="s2">.</span><span class="s1">flat_values</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">flat_values </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, [-</span><span class="s6">1</span><span class="s2">])</span>
+        <span class="s1">tokens</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">counts </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">unique_with_counts</span><span class="s2">(</span><span class="s1">flat_values</span><span class="s2">, </span><span class="s1">out_idx</span><span class="s2">=</span><span class="s4">&quot;int64&quot;</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">tokens</span><span class="s2">, </span><span class="s1">counts</span>
+
+    <span class="s0">def </span><span class="s1">_inverse_document_frequency</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">token_document_counts</span><span class="s2">, </span><span class="s1">num_documents</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Computes the inverse-document-frequency (IDF) component of &quot;tf_idf&quot;. 
+        Args: 
+            token_document_counts: An array of the # of documents each token 
+                appears in. 
+            num_documents: An int representing the total number of documents 
+ 
+        Returns: 
+            An array of &quot;inverse document frequency&quot; weights. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">math</span><span class="s2">.</span><span class="s1">log</span><span class="s2">(</span><span class="s6">1 </span><span class="s2">+ </span><span class="s1">num_documents </span><span class="s2">/ (</span><span class="s6">1 </span><span class="s2">+ </span><span class="s1">token_document_counts</span><span class="s2">))</span>
+
+    <span class="s5"># Override points for IntegerLookup and StringLookup.</span>
+    <span class="s0">def </span><span class="s1">_tensor_vocab_to_numpy</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">vocabulary</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;Converts a tensor vocabulary to a numpy vocabulary.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">vocabulary</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">()</span>
+
+
+<span class="s0">def </span><span class="s1">get_null_initializer</span><span class="s2">(</span><span class="s1">key_dtype</span><span class="s2">, </span><span class="s1">value_dtype</span><span class="s2">):</span>
+    <span class="s0">class </span><span class="s1">NullInitializer</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">lookup</span><span class="s2">.</span><span class="s1">KeyValueTensorInitializer</span><span class="s2">):</span>
+        <span class="s3">&quot;&quot;&quot;A placeholder initializer for restoring from a SavedModel.&quot;&quot;&quot;</span>
+
+        <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">key_dtype</span><span class="s2">, </span><span class="s1">value_dtype</span><span class="s2">):</span>
+            <span class="s3">&quot;&quot;&quot;Construct a table initializer object. 
+ 
+            Args: 
+            key_dtype: Type of the table keys. 
+            value_dtype: Type of the table values. 
+            &quot;&quot;&quot;</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype </span><span class="s2">= </span><span class="s1">key_dtype</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype </span><span class="s2">= </span><span class="s1">value_dtype</span>
+
+        <span class="s2">@</span><span class="s1">property</span>
+        <span class="s0">def </span><span class="s1">key_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+            <span class="s3">&quot;&quot;&quot;The expected table key dtype.&quot;&quot;&quot;</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_key_dtype</span>
+
+        <span class="s2">@</span><span class="s1">property</span>
+        <span class="s0">def </span><span class="s1">value_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+            <span class="s3">&quot;&quot;&quot;The expected table value dtype.&quot;&quot;&quot;</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_value_dtype</span>
+
+        <span class="s0">def </span><span class="s1">initialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">table</span><span class="s2">):</span>
+            <span class="s3">&quot;&quot;&quot;Returns the table initialization op.&quot;&quot;&quot;</span>
+            <span class="s0">pass</span>
+
+    <span class="s0">return </span><span class="s1">NullInitializer</span><span class="s2">(</span><span class="s1">key_dtype</span><span class="s2">, </span><span class="s1">value_dtype</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">listify_tensors</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Convert any tensors or numpy arrays to lists for config serialization.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">x</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">()</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">x</span><span class="s2">.</span><span class="s1">tolist</span><span class="s2">()</span>
+    <span class="s0">return </span><span class="s1">x</span>
+</pre>
+</body>
+</html>

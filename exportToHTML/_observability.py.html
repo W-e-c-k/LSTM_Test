@@ -1,0 +1,323 @@
+<html>
+<head>
+<title>_observability.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #a5c261;}
+.s6 { color: #5f826b; font-style: italic;}
+.s7 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_observability.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2023 The gRPC authors.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">annotations</span>
+
+<span class="s2">import </span><span class="s1">abc</span>
+<span class="s2">import </span><span class="s1">contextlib</span>
+<span class="s2">import </span><span class="s1">logging</span>
+<span class="s2">import </span><span class="s1">threading</span>
+<span class="s2">from </span><span class="s1">typing </span><span class="s2">import </span><span class="s1">Any</span><span class="s3">, </span><span class="s1">Generator</span><span class="s3">, </span><span class="s1">Generic</span><span class="s3">, </span><span class="s1">List</span><span class="s3">, </span><span class="s1">Optional</span><span class="s3">, </span><span class="s1">TypeVar</span>
+
+<span class="s2">from </span><span class="s1">grpc</span><span class="s3">.</span><span class="s1">_cython </span><span class="s2">import </span><span class="s1">cygrpc </span><span class="s2">as </span><span class="s1">_cygrpc</span>
+<span class="s2">from </span><span class="s1">grpc</span><span class="s3">.</span><span class="s1">_typing </span><span class="s2">import </span><span class="s1">ChannelArgumentType</span>
+
+<span class="s1">_LOGGER </span><span class="s3">= </span><span class="s1">logging</span><span class="s3">.</span><span class="s1">getLogger</span><span class="s3">(</span><span class="s1">__name__</span><span class="s3">)</span>
+
+<span class="s1">_channel </span><span class="s3">= </span><span class="s1">Any  </span><span class="s0"># _channel.py imports this module.</span>
+<span class="s1">ClientCallTracerCapsule </span><span class="s3">= </span><span class="s1">TypeVar</span><span class="s3">(</span><span class="s4">&quot;ClientCallTracerCapsule&quot;</span><span class="s3">)</span>
+<span class="s1">ServerCallTracerFactoryCapsule </span><span class="s3">= </span><span class="s1">TypeVar</span><span class="s3">(</span><span class="s4">&quot;ServerCallTracerFactoryCapsule&quot;</span><span class="s3">)</span>
+
+<span class="s1">_plugin_lock</span><span class="s3">: </span><span class="s1">threading</span><span class="s3">.</span><span class="s1">RLock </span><span class="s3">= </span><span class="s1">threading</span><span class="s3">.</span><span class="s1">RLock</span><span class="s3">()</span>
+<span class="s1">_OBSERVABILITY_PLUGIN</span><span class="s3">: </span><span class="s1">Optional</span><span class="s3">[</span><span class="s4">&quot;ObservabilityPlugin&quot;</span><span class="s3">] = </span><span class="s2">None</span>
+<span class="s1">_SERVICES_TO_EXCLUDE</span><span class="s3">: </span><span class="s1">List</span><span class="s3">[</span><span class="s1">bytes</span><span class="s3">] = [</span>
+    <span class="s5">b&quot;google.monitoring.v3.MetricService&quot;</span><span class="s3">,</span>
+    <span class="s5">b&quot;google.devtools.cloudtrace.v2.TraceService&quot;</span><span class="s3">,</span>
+<span class="s3">]</span>
+
+
+<span class="s2">class </span><span class="s1">ServerCallTracerFactory</span><span class="s3">:</span>
+    <span class="s6">&quot;&quot;&quot;An encapsulation of a ServerCallTracerFactory. 
+ 
+    Instances of this class can be passed to a Channel as values for the 
+    grpc.experimental.server_call_tracer_factory option 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">address</span><span class="s3">):</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_address </span><span class="s3">= </span><span class="s1">address</span>
+
+    <span class="s2">def </span><span class="s1">__int__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_address</span>
+
+
+<span class="s2">class </span><span class="s1">ObservabilityPlugin</span><span class="s3">(</span>
+    <span class="s1">Generic</span><span class="s3">[</span><span class="s1">ClientCallTracerCapsule</span><span class="s3">, </span><span class="s1">ServerCallTracerFactoryCapsule</span><span class="s3">],</span>
+    <span class="s1">metaclass</span><span class="s3">=</span><span class="s1">abc</span><span class="s3">.</span><span class="s1">ABCMeta</span><span class="s3">,</span>
+<span class="s3">):</span>
+    <span class="s6">&quot;&quot;&quot;Abstract base class for observability plugin. 
+ 
+    *This is a semi-private class that was intended for the exclusive use of 
+     the gRPC team.* 
+ 
+    The ClientCallTracerCapsule and ClientCallTracerCapsule created by this 
+    plugin should be inject to gRPC core using observability_init at the 
+    start of a program, before any channels/servers are built. 
+ 
+    Any future methods added to this interface cannot have the 
+    @abc.abstractmethod annotation. 
+ 
+    Attributes: 
+      _stats_enabled: A bool indicates whether tracing is enabled. 
+      _tracing_enabled: A bool indicates whether stats(metrics) is enabled. 
+      _registered_methods: A set which stores the registered method names in 
+        bytes. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">_tracing_enabled</span><span class="s3">: </span><span class="s1">bool </span><span class="s3">= </span><span class="s2">False</span>
+    <span class="s1">_stats_enabled</span><span class="s3">: </span><span class="s1">bool </span><span class="s3">= </span><span class="s2">False</span>
+
+    <span class="s3">@</span><span class="s1">abc</span><span class="s3">.</span><span class="s1">abstractmethod</span>
+    <span class="s2">def </span><span class="s1">create_client_call_tracer</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">, </span><span class="s1">method_name</span><span class="s3">: </span><span class="s1">bytes</span><span class="s3">, </span><span class="s1">target</span><span class="s3">: </span><span class="s1">bytes</span>
+    <span class="s3">) </span><span class="s1">-&gt; ClientCallTracerCapsule</span><span class="s3">:</span>
+        <span class="s6">&quot;&quot;&quot;Creates a ClientCallTracerCapsule. 
+ 
+        After register the plugin, if tracing or stats is enabled, this method 
+        will be called after a call was created, the ClientCallTracer created 
+        by this method will be saved to call context. 
+ 
+        The ClientCallTracer is an object which implements `grpc_core::ClientCallTracer` 
+        interface and wrapped in a PyCapsule using `client_call_tracer` as name. 
+ 
+        Args: 
+          method_name: The method name of the call in byte format. 
+          target: The channel target of the call in byte format. 
+          registered_method: Wether this method is pre-registered. 
+ 
+        Returns: 
+          A PyCapsule which stores a ClientCallTracer object. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">abc</span><span class="s3">.</span><span class="s1">abstractmethod</span>
+    <span class="s2">def </span><span class="s1">save_trace_context</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">, </span><span class="s1">trace_id</span><span class="s3">: </span><span class="s1">str</span><span class="s3">, </span><span class="s1">span_id</span><span class="s3">: </span><span class="s1">str</span><span class="s3">, </span><span class="s1">is_sampled</span><span class="s3">: </span><span class="s1">bool</span>
+    <span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s6">&quot;&quot;&quot;Saves the trace_id and span_id related to the current span. 
+ 
+        After register the plugin, if tracing is enabled, this method will be 
+        called after the server finished sending response. 
+ 
+        This method can be used to propagate census context. 
+ 
+        Args: 
+          trace_id: The identifier for the trace associated with the span as a 
+            32-character hexadecimal encoded string, 
+            e.g. 26ed0036f2eff2b7317bccce3e28d01f 
+          span_id: The identifier for the span as a 16-character hexadecimal encoded 
+            string. e.g. 113ec879e62583bc 
+          is_sampled: A bool indicates whether the span is sampled. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">abc</span><span class="s3">.</span><span class="s1">abstractmethod</span>
+    <span class="s2">def </span><span class="s1">create_server_call_tracer_factory</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s3">*,</span>
+        <span class="s1">xds</span><span class="s3">: </span><span class="s1">bool </span><span class="s3">= </span><span class="s2">False</span><span class="s3">,</span>
+    <span class="s3">) </span><span class="s1">-&gt; Optional</span><span class="s3">[</span><span class="s1">ServerCallTracerFactoryCapsule</span><span class="s3">]:</span>
+        <span class="s6">&quot;&quot;&quot;Creates a ServerCallTracerFactoryCapsule. 
+ 
+        This method will be called at server initialization time to create a 
+        ServerCallTracerFactory, which will be registered to gRPC core. 
+ 
+        The ServerCallTracerFactory is an object which implements 
+        `grpc_core::ServerCallTracerFactory` interface and wrapped in a PyCapsule 
+        using `server_call_tracer_factory` as name. 
+ 
+        Args: 
+          xds: Whether the server is xds server. 
+        Returns: 
+          A PyCapsule which stores a ServerCallTracerFactory object. Or None if 
+        plugin decides not to create ServerCallTracerFactory. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">abc</span><span class="s3">.</span><span class="s1">abstractmethod</span>
+    <span class="s2">def </span><span class="s1">record_rpc_latency</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">, </span><span class="s1">method</span><span class="s3">: </span><span class="s1">str</span><span class="s3">, </span><span class="s1">target</span><span class="s3">: </span><span class="s1">str</span><span class="s3">, </span><span class="s1">rpc_latency</span><span class="s3">: </span><span class="s1">float</span><span class="s3">, </span><span class="s1">status_code</span><span class="s3">: </span><span class="s1">Any</span>
+    <span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s6">&quot;&quot;&quot;Record the latency of the RPC. 
+ 
+        After register the plugin, if stats is enabled, this method will be 
+        called at the end of each RPC. 
+ 
+        Args: 
+          method: The fully-qualified name of the RPC method being invoked. 
+          target: The target name of the RPC method being invoked. 
+          rpc_latency: The latency for the RPC in seconds, equals to the time between 
+            when the client invokes the RPC and when the client receives the status. 
+          status_code: An element of grpc.StatusCode in string format representing the 
+            final status for the RPC. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">()</span>
+
+    <span class="s2">def </span><span class="s1">set_tracing</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">enable</span><span class="s3">: </span><span class="s1">bool</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s6">&quot;&quot;&quot;Enable or disable tracing. 
+ 
+        Args: 
+          enable: A bool indicates whether tracing should be enabled. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tracing_enabled </span><span class="s3">= </span><span class="s1">enable</span>
+
+    <span class="s2">def </span><span class="s1">set_stats</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">enable</span><span class="s3">: </span><span class="s1">bool</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s6">&quot;&quot;&quot;Enable or disable stats(metrics). 
+ 
+        Args: 
+          enable: A bool indicates whether stats should be enabled. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_stats_enabled </span><span class="s3">= </span><span class="s1">enable</span>
+
+    <span class="s2">def </span><span class="s1">save_registered_method</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">method_name</span><span class="s3">: </span><span class="s1">bytes</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s6">&quot;&quot;&quot;Saves the method name to registered_method list. 
+ 
+        When exporting metrics, method name for unregistered methods will be replaced 
+        with 'other' by default. 
+ 
+        Args: 
+          method_name: The method name in bytes. 
+        &quot;&quot;&quot;</span>
+        <span class="s2">raise </span><span class="s1">NotImplementedError</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">tracing_enabled</span><span class="s3">(</span><span class="s1">self</span><span class="s3">) </span><span class="s1">-&gt; bool</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_tracing_enabled</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">stats_enabled</span><span class="s3">(</span><span class="s1">self</span><span class="s3">) </span><span class="s1">-&gt; bool</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_stats_enabled</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">observability_enabled</span><span class="s3">(</span><span class="s1">self</span><span class="s3">) </span><span class="s1">-&gt; bool</span><span class="s3">:</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">tracing_enabled </span><span class="s2">or </span><span class="s1">self</span><span class="s3">.</span><span class="s1">stats_enabled</span>
+
+
+<span class="s3">@</span><span class="s1">contextlib</span><span class="s3">.</span><span class="s1">contextmanager</span>
+<span class="s2">def </span><span class="s1">get_plugin</span><span class="s3">() </span><span class="s1">-&gt; Generator</span><span class="s3">[</span><span class="s1">Optional</span><span class="s3">[</span><span class="s1">ObservabilityPlugin</span><span class="s3">], </span><span class="s2">None</span><span class="s3">, </span><span class="s2">None</span><span class="s3">]:</span>
+    <span class="s6">&quot;&quot;&quot;Get the ObservabilityPlugin in _observability module. 
+ 
+    Returns: 
+      The ObservabilityPlugin currently registered with the _observability 
+    module. Or None if no plugin exists at the time of calling this method. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">with </span><span class="s1">_plugin_lock</span><span class="s3">:</span>
+        <span class="s2">yield </span><span class="s1">_OBSERVABILITY_PLUGIN</span>
+
+
+<span class="s2">def </span><span class="s1">set_plugin</span><span class="s3">(</span><span class="s1">observability_plugin</span><span class="s3">: </span><span class="s1">Optional</span><span class="s3">[</span><span class="s1">ObservabilityPlugin</span><span class="s3">]) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+    <span class="s6">&quot;&quot;&quot;Save ObservabilityPlugin to _observability module. 
+ 
+    Args: 
+      observability_plugin: The ObservabilityPlugin to save. 
+ 
+    Raises: 
+      ValueError: If an ObservabilityPlugin was already registered at the 
+    time of calling this method. 
+    &quot;&quot;&quot;</span>
+    <span class="s2">global </span><span class="s1">_OBSERVABILITY_PLUGIN  </span><span class="s0"># pylint: disable=global-statement</span>
+    <span class="s2">with </span><span class="s1">_plugin_lock</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">observability_plugin </span><span class="s2">and </span><span class="s1">_OBSERVABILITY_PLUGIN</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span><span class="s4">&quot;observability_plugin was already set!&quot;</span><span class="s3">)</span>
+        <span class="s1">_OBSERVABILITY_PLUGIN </span><span class="s3">= </span><span class="s1">observability_plugin</span>
+
+
+<span class="s2">def </span><span class="s1">observability_init</span><span class="s3">(</span><span class="s1">observability_plugin</span><span class="s3">: </span><span class="s1">ObservabilityPlugin</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+    <span class="s6">&quot;&quot;&quot;Initialize observability with provided ObservabilityPlugin. 
+ 
+    This method have to be called at the start of a program, before any 
+    channels/servers are built. 
+ 
+    Args: 
+      observability_plugin: The ObservabilityPlugin to use. 
+ 
+    Raises: 
+      ValueError: If an ObservabilityPlugin was already registered at the 
+    time of calling this method. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">set_plugin</span><span class="s3">(</span><span class="s1">observability_plugin</span><span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">observability_deinit</span><span class="s3">() </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+    <span class="s6">&quot;&quot;&quot;Clear the observability context, including ObservabilityPlugin and 
+    ServerCallTracerFactory 
+ 
+    This method have to be called after exit observability context so that 
+    it's possible to re-initialize again. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">set_plugin</span><span class="s3">(</span><span class="s2">None</span><span class="s3">)</span>
+    <span class="s1">_cygrpc</span><span class="s3">.</span><span class="s1">clear_server_call_tracer_factory</span><span class="s3">()</span>
+
+
+<span class="s2">def </span><span class="s1">maybe_record_rpc_latency</span><span class="s3">(</span><span class="s1">state</span><span class="s3">: </span><span class="s4">&quot;_channel._RPCState&quot;</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+    <span class="s6">&quot;&quot;&quot;Record the latency of the RPC, if the plugin is registered and stats is enabled. 
+ 
+    This method will be called at the end of each RPC. 
+ 
+    Args: 
+      state: a grpc._channel._RPCState object which contains the stats related to the 
+    RPC. 
+    &quot;&quot;&quot;</span>
+    <span class="s0"># TODO(xuanwn): use channel args to exclude those metrics.</span>
+    <span class="s2">for </span><span class="s1">exclude_prefix </span><span class="s2">in </span><span class="s1">_SERVICES_TO_EXCLUDE</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">exclude_prefix </span><span class="s2">in </span><span class="s1">state</span><span class="s3">.</span><span class="s1">method</span><span class="s3">.</span><span class="s1">encode</span><span class="s3">(</span><span class="s4">&quot;utf8&quot;</span><span class="s3">):</span>
+            <span class="s2">return</span>
+    <span class="s2">with </span><span class="s1">get_plugin</span><span class="s3">() </span><span class="s2">as </span><span class="s1">plugin</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">plugin </span><span class="s2">and </span><span class="s1">plugin</span><span class="s3">.</span><span class="s1">stats_enabled</span><span class="s3">:</span>
+            <span class="s1">rpc_latency_s </span><span class="s3">= </span><span class="s1">state</span><span class="s3">.</span><span class="s1">rpc_end_time </span><span class="s3">- </span><span class="s1">state</span><span class="s3">.</span><span class="s1">rpc_start_time</span>
+            <span class="s1">rpc_latency_ms </span><span class="s3">= </span><span class="s1">rpc_latency_s </span><span class="s3">* </span><span class="s7">1000</span>
+            <span class="s1">plugin</span><span class="s3">.</span><span class="s1">record_rpc_latency</span><span class="s3">(</span>
+                <span class="s1">state</span><span class="s3">.</span><span class="s1">method</span><span class="s3">, </span><span class="s1">state</span><span class="s3">.</span><span class="s1">target</span><span class="s3">, </span><span class="s1">rpc_latency_ms</span><span class="s3">, </span><span class="s1">state</span><span class="s3">.</span><span class="s1">code</span>
+            <span class="s3">)</span>
+
+
+<span class="s2">def </span><span class="s1">create_server_call_tracer_factory_option</span><span class="s3">(</span><span class="s1">xds</span><span class="s3">: </span><span class="s1">bool</span><span class="s3">) </span><span class="s1">-&gt; ChannelArgumentType</span><span class="s3">:</span>
+    <span class="s2">with </span><span class="s1">get_plugin</span><span class="s3">() </span><span class="s2">as </span><span class="s1">plugin</span><span class="s3">:</span>
+        <span class="s2">if </span><span class="s1">plugin </span><span class="s2">and </span><span class="s1">plugin</span><span class="s3">.</span><span class="s1">stats_enabled</span><span class="s3">:</span>
+            <span class="s1">server_call_tracer_factory_address </span><span class="s3">= (</span>
+                <span class="s1">_cygrpc</span><span class="s3">.</span><span class="s1">get_server_call_tracer_factory_address</span><span class="s3">(</span><span class="s1">plugin</span><span class="s3">, </span><span class="s1">xds</span><span class="s3">)</span>
+            <span class="s3">)</span>
+            <span class="s2">if </span><span class="s1">server_call_tracer_factory_address</span><span class="s3">:</span>
+                <span class="s2">return </span><span class="s3">(</span>
+                    <span class="s3">(</span>
+                        <span class="s4">&quot;grpc.experimental.server_call_tracer_factory&quot;</span><span class="s3">,</span>
+                        <span class="s1">ServerCallTracerFactory</span><span class="s3">(</span>
+                            <span class="s1">server_call_tracer_factory_address</span>
+                        <span class="s3">),</span>
+                    <span class="s3">),</span>
+                <span class="s3">)</span>
+        <span class="s2">return </span><span class="s3">()</span>
+</pre>
+</body>
+</html>

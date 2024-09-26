@@ -1,0 +1,182 @@
+<html>
+<head>
+<title>relaxng.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+relaxng.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># support for RelaxNG validation</span>
+<span class="s0">from lxml.includes cimport relaxng</span>
+
+<span class="s0">cdef object _rnc2rng</span>
+<span class="s0">try:</span>
+    <span class="s0">import rnc2rng as _rnc2rng</span>
+<span class="s0">except ImportError:</span>
+    <span class="s0">_rnc2rng = None</span>
+
+
+<span class="s0">cdef int _require_rnc2rng() except -1:</span>
+    <span class="s0">if _rnc2rng is None:</span>
+        <span class="s0">raise RelaxNGParseError(</span>
+            <span class="s0">'compact syntax not supported (please install rnc2rng)')</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef class RelaxNGError(LxmlError):</span>
+    <span class="s0">&quot;&quot;&quot;Base class for RelaxNG errors.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class RelaxNGParseError(RelaxNGError):</span>
+    <span class="s0">&quot;&quot;&quot;Error while parsing an XML document as RelaxNG.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+<span class="s0">cdef class RelaxNGValidateError(RelaxNGError):</span>
+    <span class="s0">&quot;&quot;&quot;Error while validating an XML document with a RelaxNG schema.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># RelaxNG</span>
+
+<span class="s0">cdef class RelaxNG(_Validator):</span>
+    <span class="s0">&quot;&quot;&quot;RelaxNG(self, etree=None, file=None)</span>
+    <span class="s0">Turn a document into a Relax NG validator.</span>
+
+    <span class="s0">Either pass a schema as Element or ElementTree, or pass a file or</span>
+    <span class="s0">filename through the ``file`` keyword argument.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef relaxng.xmlRelaxNG* _c_schema</span>
+    <span class="s0">def __cinit__(self):</span>
+        <span class="s0">self._c_schema = NULL</span>
+
+    <span class="s0">def __init__(self, etree=None, *, file=None):</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef _Element root_node</span>
+        <span class="s0">cdef xmlDoc* fake_c_doc = NULL</span>
+        <span class="s0">cdef relaxng.xmlRelaxNGParserCtxt* parser_ctxt = NULL</span>
+        <span class="s0">_Validator.__init__(self)</span>
+        <span class="s0">if etree is not None:</span>
+            <span class="s0">doc = _documentOrRaise(etree)</span>
+            <span class="s0">root_node = _rootNodeOrRaise(etree)</span>
+            <span class="s0">fake_c_doc = _fakeRootDoc(doc._c_doc, root_node._c_node)</span>
+            <span class="s0">parser_ctxt = relaxng.xmlRelaxNGNewDocParserCtxt(fake_c_doc)</span>
+        <span class="s0">elif file is not None:</span>
+            <span class="s0">if _isString(file):</span>
+                <span class="s0">if file[-4:].lower() == '.rnc':</span>
+                    <span class="s0">_require_rnc2rng()</span>
+                    <span class="s0">rng_data_utf8 = _utf8(_rnc2rng.dumps(_rnc2rng.load(file)))</span>
+                    <span class="s0">doc = _parseMemoryDocument(rng_data_utf8, parser=None, url=file)</span>
+                    <span class="s0">parser_ctxt = relaxng.xmlRelaxNGNewDocParserCtxt(doc._c_doc)</span>
+                <span class="s0">else:</span>
+                    <span class="s0">doc = None</span>
+                    <span class="s0">filename = _encodeFilename(file)</span>
+                    <span class="s0">with self._error_log:</span>
+                        <span class="s0">orig_loader = _register_document_loader()</span>
+                        <span class="s0">parser_ctxt = relaxng.xmlRelaxNGNewParserCtxt(_cstr(filename))</span>
+                        <span class="s0">_reset_document_loader(orig_loader)</span>
+            <span class="s0">elif (_getFilenameForFile(file) or '')[-4:].lower() == '.rnc':</span>
+                <span class="s0">_require_rnc2rng()</span>
+                <span class="s0">rng_data_utf8 = _utf8(_rnc2rng.dumps(_rnc2rng.load(file)))</span>
+                <span class="s0">doc = _parseMemoryDocument(</span>
+                    <span class="s0">rng_data_utf8, parser=None, url=_getFilenameForFile(file))</span>
+                <span class="s0">parser_ctxt = relaxng.xmlRelaxNGNewDocParserCtxt(doc._c_doc)</span>
+            <span class="s0">else:</span>
+                <span class="s0">doc = _parseDocument(file, parser=None, base_url=None)</span>
+                <span class="s0">parser_ctxt = relaxng.xmlRelaxNGNewDocParserCtxt(doc._c_doc)</span>
+        <span class="s0">else:</span>
+            <span class="s0">raise RelaxNGParseError, &quot;No tree or file given&quot;</span>
+
+        <span class="s0">if parser_ctxt is NULL:</span>
+            <span class="s0">if fake_c_doc is not NULL:</span>
+                <span class="s0">_destroyFakeDoc(doc._c_doc, fake_c_doc)</span>
+            <span class="s0">raise RelaxNGParseError(</span>
+                <span class="s0">self._error_log._buildExceptionMessage(</span>
+                    <span class="s0">&quot;Document is not parsable as Relax NG&quot;),</span>
+                <span class="s0">self._error_log)</span>
+
+        <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+        <span class="s0">relaxng.xmlRelaxNGSetParserStructuredErrors(</span>
+            <span class="s0">parser_ctxt, &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveError, &lt;void*&gt;self._error_log)</span>
+        <span class="s0">_connectGenericErrorLog(self._error_log, xmlerror.XML_FROM_RELAXNGP)</span>
+        <span class="s0">self._c_schema = relaxng.xmlRelaxNGParse(parser_ctxt)</span>
+        <span class="s0">_connectGenericErrorLog(None)</span>
+
+        <span class="s0">relaxng.xmlRelaxNGFreeParserCtxt(parser_ctxt)</span>
+        <span class="s0">if self._c_schema is NULL:</span>
+            <span class="s0">if fake_c_doc is not NULL:</span>
+                <span class="s0">_destroyFakeDoc(doc._c_doc, fake_c_doc)</span>
+            <span class="s0">raise RelaxNGParseError(</span>
+                <span class="s0">self._error_log._buildExceptionMessage(</span>
+                    <span class="s0">&quot;Document is not valid Relax NG&quot;),</span>
+                <span class="s0">self._error_log)</span>
+        <span class="s0">if fake_c_doc is not NULL:</span>
+            <span class="s0">_destroyFakeDoc(doc._c_doc, fake_c_doc)</span>
+
+    <span class="s0">def __dealloc__(self):</span>
+        <span class="s0">relaxng.xmlRelaxNGFree(self._c_schema)</span>
+
+    <span class="s0">def __call__(self, etree):</span>
+        <span class="s0">&quot;&quot;&quot;__call__(self, etree)</span>
+
+        <span class="s0">Validate doc using Relax NG.</span>
+
+        <span class="s0">Returns true if document is valid, false if not.&quot;&quot;&quot;</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">cdef _Element root_node</span>
+        <span class="s0">cdef xmlDoc* c_doc</span>
+        <span class="s0">cdef relaxng.xmlRelaxNGValidCtxt* valid_ctxt</span>
+        <span class="s0">cdef int ret</span>
+
+        <span class="s0">assert self._c_schema is not NULL, &quot;RelaxNG instance not initialised&quot;</span>
+        <span class="s0">doc = _documentOrRaise(etree)</span>
+        <span class="s0">root_node = _rootNodeOrRaise(etree)</span>
+
+        <span class="s0">valid_ctxt = relaxng.xmlRelaxNGNewValidCtxt(self._c_schema)</span>
+        <span class="s0">if valid_ctxt is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+
+        <span class="s0">try:</span>
+            <span class="s0">self._error_log.clear()</span>
+            <span class="s0"># Need a cast here because older libxml2 releases do not use 'const' in the functype.</span>
+            <span class="s0">relaxng.xmlRelaxNGSetValidStructuredErrors(</span>
+                <span class="s0">valid_ctxt, &lt;xmlerror.xmlStructuredErrorFunc&gt; _receiveError, &lt;void*&gt;self._error_log)</span>
+            <span class="s0">_connectGenericErrorLog(self._error_log, xmlerror.XML_FROM_RELAXNGV)</span>
+            <span class="s0">c_doc = _fakeRootDoc(doc._c_doc, root_node._c_node)</span>
+            <span class="s0">with nogil:</span>
+                <span class="s0">ret = relaxng.xmlRelaxNGValidateDoc(valid_ctxt, c_doc)</span>
+            <span class="s0">_destroyFakeDoc(doc._c_doc, c_doc)</span>
+        <span class="s0">finally:</span>
+            <span class="s0">_connectGenericErrorLog(None)</span>
+            <span class="s0">relaxng.xmlRelaxNGFreeValidCtxt(valid_ctxt)</span>
+
+        <span class="s0">if ret == -1:</span>
+            <span class="s0">raise RelaxNGValidateError(</span>
+                <span class="s0">&quot;Internal error in Relax NG validation&quot;,</span>
+                <span class="s0">self._error_log)</span>
+        <span class="s0">if ret == 0:</span>
+            <span class="s0">return True</span>
+        <span class="s0">else:</span>
+            <span class="s0">return False</span>
+
+    <span class="s0">@classmethod</span>
+    <span class="s0">def from_rnc_string(cls, src, base_url=None):</span>
+        <span class="s0">&quot;&quot;&quot;Parse a RelaxNG schema in compact syntax from a text string</span>
+
+        <span class="s0">Requires the rnc2rng package to be installed.</span>
+
+        <span class="s0">Passing the source URL or file path of the source as 'base_url'</span>
+        <span class="s0">will enable resolving resource references relative to the source.</span>
+        <span class="s0">&quot;&quot;&quot;</span>
+        <span class="s0">_require_rnc2rng()</span>
+        <span class="s0">rng_str = utf8(_rnc2rng.dumps(_rnc2rng.loads(src)))</span>
+        <span class="s0">return cls(_parseMemoryDocument(rng_str, parser=None, url=base_url))</span>
+</pre>
+</body>
+</html>

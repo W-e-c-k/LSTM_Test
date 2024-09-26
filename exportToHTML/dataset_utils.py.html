@@ -1,0 +1,786 @@
+<html>
+<head>
+<title>dataset_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dataset_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">random</span>
+<span class="s0">import </span><span class="s1">time</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">from </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">pool </span><span class="s0">import </span><span class="s1">ThreadPool</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">io_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.utils.split_dataset&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">split_dataset</span><span class="s2">(</span>
+    <span class="s1">dataset</span><span class="s2">, </span><span class="s1">left_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">right_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, </span><span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Splits a dataset into a left half and a right half (e.g. train / test). 
+ 
+    Args: 
+        dataset: 
+            A `tf.data.Dataset`, a `torch.utils.data.Dataset` object, 
+            or a list/tuple of arrays with the same length. 
+        left_size: If float (in the range `[0, 1]`), it signifies 
+            the fraction of the data to pack in the left dataset. If integer, it 
+            signifies the number of samples to pack in the left dataset. If 
+            `None`, defaults to the complement to `right_size`. 
+            Defaults to `None`. 
+        right_size: If float (in the range `[0, 1]`), it signifies 
+            the fraction of the data to pack in the right dataset. 
+            If integer, it signifies the number of samples to pack 
+            in the right dataset. 
+            If `None`, defaults to the complement to `left_size`. 
+            Defaults to `None`. 
+        shuffle: Boolean, whether to shuffle the data before splitting it. 
+        seed: A random seed for shuffling. 
+ 
+    Returns: 
+        A tuple of two `tf.data.Dataset` objects: 
+        the left and right splits. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; data = np.random.random(size=(1000, 4)) 
+    &gt;&gt;&gt; left_ds, right_ds = keras.utils.split_dataset(data, left_size=0.8) 
+    &gt;&gt;&gt; int(left_ds.cardinality()) 
+    800 
+    &gt;&gt;&gt; int(right_ds.cardinality()) 
+    200 
+    &quot;&quot;&quot;</span>
+    <span class="s1">dataset_type_spec </span><span class="s2">= </span><span class="s1">_get_type_spec</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">dataset_type_spec </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+            <span class="s3">&quot;The `dataset` argument must be either&quot;</span>
+            <span class="s3">&quot;a `tf.data.Dataset`, a `torch.utils.data.Dataset`&quot;</span>
+            <span class="s3">&quot;object, or a list/tuple of arrays. &quot;</span>
+            <span class="s3">f&quot;Received: dataset=</span><span class="s0">{</span><span class="s1">dataset</span><span class="s0">} </span><span class="s3">of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">right_size </span><span class="s0">is None and </span><span class="s1">left_size </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;At least one of the `left_size` or `right_size` &quot;</span>
+            <span class="s3">&quot;must be specified. Received: left_size=None and &quot;</span>
+            <span class="s3">&quot;right_size=None&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">dataset_as_list </span><span class="s2">= </span><span class="s1">_convert_dataset_to_list</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">dataset_type_spec</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">shuffle</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">seed </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">seed </span><span class="s2">= </span><span class="s1">random</span><span class="s2">.</span><span class="s1">randint</span><span class="s2">(</span><span class="s5">0</span><span class="s2">, </span><span class="s1">int</span><span class="s2">(</span><span class="s5">1e6</span><span class="s2">))</span>
+        <span class="s1">random</span><span class="s2">.</span><span class="s1">seed</span><span class="s2">(</span><span class="s1">seed</span><span class="s2">)</span>
+        <span class="s1">random</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">dataset_as_list</span><span class="s2">)</span>
+
+    <span class="s1">total_length </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">dataset_as_list</span><span class="s2">)</span>
+
+    <span class="s1">left_size</span><span class="s2">, </span><span class="s1">right_size </span><span class="s2">= </span><span class="s1">_rescale_dataset_split_sizes</span><span class="s2">(</span>
+        <span class="s1">left_size</span><span class="s2">, </span><span class="s1">right_size</span><span class="s2">, </span><span class="s1">total_length</span>
+    <span class="s2">)</span>
+    <span class="s1">left_split </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">dataset_as_list</span><span class="s2">[:</span><span class="s1">left_size</span><span class="s2">])</span>
+    <span class="s1">right_split </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">dataset_as_list</span><span class="s2">[-</span><span class="s1">right_size</span><span class="s2">:])</span>
+
+    <span class="s1">left_split </span><span class="s2">= </span><span class="s1">_restore_dataset_from_list</span><span class="s2">(</span>
+        <span class="s1">left_split</span><span class="s2">, </span><span class="s1">dataset_type_spec</span><span class="s2">, </span><span class="s1">dataset</span>
+    <span class="s2">)</span>
+    <span class="s1">right_split </span><span class="s2">= </span><span class="s1">_restore_dataset_from_list</span><span class="s2">(</span>
+        <span class="s1">right_split</span><span class="s2">, </span><span class="s1">dataset_type_spec</span><span class="s2">, </span><span class="s1">dataset</span>
+    <span class="s2">)</span>
+
+    <span class="s1">left_split </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensor_slices</span><span class="s2">(</span><span class="s1">left_split</span><span class="s2">)</span>
+    <span class="s1">right_split </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensor_slices</span><span class="s2">(</span><span class="s1">right_split</span><span class="s2">)</span>
+
+    <span class="s6"># apply batching to the splits if the dataset is batched</span>
+    <span class="s0">if </span><span class="s1">dataset_type_spec </span><span class="s0">is </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset </span><span class="s0">and </span><span class="s1">is_batched</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+        <span class="s1">batch_size </span><span class="s2">= </span><span class="s1">get_batch_size</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">batch_size </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">left_split </span><span class="s2">= </span><span class="s1">left_split</span><span class="s2">.</span><span class="s1">batch</span><span class="s2">(</span><span class="s1">batch_size</span><span class="s2">)</span>
+            <span class="s1">right_split </span><span class="s2">= </span><span class="s1">right_split</span><span class="s2">.</span><span class="s1">batch</span><span class="s2">(</span><span class="s1">batch_size</span><span class="s2">)</span>
+
+    <span class="s1">left_split </span><span class="s2">= </span><span class="s1">left_split</span><span class="s2">.</span><span class="s1">prefetch</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">)</span>
+    <span class="s1">right_split </span><span class="s2">= </span><span class="s1">right_split</span><span class="s2">.</span><span class="s1">prefetch</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">left_split</span><span class="s2">, </span><span class="s1">right_split</span>
+
+
+<span class="s0">def </span><span class="s1">_convert_dataset_to_list</span><span class="s2">(</span>
+    <span class="s1">dataset</span><span class="s2">,</span>
+    <span class="s1">dataset_type_spec</span><span class="s2">,</span>
+    <span class="s1">data_size_warning_flag</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">ensure_shape_similarity</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Convert `dataset` object to a list of samples. 
+ 
+    Args: 
+        dataset: A `tf.data.Dataset`, a `torch.utils.data.Dataset` object, 
+            or a list/tuple of arrays. 
+        dataset_type_spec: the type of the dataset. 
+        data_size_warning_flag: If set to `True`, a warning will 
+            be issued if the dataset takes longer than 10 seconds to iterate. 
+            Defaults to `True`. 
+        ensure_shape_similarity: If set to `True`, the shape of 
+            the first sample will be used to validate the shape of rest of the 
+            samples. Defaults to `True`. 
+ 
+    Returns: 
+        List: A list of samples. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">dataset_iterator </span><span class="s2">= </span><span class="s1">_get_data_iterator_from_dataset</span><span class="s2">(</span>
+        <span class="s1">dataset</span><span class="s2">, </span><span class="s1">dataset_type_spec</span>
+    <span class="s2">)</span>
+    <span class="s1">dataset_as_list </span><span class="s2">= []</span>
+
+    <span class="s1">start_time </span><span class="s2">= </span><span class="s1">time</span><span class="s2">.</span><span class="s1">time</span><span class="s2">()</span>
+    <span class="s0">for </span><span class="s1">sample </span><span class="s0">in </span><span class="s1">_get_next_sample</span><span class="s2">(</span>
+        <span class="s1">dataset_iterator</span><span class="s2">,</span>
+        <span class="s1">ensure_shape_similarity</span><span class="s2">,</span>
+        <span class="s1">data_size_warning_flag</span><span class="s2">,</span>
+        <span class="s1">start_time</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">dataset_as_list</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">sample</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">dataset_as_list</span>
+
+
+<span class="s0">def </span><span class="s1">_get_data_iterator_from_dataset</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">dataset_type_spec</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Get the iterator from a dataset. 
+ 
+    Args: 
+        dataset: A `tf.data.Dataset`, a `torch.utils.data.Dataset` object, 
+            or a list/tuple of arrays. 
+        dataset_type_spec: The type of the dataset. 
+ 
+    Returns: 
+        iterator: An `iterator` object. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">dataset_type_spec </span><span class="s2">== </span><span class="s1">list</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">) == </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Received an empty list dataset. &quot;</span>
+                <span class="s3">&quot;Please provide a non-empty list of arrays.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">expected_shape </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+            <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Expected a list of `numpy.ndarray` objects,&quot;</span>
+                    <span class="s3">f&quot;Received: </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">element</span><span class="s2">)</span><span class="s0">} </span><span class="s3">at index </span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">expected_shape </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s1">expected_shape </span><span class="s2">= </span><span class="s1">element</span><span class="s2">.</span><span class="s1">shape</span>
+            <span class="s0">elif </span><span class="s1">element</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] != </span><span class="s1">expected_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Received a list of NumPy arrays with different lengths.&quot;</span>
+                    <span class="s3">f&quot;Mismatch found at index </span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s3">, &quot;</span>
+                    <span class="s3">f&quot;Expected shape=</span><span class="s0">{</span><span class="s1">expected_shape</span><span class="s0">} </span><span class="s3">&quot;</span>
+                    <span class="s3">f&quot;Received shape=</span><span class="s0">{</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">element</span><span class="s2">).</span><span class="s1">shape</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                    <span class="s3">&quot;Please provide a list of NumPy arrays of the same length.&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">iter</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(*</span><span class="s1">dataset</span><span class="s2">))</span>
+    <span class="s0">elif </span><span class="s1">dataset_type_spec </span><span class="s2">== </span><span class="s1">tuple</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">) == </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Received an empty list dataset.&quot;</span>
+                <span class="s3">&quot;Please provide a non-empty tuple of arrays.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">expected_shape </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">element </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+            <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Expected a tuple of `numpy.ndarray` objects,&quot;</span>
+                    <span class="s3">f&quot;Received: </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">element</span><span class="s2">)</span><span class="s0">} </span><span class="s3">at index </span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">expected_shape </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s1">expected_shape </span><span class="s2">= </span><span class="s1">element</span><span class="s2">.</span><span class="s1">shape</span>
+            <span class="s0">elif </span><span class="s1">element</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] != </span><span class="s1">expected_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Received a tuple of NumPy arrays with different lengths.&quot;</span>
+                    <span class="s3">f&quot;Mismatch found at index </span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s3">, &quot;</span>
+                    <span class="s3">f&quot;Expected shape=</span><span class="s0">{</span><span class="s1">expected_shape</span><span class="s0">} </span><span class="s3">&quot;</span>
+                    <span class="s3">f&quot;Received shape=</span><span class="s0">{</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">element</span><span class="s2">).</span><span class="s1">shape</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                    <span class="s3">&quot;Please provide a tuple of NumPy arrays of the same length.&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">iter</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(*</span><span class="s1">dataset</span><span class="s2">))</span>
+    <span class="s0">elif </span><span class="s1">dataset_type_spec </span><span class="s2">== </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">is_batched</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+            <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">unbatch</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">iter</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span>
+
+    <span class="s0">elif </span><span class="s1">is_torch_dataset</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">iter</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">dataset_type_spec </span><span class="s2">== </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">iter</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">)</span>
+    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">f&quot;Invalid dataset_type_spec: </span><span class="s0">{</span><span class="s1">dataset_type_spec</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_get_next_sample</span><span class="s2">(</span>
+    <span class="s1">dataset_iterator</span><span class="s2">,</span>
+    <span class="s1">ensure_shape_similarity</span><span class="s2">,</span>
+    <span class="s1">data_size_warning_flag</span><span class="s2">,</span>
+    <span class="s1">start_time</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Yield data samples from the `dataset_iterator`. 
+ 
+    Args: 
+        dataset_iterator: An `iterator` object. 
+        ensure_shape_similarity: If set to `True`, the shape of 
+            the first sample will be used to validate the shape of rest of the 
+            samples. Defaults to `True`. 
+        data_size_warning_flag: If set to `True`, a warning will 
+            be issued if the dataset takes longer than 10 seconds to iterate. 
+            Defaults to `True`. 
+        start_time (float): the start time of the dataset iteration. this is 
+            used only if `data_size_warning_flag` is set to true. 
+ 
+    Yields: 
+        data_sample: The next sample. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters</span><span class="s2">.</span><span class="s1">data_adapter_utils </span><span class="s0">import </span><span class="s2">(</span>
+        <span class="s1">is_torch_tensor</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s1">dataset_iterator </span><span class="s2">= </span><span class="s1">iter</span><span class="s2">(</span><span class="s1">dataset_iterator</span><span class="s2">)</span>
+        <span class="s1">first_sample </span><span class="s2">= </span><span class="s1">next</span><span class="s2">(</span><span class="s1">dataset_iterator</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">first_sample</span><span class="s2">, (</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Tensor</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">)) </span><span class="s0">or </span><span class="s1">is_torch_tensor</span><span class="s2">(</span>
+            <span class="s1">first_sample</span>
+        <span class="s2">):</span>
+            <span class="s1">first_sample_shape </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">first_sample</span><span class="s2">).</span><span class="s1">shape</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">first_sample_shape </span><span class="s2">= </span><span class="s0">None</span>
+            <span class="s1">ensure_shape_similarity </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">yield </span><span class="s1">first_sample</span>
+    <span class="s0">except </span><span class="s1">StopIteration</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Received an empty dataset. Argument `dataset` must &quot;</span>
+            <span class="s3">&quot;be a non-empty list/tuple of `numpy.ndarray` objects &quot;</span>
+            <span class="s3">&quot;or `tf.data.Dataset` objects.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">sample </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">dataset_iterator</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">ensure_shape_similarity</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">first_sample_shape </span><span class="s2">!= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">sample</span><span class="s2">).</span><span class="s1">shape</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;All `dataset` samples must have same shape, &quot;</span>
+                    <span class="s3">f&quot;Expected shape: </span><span class="s0">{</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">first_sample</span><span class="s2">).</span><span class="s1">shape</span><span class="s0">} </span><span class="s3">&quot;</span>
+                    <span class="s3">f&quot;Received shape: </span><span class="s0">{</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">sample</span><span class="s2">).</span><span class="s1">shape</span><span class="s0">} </span><span class="s3">at index &quot;</span>
+                    <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">data_size_warning_flag</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">i </span><span class="s2">% </span><span class="s5">10 </span><span class="s2">== </span><span class="s5">0</span><span class="s2">:</span>
+                <span class="s1">cur_time </span><span class="s2">= </span><span class="s1">time</span><span class="s2">.</span><span class="s1">time</span><span class="s2">()</span>
+                <span class="s6"># warns user if the dataset is too large to iterate within 10s</span>
+                <span class="s0">if </span><span class="s1">int</span><span class="s2">(</span><span class="s1">cur_time </span><span class="s2">- </span><span class="s1">start_time</span><span class="s2">) &gt; </span><span class="s5">10 </span><span class="s0">and </span><span class="s1">data_size_warning_flag</span><span class="s2">:</span>
+                    <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                        <span class="s3">&quot;The dataset is taking longer than 10 seconds to &quot;</span>
+                        <span class="s3">&quot;iterate over. This may be due to the size of the &quot;</span>
+                        <span class="s3">&quot;dataset. Keep in mind that the `split_dataset` &quot;</span>
+                        <span class="s3">&quot;utility is only for small in-memory dataset &quot;</span>
+                        <span class="s3">&quot;(e.g. &lt; 10,000 samples).&quot;</span><span class="s2">,</span>
+                        <span class="s1">category</span><span class="s2">=</span><span class="s1">ResourceWarning</span><span class="s2">,</span>
+                        <span class="s1">source</span><span class="s2">=</span><span class="s3">&quot;split_dataset&quot;</span><span class="s2">,</span>
+                    <span class="s2">)</span>
+                    <span class="s1">data_size_warning_flag </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">yield </span><span class="s1">sample</span>
+
+
+<span class="s0">def </span><span class="s1">is_torch_dataset</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s3">&quot;__class__&quot;</span><span class="s2">):</span>
+        <span class="s0">for </span><span class="s1">parent </span><span class="s0">in </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__mro__</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">parent</span><span class="s2">.</span><span class="s1">__name__ </span><span class="s2">== </span><span class="s3">&quot;Dataset&quot; </span><span class="s0">and </span><span class="s1">str</span><span class="s2">(</span>
+                <span class="s1">parent</span><span class="s2">.</span><span class="s1">__module__</span>
+            <span class="s2">).</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;torch.utils.data&quot;</span><span class="s2">):</span>
+                <span class="s0">return True</span>
+    <span class="s0">return False</span>
+
+
+<span class="s0">def </span><span class="s1">_rescale_dataset_split_sizes</span><span class="s2">(</span><span class="s1">left_size</span><span class="s2">, </span><span class="s1">right_size</span><span class="s2">, </span><span class="s1">total_length</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Rescale the dataset split sizes. 
+ 
+    We want to ensure that the sum of 
+    the split sizes is equal to the total length of the dataset. 
+ 
+    Args: 
+        left_size: The size of the left dataset split. 
+        right_size: The size of the right dataset split. 
+        total_length: The total length of the dataset. 
+ 
+    Returns: 
+        tuple: A tuple of rescaled `left_size` and `right_size` integers. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">left_size_type </span><span class="s2">= </span><span class="s1">type</span><span class="s2">(</span><span class="s1">left_size</span><span class="s2">)</span>
+    <span class="s1">right_size_type </span><span class="s2">= </span><span class="s1">type</span><span class="s2">(</span><span class="s1">right_size</span><span class="s2">)</span>
+
+    <span class="s6"># check both left_size and right_size are integers or floats</span>
+    <span class="s0">if </span><span class="s2">(</span><span class="s1">left_size </span><span class="s0">is not None and </span><span class="s1">left_size_type </span><span class="s0">not in </span><span class="s2">[</span><span class="s1">int</span><span class="s2">, </span><span class="s1">float</span><span class="s2">]) </span><span class="s0">and </span><span class="s2">(</span>
+        <span class="s1">right_size </span><span class="s0">is not None and </span><span class="s1">right_size_type </span><span class="s0">not in </span><span class="s2">[</span><span class="s1">int</span><span class="s2">, </span><span class="s1">float</span><span class="s2">]</span>
+    <span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+            <span class="s3">&quot;Invalid `left_size` and `right_size` Types. Expected: &quot;</span>
+            <span class="s3">&quot;integer or float or None, Received: type(left_size)=&quot;</span>
+            <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">left_size_type</span><span class="s0">} </span><span class="s3">and type(right_size)=</span><span class="s0">{</span><span class="s1">right_size_type</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># check left_size is a integer or float</span>
+    <span class="s0">if </span><span class="s1">left_size </span><span class="s0">is not None and </span><span class="s1">left_size_type </span><span class="s0">not in </span><span class="s2">[</span><span class="s1">int</span><span class="s2">, </span><span class="s1">float</span><span class="s2">]:</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+            <span class="s3">&quot;Invalid `left_size` Type. Expected: int or float or None, &quot;</span>
+            <span class="s3">f&quot;Received: type(left_size)=</span><span class="s0">{</span><span class="s1">left_size_type</span><span class="s0">}</span><span class="s3">.  &quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># check right_size is a integer or float</span>
+    <span class="s0">if </span><span class="s1">right_size </span><span class="s0">is not None and </span><span class="s1">right_size_type </span><span class="s0">not in </span><span class="s2">[</span><span class="s1">int</span><span class="s2">, </span><span class="s1">float</span><span class="s2">]:</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+            <span class="s3">&quot;Invalid `right_size` Type. &quot;</span>
+            <span class="s3">&quot;Expected: int or float or None,&quot;</span>
+            <span class="s3">f&quot;Received: type(right_size)=</span><span class="s0">{</span><span class="s1">right_size_type</span><span class="s0">}</span><span class="s3">.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># check left_size and right_size are non-zero</span>
+    <span class="s0">if </span><span class="s1">left_size </span><span class="s2">== </span><span class="s5">0 </span><span class="s0">and </span><span class="s1">right_size </span><span class="s2">== </span><span class="s5">0</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Both `left_size` and `right_size` are zero. &quot;</span>
+            <span class="s3">&quot;At least one of the split sizes must be non-zero.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># check left_size is non-negative and less than 1 and less than total_length</span>
+    <span class="s0">if </span><span class="s2">(</span>
+        <span class="s1">left_size_type </span><span class="s2">== </span><span class="s1">int</span>
+        <span class="s0">and </span><span class="s2">(</span><span class="s1">left_size </span><span class="s2">&lt;= </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">left_size </span><span class="s2">&gt;= </span><span class="s1">total_length</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">left_size_type </span><span class="s2">== </span><span class="s1">float</span>
+        <span class="s0">and </span><span class="s2">(</span><span class="s1">left_size </span><span class="s2">&lt;= </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">left_size </span><span class="s2">&gt;= </span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;`left_size` should be either a positive integer &quot;</span>
+            <span class="s3">f&quot;smaller than </span><span class="s0">{</span><span class="s1">total_length</span><span class="s0">}</span><span class="s3">, or a float &quot;</span>
+            <span class="s3">&quot;within the range `[0, 1]`. Received: left_size=&quot;</span>
+            <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">left_size</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># check right_size is non-negative and less than 1 and less than</span>
+    <span class="s6"># total_length</span>
+    <span class="s0">if </span><span class="s2">(</span>
+        <span class="s1">right_size_type </span><span class="s2">== </span><span class="s1">int</span>
+        <span class="s0">and </span><span class="s2">(</span><span class="s1">right_size </span><span class="s2">&lt;= </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">right_size </span><span class="s2">&gt;= </span><span class="s1">total_length</span><span class="s2">)</span>
+        <span class="s0">or </span><span class="s1">right_size_type </span><span class="s2">== </span><span class="s1">float</span>
+        <span class="s0">and </span><span class="s2">(</span><span class="s1">right_size </span><span class="s2">&lt;= </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">right_size </span><span class="s2">&gt;= </span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;`right_size` should be either a positive integer &quot;</span>
+            <span class="s3">f&quot;and smaller than </span><span class="s0">{</span><span class="s1">total_length</span><span class="s0">} </span><span class="s3">or a float &quot;</span>
+            <span class="s3">&quot;within the range `[0, 1]`. Received: right_size=&quot;</span>
+            <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">right_size</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s6"># check sum of left_size and right_size is less than or equal to</span>
+    <span class="s6"># total_length</span>
+    <span class="s0">if </span><span class="s2">(</span>
+        <span class="s1">right_size_type </span><span class="s2">== </span><span class="s1">left_size_type </span><span class="s2">== </span><span class="s1">float</span>
+        <span class="s0">and </span><span class="s1">right_size </span><span class="s2">+ </span><span class="s1">left_size </span><span class="s2">&gt; </span><span class="s5">1</span>
+    <span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;The sum of `left_size` and `right_size` is greater &quot;</span>
+            <span class="s3">&quot;than 1. It must be less than or equal to 1.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">left_size_type </span><span class="s2">== </span><span class="s1">float</span><span class="s2">:</span>
+        <span class="s1">left_size </span><span class="s2">= </span><span class="s1">round</span><span class="s2">(</span><span class="s1">left_size </span><span class="s2">* </span><span class="s1">total_length</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">left_size_type </span><span class="s2">== </span><span class="s1">int</span><span class="s2">:</span>
+        <span class="s1">left_size </span><span class="s2">= </span><span class="s1">float</span><span class="s2">(</span><span class="s1">left_size</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">right_size_type </span><span class="s2">== </span><span class="s1">float</span><span class="s2">:</span>
+        <span class="s1">right_size </span><span class="s2">= </span><span class="s1">round</span><span class="s2">(</span><span class="s1">right_size </span><span class="s2">* </span><span class="s1">total_length</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">right_size_type </span><span class="s2">== </span><span class="s1">int</span><span class="s2">:</span>
+        <span class="s1">right_size </span><span class="s2">= </span><span class="s1">float</span><span class="s2">(</span><span class="s1">right_size</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">left_size </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">left_size </span><span class="s2">= </span><span class="s1">total_length </span><span class="s2">- </span><span class="s1">right_size</span>
+    <span class="s0">elif </span><span class="s1">right_size </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">right_size </span><span class="s2">= </span><span class="s1">total_length </span><span class="s2">- </span><span class="s1">left_size</span>
+
+    <span class="s0">if </span><span class="s1">left_size </span><span class="s2">+ </span><span class="s1">right_size </span><span class="s2">&gt; </span><span class="s1">total_length</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;The sum of `left_size` and `right_size` should &quot;</span>
+            <span class="s3">&quot;be smaller than the {total_length}. &quot;</span>
+            <span class="s3">f&quot;Received: left_size + right_size = </span><span class="s0">{</span><span class="s1">left_size</span><span class="s2">+</span><span class="s1">right_size</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s3">f&quot;and total_length = </span><span class="s0">{</span><span class="s1">total_length</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">split</span><span class="s2">, </span><span class="s1">side </span><span class="s0">in </span><span class="s2">[(</span><span class="s1">left_size</span><span class="s2">, </span><span class="s3">&quot;left&quot;</span><span class="s2">), (</span><span class="s1">right_size</span><span class="s2">, </span><span class="s3">&quot;right&quot;</span><span class="s2">)]:</span>
+        <span class="s0">if </span><span class="s1">split </span><span class="s2">== </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;With `dataset` of length=</span><span class="s0">{</span><span class="s1">total_length</span><span class="s0">}</span><span class="s3">, `left_size`=&quot;</span>
+                <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">left_size</span><span class="s0">} </span><span class="s3">and `right_size`=</span><span class="s0">{</span><span class="s1">right_size</span><span class="s0">}</span><span class="s3">.&quot;</span>
+                <span class="s3">f&quot;Resulting </span><span class="s0">{</span><span class="s1">side</span><span class="s0">} </span><span class="s3">side dataset split will be empty. &quot;</span>
+                <span class="s3">&quot;Adjust any of the aforementioned parameters&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s1">left_size</span><span class="s2">, </span><span class="s1">right_size </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">left_size</span><span class="s2">), </span><span class="s1">int</span><span class="s2">(</span><span class="s1">right_size</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">left_size</span><span class="s2">, </span><span class="s1">right_size</span>
+
+
+<span class="s0">def </span><span class="s1">_restore_dataset_from_list</span><span class="s2">(</span>
+    <span class="s1">dataset_as_list</span><span class="s2">, </span><span class="s1">dataset_type_spec</span><span class="s2">, </span><span class="s1">original_dataset</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Restore the dataset from the list of arrays.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">dataset_type_spec </span><span class="s0">in </span><span class="s2">[</span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">] </span><span class="s0">or </span><span class="s1">is_torch_dataset</span><span class="s2">(</span>
+        <span class="s1">original_dataset</span>
+    <span class="s2">):</span>
+        <span class="s6"># Save structure by taking the first element.</span>
+        <span class="s1">element_spec </span><span class="s2">= </span><span class="s1">dataset_as_list</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+        <span class="s6"># Flatten each element.</span>
+        <span class="s1">dataset_as_list </span><span class="s2">= [</span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">sample</span><span class="s2">) </span><span class="s0">for </span><span class="s1">sample </span><span class="s0">in </span><span class="s1">dataset_as_list</span><span class="s2">]</span>
+        <span class="s6"># Combine respective elements at all indices.</span>
+        <span class="s1">dataset_as_list </span><span class="s2">= [</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">sample</span><span class="s2">) </span><span class="s0">for </span><span class="s1">sample </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(*</span><span class="s1">dataset_as_list</span><span class="s2">)]</span>
+        <span class="s6"># Recreate the original structure of elements.</span>
+        <span class="s1">dataset_as_list </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">pack_sequence_as</span><span class="s2">(</span><span class="s1">element_spec</span><span class="s2">, </span><span class="s1">dataset_as_list</span><span class="s2">)</span>
+        <span class="s6"># Turn lists to tuples as tf.data will fail on lists.</span>
+        <span class="s0">return </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">traverse</span><span class="s2">(</span>
+            <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">x</span><span class="s2">) </span><span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">list</span><span class="s2">) </span><span class="s0">else </span><span class="s1">x</span><span class="s2">,</span>
+            <span class="s1">dataset_as_list</span><span class="s2">,</span>
+            <span class="s1">top_down</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">dataset_as_list</span>
+
+
+<span class="s0">def </span><span class="s1">is_batched</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Check if the `tf.data.Dataset` is batched.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s3">&quot;_batch_size&quot;</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">get_batch_size</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Get the batch size of the dataset.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">is_batched</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">_batch_size</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">def </span><span class="s1">_get_type_spec</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Get the type spec of the dataset.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">tuple</span>
+    <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">list</span>
+    <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span>
+    <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span>
+    <span class="s0">elif </span><span class="s1">is_torch_dataset</span><span class="s2">(</span><span class="s1">dataset</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data </span><span class="s0">import </span><span class="s1">Dataset </span><span class="s0">as </span><span class="s1">TorchDataset</span>
+
+        <span class="s0">return </span><span class="s1">TorchDataset</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">def </span><span class="s1">index_directory</span><span class="s2">(</span>
+    <span class="s1">directory</span><span class="s2">,</span>
+    <span class="s1">labels</span><span class="s2">,</span>
+    <span class="s1">formats</span><span class="s2">,</span>
+    <span class="s1">class_names</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">follow_links</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">verbose</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;List all files in `directory`, with their labels. 
+ 
+    Args: 
+        directory: Directory where the data is located. 
+            If `labels` is `&quot;inferred&quot;`, it should contain 
+            subdirectories, each containing files for a class. 
+            Otherwise, the directory structure is ignored. 
+        labels: Either `&quot;inferred&quot;` 
+            (labels are generated from the directory structure), 
+            `None` (no labels), 
+            or a list/tuple of integer labels of the same size as the number 
+            of valid files found in the directory. 
+            Labels should be sorted according 
+            to the alphanumeric order of the image file paths 
+            (obtained via `os.walk(directory)` in Python). 
+        formats: Allowlist of file extensions to index 
+            (e.g. `&quot;.jpg&quot;`, `&quot;.txt&quot;`). 
+        class_names: Only valid if `labels=&quot;inferred&quot;`. This is the explicit 
+            list of class names (must match names of subdirectories). Used 
+            to control the order of the classes 
+            (otherwise alphanumerical order is used). 
+        shuffle: Whether to shuffle the data. Defaults to `True`. 
+            If set to `False`, sorts the data in alphanumeric order. 
+        seed: Optional random seed for shuffling. 
+        follow_links: Whether to visits subdirectories pointed to by symlinks. 
+        verbose: Whether the function prints number of files found and classes. 
+            Defaults to `True`. 
+ 
+    Returns: 
+        tuple (file_paths, labels, class_names). 
+        - file_paths: list of file paths (strings). 
+        - labels: list of matching integer labels (same length as file_paths) 
+        - class_names: names of the classes corresponding to these labels, in 
+        order. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">labels </span><span class="s2">== </span><span class="s3">&quot;inferred&quot;</span><span class="s2">:</span>
+        <span class="s1">subdirs </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">subdir </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">listdir</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">)):</span>
+            <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">isdir</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">subdir</span><span class="s2">)):</span>
+                <span class="s0">if not </span><span class="s1">subdir</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;.&quot;</span><span class="s2">):</span>
+                    <span class="s0">if </span><span class="s1">subdir</span><span class="s2">.</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;/&quot;</span><span class="s2">):</span>
+                        <span class="s1">subdir </span><span class="s2">= </span><span class="s1">subdir</span><span class="s2">[:-</span><span class="s5">1</span><span class="s2">]</span>
+                    <span class="s1">subdirs</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">subdir</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">class_names </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if not </span><span class="s1">set</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">).</span><span class="s1">issubset</span><span class="s2">(</span><span class="s1">set</span><span class="s2">(</span><span class="s1">subdirs</span><span class="s2">)):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;The `class_names` passed did not match the &quot;</span>
+                    <span class="s3">&quot;names of the subdirectories of the target directory. &quot;</span>
+                    <span class="s3">f&quot;Expected: </span><span class="s0">{</span><span class="s1">subdirs</span><span class="s0">} </span><span class="s3">(or a subset of it), &quot;</span>
+                    <span class="s3">f&quot;but received: class_names=</span><span class="s0">{</span><span class="s1">class_names</span><span class="s0">}</span><span class="s3">&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">subdirs </span><span class="s2">= </span><span class="s1">class_names  </span><span class="s6"># Keep provided order.</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s6"># In the explicit/no-label cases, index from the parent directory down.</span>
+        <span class="s1">subdirs </span><span class="s2">= [</span><span class="s3">&quot;&quot;</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">class_names </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">labels </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;When `labels=None` (no labels), argument `class_names` &quot;</span>
+                    <span class="s3">&quot;cannot be specified.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;When argument `labels` is specified, argument &quot;</span>
+                    <span class="s3">&quot;`class_names` cannot be specified (the `class_names` &quot;</span>
+                    <span class="s3">&quot;will be the sorted list of labels).&quot;</span>
+                <span class="s2">)</span>
+    <span class="s1">class_names </span><span class="s2">= </span><span class="s1">subdirs</span>
+    <span class="s1">class_indices </span><span class="s2">= </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">, </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">))))</span>
+
+    <span class="s6"># Build an index of the files</span>
+    <span class="s6"># in the different class subfolders.</span>
+    <span class="s1">pool </span><span class="s2">= </span><span class="s1">ThreadPool</span><span class="s2">()</span>
+    <span class="s1">results </span><span class="s2">= []</span>
+    <span class="s1">filenames </span><span class="s2">= []</span>
+
+    <span class="s0">for </span><span class="s1">dirpath </span><span class="s0">in </span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">subdir</span><span class="s2">) </span><span class="s0">for </span><span class="s1">subdir </span><span class="s0">in </span><span class="s1">subdirs</span><span class="s2">):</span>
+        <span class="s1">results</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span>
+            <span class="s1">pool</span><span class="s2">.</span><span class="s1">apply_async</span><span class="s2">(</span>
+                <span class="s1">index_subdirectory</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s1">dirpath</span><span class="s2">, </span><span class="s1">class_indices</span><span class="s2">, </span><span class="s1">follow_links</span><span class="s2">, </span><span class="s1">formats</span><span class="s2">),</span>
+            <span class="s2">)</span>
+        <span class="s2">)</span>
+    <span class="s1">labels_list </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">res </span><span class="s0">in </span><span class="s1">results</span><span class="s2">:</span>
+        <span class="s1">partial_filenames</span><span class="s2">, </span><span class="s1">partial_labels </span><span class="s2">= </span><span class="s1">res</span><span class="s2">.</span><span class="s1">get</span><span class="s2">()</span>
+        <span class="s1">labels_list</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">partial_labels</span><span class="s2">)</span>
+        <span class="s1">filenames </span><span class="s2">+= </span><span class="s1">partial_filenames</span>
+
+    <span class="s0">if </span><span class="s1">labels </span><span class="s2">== </span><span class="s3">&quot;inferred&quot;</span><span class="s2">:</span>
+        <span class="s6"># Inferred labels.</span>
+        <span class="s1">i </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">labels </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">((</span><span class="s1">len</span><span class="s2">(</span><span class="s1">filenames</span><span class="s2">),), </span><span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;int32&quot;</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">partial_labels </span><span class="s0">in </span><span class="s1">labels_list</span><span class="s2">:</span>
+            <span class="s1">labels</span><span class="s2">[</span><span class="s1">i </span><span class="s2">: </span><span class="s1">i </span><span class="s2">+ </span><span class="s1">len</span><span class="s2">(</span><span class="s1">partial_labels</span><span class="s2">)] = </span><span class="s1">partial_labels</span>
+            <span class="s1">i </span><span class="s2">+= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">partial_labels</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">labels </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">class_names </span><span class="s2">= </span><span class="s0">None</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s6"># Manual labels.</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">filenames</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Expected the lengths of `labels` to match the number &quot;</span>
+                <span class="s3">&quot;of files in the target directory. len(labels) is &quot;</span>
+                <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">)</span><span class="s0">} </span><span class="s3">while we found </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">filenames</span><span class="s2">)</span><span class="s0">} </span><span class="s3">files &quot;</span>
+                <span class="s3">f&quot;in directory </span><span class="s0">{</span><span class="s1">directory</span><span class="s0">}</span><span class="s3">.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">class_names </span><span class="s2">= [</span><span class="s1">str</span><span class="s2">(</span><span class="s1">label</span><span class="s2">) </span><span class="s0">for </span><span class="s1">label </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">set</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">))]</span>
+    <span class="s0">if </span><span class="s1">verbose</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">labels </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">io_utils</span><span class="s2">.</span><span class="s1">print_msg</span><span class="s2">(</span><span class="s3">f&quot;Found </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">filenames</span><span class="s2">)</span><span class="s0">} </span><span class="s3">files.&quot;</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">io_utils</span><span class="s2">.</span><span class="s1">print_msg</span><span class="s2">(</span>
+                <span class="s3">f&quot;Found </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">filenames</span><span class="s2">)</span><span class="s0">} </span><span class="s3">files belonging &quot;</span>
+                <span class="s3">f&quot;to </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">class_names</span><span class="s2">)</span><span class="s0">} </span><span class="s3">classes.&quot;</span>
+            <span class="s2">)</span>
+    <span class="s1">pool</span><span class="s2">.</span><span class="s1">close</span><span class="s2">()</span>
+    <span class="s1">pool</span><span class="s2">.</span><span class="s1">join</span><span class="s2">()</span>
+    <span class="s1">file_paths </span><span class="s2">= [</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">fname</span><span class="s2">) </span><span class="s0">for </span><span class="s1">fname </span><span class="s0">in </span><span class="s1">filenames</span><span class="s2">]</span>
+
+    <span class="s0">if </span><span class="s1">shuffle</span><span class="s2">:</span>
+        <span class="s6"># Shuffle globally to erase macro-structure</span>
+        <span class="s0">if </span><span class="s1">seed </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">seed </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">randint</span><span class="s2">(</span><span class="s5">1e6</span><span class="s2">)</span>
+        <span class="s1">rng </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">RandomState</span><span class="s2">(</span><span class="s1">seed</span><span class="s2">)</span>
+        <span class="s1">rng</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">file_paths</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">labels </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">rng </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">RandomState</span><span class="s2">(</span><span class="s1">seed</span><span class="s2">)</span>
+            <span class="s1">rng</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">file_paths</span><span class="s2">, </span><span class="s1">labels</span><span class="s2">, </span><span class="s1">class_names</span>
+
+
+<span class="s0">def </span><span class="s1">iter_valid_files</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">follow_links</span><span class="s2">, </span><span class="s1">formats</span><span class="s2">):</span>
+    <span class="s0">if not </span><span class="s1">follow_links</span><span class="s2">:</span>
+        <span class="s1">walk </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">walk</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">walk </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">walk</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">followlinks</span><span class="s2">=</span><span class="s1">follow_links</span><span class="s2">)</span>
+    <span class="s0">for </span><span class="s1">root</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">files </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">walk</span><span class="s2">, </span><span class="s1">key</span><span class="s2">=</span><span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">x</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]):</span>
+        <span class="s0">for </span><span class="s1">fname </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">files</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">fname</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">().</span><span class="s1">endswith</span><span class="s2">(</span><span class="s1">formats</span><span class="s2">):</span>
+                <span class="s0">yield </span><span class="s1">root</span><span class="s2">, </span><span class="s1">fname</span>
+
+
+<span class="s0">def </span><span class="s1">index_subdirectory</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">class_indices</span><span class="s2">, </span><span class="s1">follow_links</span><span class="s2">, </span><span class="s1">formats</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Recursively walks directory and list image paths and their class index. 
+ 
+    Args: 
+        directory: string, target directory. 
+        class_indices: dict mapping class names to their index. 
+        follow_links: boolean, whether to recursively follow subdirectories 
+            (if False, we only list top-level images in `directory`). 
+        formats: Allowlist of file extensions to index (e.g. &quot;.jpg&quot;, &quot;.txt&quot;). 
+ 
+    Returns: 
+        tuple `(filenames, labels)`. `filenames` is a list of relative file 
+            paths, and `labels` is a list of integer labels corresponding 
+            to these files. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">dirname </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">basename</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">)</span>
+    <span class="s1">valid_files </span><span class="s2">= </span><span class="s1">iter_valid_files</span><span class="s2">(</span><span class="s1">directory</span><span class="s2">, </span><span class="s1">follow_links</span><span class="s2">, </span><span class="s1">formats</span><span class="s2">)</span>
+    <span class="s1">labels </span><span class="s2">= []</span>
+    <span class="s1">filenames </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">root</span><span class="s2">, </span><span class="s1">fname </span><span class="s0">in </span><span class="s1">valid_files</span><span class="s2">:</span>
+        <span class="s1">labels</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">class_indices</span><span class="s2">[</span><span class="s1">dirname</span><span class="s2">])</span>
+        <span class="s1">absolute_path </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">root</span><span class="s2">, </span><span class="s1">fname</span><span class="s2">)</span>
+        <span class="s1">relative_path </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">io</span><span class="s2">.</span><span class="s1">gfile</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span>
+            <span class="s1">dirname</span><span class="s2">, </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">relpath</span><span class="s2">(</span><span class="s1">absolute_path</span><span class="s2">, </span><span class="s1">directory</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">filenames</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">relative_path</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">filenames</span><span class="s2">, </span><span class="s1">labels</span>
+
+
+<span class="s0">def </span><span class="s1">get_training_or_validation_split</span><span class="s2">(</span><span class="s1">samples</span><span class="s2">, </span><span class="s1">labels</span><span class="s2">, </span><span class="s1">validation_split</span><span class="s2">, </span><span class="s1">subset</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Potentially restict samples &amp; labels to a training or validation split. 
+ 
+    Args: 
+        samples: List of elements. 
+        labels: List of corresponding labels. 
+        validation_split: Float, fraction of data to reserve for validation. 
+        subset: Subset of the data to return. 
+            Either `&quot;training&quot;`, `&quot;validation&quot;`, or `None`. 
+            If `None`, we return all of the data. 
+ 
+    Returns: 
+        tuple (samples, labels), potentially restricted to the specified subset. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">validation_split</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">samples</span><span class="s2">, </span><span class="s1">labels</span>
+
+    <span class="s1">num_val_samples </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">validation_split </span><span class="s2">* </span><span class="s1">len</span><span class="s2">(</span><span class="s1">samples</span><span class="s2">))</span>
+    <span class="s0">if </span><span class="s1">subset </span><span class="s2">== </span><span class="s3">&quot;training&quot;</span><span class="s2">:</span>
+        <span class="s1">io_utils</span><span class="s2">.</span><span class="s1">print_msg</span><span class="s2">(</span>
+            <span class="s3">f&quot;Using </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">samples</span><span class="s2">) - </span><span class="s1">num_val_samples</span><span class="s0">} </span><span class="s3">&quot; f&quot;files for training.&quot;</span>
+        <span class="s2">)</span>
+        <span class="s1">samples </span><span class="s2">= </span><span class="s1">samples</span><span class="s2">[:-</span><span class="s1">num_val_samples</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">labels </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">labels </span><span class="s2">= </span><span class="s1">labels</span><span class="s2">[:-</span><span class="s1">num_val_samples</span><span class="s2">]</span>
+    <span class="s0">elif </span><span class="s1">subset </span><span class="s2">== </span><span class="s3">&quot;validation&quot;</span><span class="s2">:</span>
+        <span class="s1">io_utils</span><span class="s2">.</span><span class="s1">print_msg</span><span class="s2">(</span><span class="s3">f&quot;Using </span><span class="s0">{</span><span class="s1">num_val_samples</span><span class="s0">} </span><span class="s3">files for validation.&quot;</span><span class="s2">)</span>
+        <span class="s1">samples </span><span class="s2">= </span><span class="s1">samples</span><span class="s2">[-</span><span class="s1">num_val_samples</span><span class="s2">:]</span>
+        <span class="s0">if </span><span class="s1">labels </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">labels </span><span class="s2">= </span><span class="s1">labels</span><span class="s2">[-</span><span class="s1">num_val_samples</span><span class="s2">:]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">'`subset` must be either &quot;training&quot; '</span>
+            <span class="s3">f'or &quot;validation&quot;, received: </span><span class="s0">{</span><span class="s1">subset</span><span class="s0">}</span><span class="s3">'</span>
+        <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">samples</span><span class="s2">, </span><span class="s1">labels</span>
+
+
+<span class="s0">def </span><span class="s1">labels_to_dataset</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">, </span><span class="s1">label_mode</span><span class="s2">, </span><span class="s1">num_classes</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Create a `tf.data.Dataset` from the list/tuple of labels. 
+ 
+    Args: 
+        labels: list/tuple of labels to be converted into a `tf.data.Dataset`. 
+        label_mode: String describing the encoding of `labels`. Options are: 
+        - `&quot;binary&quot;` indicates that the labels (there can be only 2) are encoded 
+            as `float32` scalars with values 0 or 1 
+            (e.g. for `binary_crossentropy`). 
+        - `&quot;categorical&quot;` means that the labels are mapped into a categorical 
+            vector.  (e.g. for `categorical_crossentropy` loss). 
+        num_classes: number of classes of labels. 
+ 
+    Returns: 
+        A `tf.data.Dataset` instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">label_ds </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensor_slices</span><span class="s2">(</span><span class="s1">labels</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">label_mode </span><span class="s2">== </span><span class="s3">&quot;binary&quot;</span><span class="s2">:</span>
+        <span class="s1">label_ds </span><span class="s2">= </span><span class="s1">label_ds</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+            <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">),</span>
+            <span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">label_mode </span><span class="s2">== </span><span class="s3">&quot;categorical&quot;</span><span class="s2">:</span>
+        <span class="s1">label_ds </span><span class="s2">= </span><span class="s1">label_ds</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+            <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">one_hot</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">num_classes</span><span class="s2">),</span>
+            <span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">label_ds</span>
+
+
+<span class="s0">def </span><span class="s1">check_validation_split_arg</span><span class="s2">(</span><span class="s1">validation_split</span><span class="s2">, </span><span class="s1">subset</span><span class="s2">, </span><span class="s1">shuffle</span><span class="s2">, </span><span class="s1">seed</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Raise errors in case of invalid argument values. 
+ 
+    Args: 
+        validation_split: float between 0 and 1, fraction of data to reserve for 
+            validation. 
+        subset: One of `&quot;training&quot;`, `&quot;validation&quot;`, or `&quot;both&quot;`. Only used if 
+            `validation_split` is set. 
+        shuffle: Whether to shuffle the data. Either `True` or `False`. 
+        seed: random seed for shuffling and transformations. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">validation_split </span><span class="s0">and not </span><span class="s5">0 </span><span class="s2">&lt; </span><span class="s1">validation_split </span><span class="s2">&lt; </span><span class="s5">1</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;`validation_split` must be between 0 and 1, &quot;</span>
+            <span class="s3">f&quot;received: </span><span class="s0">{</span><span class="s1">validation_split</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s2">(</span><span class="s1">validation_split </span><span class="s0">or </span><span class="s1">subset</span><span class="s2">) </span><span class="s0">and not </span><span class="s2">(</span><span class="s1">validation_split </span><span class="s0">and </span><span class="s1">subset</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;If `subset` is set, `validation_split` must be set, and inversely.&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">subset </span><span class="s0">not in </span><span class="s2">(</span><span class="s3">&quot;training&quot;</span><span class="s2">, </span><span class="s3">&quot;validation&quot;</span><span class="s2">, </span><span class="s3">&quot;both&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">'`subset` must be either &quot;training&quot;, '</span>
+            <span class="s3">f'&quot;validation&quot; or &quot;both&quot;, received: </span><span class="s0">{</span><span class="s1">subset</span><span class="s0">}</span><span class="s3">'</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">validation_split </span><span class="s0">and </span><span class="s1">shuffle </span><span class="s0">and </span><span class="s1">seed </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;If using `validation_split` and shuffling the data, you must &quot;</span>
+            <span class="s3">&quot;provide a `seed` argument, to make sure that there is no &quot;</span>
+            <span class="s3">&quot;overlap between the training and validation subset.&quot;</span>
+        <span class="s2">)</span>
+</pre>
+</body>
+</html>

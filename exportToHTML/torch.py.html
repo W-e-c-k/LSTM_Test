@@ -1,0 +1,233 @@
+<html>
+<head>
+<title>torch.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+torch.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2022-2024 MetaOPT Team. All Rights Reserved.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+<span class="s0"># ==============================================================================</span>
+<span class="s2">&quot;&quot;&quot;Integration with PyTorch.&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">annotations</span>
+
+<span class="s3">import </span><span class="s1">functools</span>
+<span class="s3">import </span><span class="s1">warnings</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s4">, </span><span class="s1">Callable</span>
+<span class="s3">from </span><span class="s1">typing_extensions </span><span class="s3">import </span><span class="s1">TypeAlias  </span><span class="s0"># Python 3.10+</span>
+
+<span class="s3">import </span><span class="s1">torch</span>
+
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">ops </span><span class="s3">import </span><span class="s1">tree_flatten</span><span class="s4">, </span><span class="s1">tree_unflatten</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">typing </span><span class="s3">import </span><span class="s1">PyTreeSpec</span><span class="s4">, </span><span class="s1">PyTreeTypeVar</span>
+<span class="s3">from </span><span class="s1">optree</span><span class="s4">.</span><span class="s1">utils </span><span class="s3">import </span><span class="s1">safe_zip</span>
+
+
+<span class="s1">__all__ </span><span class="s4">= [</span><span class="s5">'TensorTree'</span><span class="s4">, </span><span class="s5">'tree_ravel'</span><span class="s4">]</span>
+
+
+<span class="s1">TensorTree</span><span class="s4">: </span><span class="s1">TypeAlias </span><span class="s4">= </span><span class="s1">PyTreeTypeVar</span><span class="s4">(</span><span class="s5">'TensorTree'</span><span class="s4">, </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">)  </span><span class="s0"># type: ignore[valid-type]</span>
+
+
+<span class="s3">def </span><span class="s1">tree_ravel</span><span class="s4">(</span>
+    <span class="s1">tree</span><span class="s4">: </span><span class="s1">TensorTree</span><span class="s4">,</span>
+    <span class="s1">is_leaf</span><span class="s4">: </span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">Any</span><span class="s4">], </span><span class="s1">bool</span><span class="s4">] | </span><span class="s3">None </span><span class="s4">= </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s4">*,</span>
+    <span class="s1">none_is_leaf</span><span class="s4">: </span><span class="s1">bool </span><span class="s4">= </span><span class="s3">False</span><span class="s4">,</span>
+    <span class="s1">namespace</span><span class="s4">: </span><span class="s1">str </span><span class="s4">= </span><span class="s5">''</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">, </span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">], </span><span class="s1">TensorTree</span><span class="s4">]]:</span>
+    <span class="s2">r&quot;&quot;&quot;Ravel (flatten) a pytree of tensors down to a 1D tensor. 
+ 
+    &gt;&gt;&gt; tree = { 
+    ...     'layer1': { 
+    ...         'weight': torch.arange(0, 6, dtype=torch.float64).reshape((2, 3)), 
+    ...         'bias': torch.arange(6, 8, dtype=torch.float64).reshape((2,)), 
+    ...     }, 
+    ...     'layer2': { 
+    ...         'weight': torch.arange(8, 10, dtype=torch.float64).reshape((1, 2)), 
+    ...         'bias': torch.arange(10, 11, dtype=torch.float64).reshape((1,)) 
+    ...     }, 
+    ... } 
+    &gt;&gt;&gt; tree  # doctest: +IGNORE_WHITESPACE 
+    { 
+        'layer1': { 
+            'weight': tensor([[0., 1., 2.], 
+                              [3., 4., 5.]], dtype=torch.float64), 
+            'bias': tensor([6., 7.], dtype=torch.float64) 
+        }, 
+        'layer2': { 
+            'weight': tensor([[8., 9.]], dtype=torch.float64), 
+            'bias': tensor([10.], dtype=torch.float64) 
+        } 
+    } 
+    &gt;&gt;&gt; flat, unravel_func = tree_ravel(tree) 
+    &gt;&gt;&gt; flat 
+    tensor([ 6.,  7.,  0.,  1.,  2.,  3.,  4.,  5., 10.,  8.,  9.], dtype=torch.float64) 
+    &gt;&gt;&gt; unravel_func(flat)  # doctest: +IGNORE_WHITESPACE 
+    { 
+        'layer1': { 
+            'weight': tensor([[0., 1., 2.], 
+                              [3., 4., 5.]], dtype=torch.float64), 
+            'bias': tensor([6., 7.], dtype=torch.float64) 
+        }, 
+        'layer2': { 
+            'weight': tensor([[8., 9.]], dtype=torch.float64), 
+            'bias': tensor([10.], dtype=torch.float64) 
+        } 
+    } 
+ 
+    Args: 
+        tree (pytree): a pytree of tensors to ravel. 
+        is_leaf (callable, optional): An optionally specified function that will be called at each 
+            flattening step. It should return a boolean, with :data:`True` stopping the traversal 
+            and the whole subtree being treated as a leaf, and :data:`False` indicating the 
+            flattening should traverse the current object. 
+        none_is_leaf (bool, optional): Whether to treat :data:`None` as a leaf. If :data:`False`, 
+            :data:`None` is a non-leaf node with arity 0. Thus :data:`None` is contained in the 
+            treespec rather than in the leaves list and :data:`None` will be remain in the result 
+            pytree. (default: :data:`False`) 
+        namespace (str, optional): The registry namespace used for custom pytree node types. 
+            (default: :const:`''`, i.e., the global namespace) 
+ 
+    Returns: 
+        A pair ``(tensor, unravel_func)`` where the first element is a 1D tensor representing the 
+        flattened and concatenated leaf values, with ``dtype`` determined by promoting the 
+        ``dtype``\s of leaf values, and the second element is a callable for unflattening a 1D tensor 
+        of the same length back to a pytree of the same structure as the input ``tree``. If the 
+        input pytree is empty (i.e. has no leaves) then as a convention a 1D empty tensor of the 
+        default dtype is returned in the first component of the output. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">leaves</span><span class="s4">, </span><span class="s1">treespec </span><span class="s4">= </span><span class="s1">tree_flatten</span><span class="s4">(</span>
+        <span class="s1">tree</span><span class="s4">,</span>
+        <span class="s1">is_leaf</span><span class="s4">=</span><span class="s1">is_leaf</span><span class="s4">,</span>
+        <span class="s1">none_is_leaf</span><span class="s4">=</span><span class="s1">none_is_leaf</span><span class="s4">,</span>
+        <span class="s1">namespace</span><span class="s4">=</span><span class="s1">namespace</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s1">flat</span><span class="s4">, </span><span class="s1">unravel_flat </span><span class="s4">= </span><span class="s1">_ravel_leaves</span><span class="s4">(</span><span class="s1">leaves</span><span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">flat</span><span class="s4">, </span><span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">(</span><span class="s1">_tree_unravel</span><span class="s4">, </span><span class="s1">treespec</span><span class="s4">, </span><span class="s1">unravel_flat</span><span class="s4">)</span>
+
+
+<span class="s1">ravel_pytree </span><span class="s4">= </span><span class="s1">tree_ravel</span>
+
+
+<span class="s3">def </span><span class="s1">_tree_unravel</span><span class="s4">(</span>
+    <span class="s1">treespec</span><span class="s4">: </span><span class="s1">PyTreeSpec</span><span class="s4">,</span>
+    <span class="s1">unravel_flat</span><span class="s4">: </span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">]],</span>
+    <span class="s1">flat</span><span class="s4">: </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; TensorTree</span><span class="s4">:</span>
+    <span class="s3">return </span><span class="s1">tree_unflatten</span><span class="s4">(</span><span class="s1">treespec</span><span class="s4">, </span><span class="s1">unravel_flat</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_ravel_leaves</span><span class="s4">(</span>
+    <span class="s1">leaves</span><span class="s4">: </span><span class="s1">list</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; tuple</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">, </span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">], </span><span class="s1">list</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">]]]:</span>
+    <span class="s3">if not </span><span class="s1">leaves</span><span class="s4">:</span>
+        <span class="s3">return </span><span class="s4">(</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s6">0</span><span class="s4">), </span><span class="s1">_unravel_empty</span><span class="s4">)</span>
+    <span class="s3">if not </span><span class="s1">all</span><span class="s4">(</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">is_tensor</span><span class="s4">(</span><span class="s1">leaf</span><span class="s4">) </span><span class="s3">for </span><span class="s1">leaf </span><span class="s3">in </span><span class="s1">leaves</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">'All leaves must be tensors.'</span><span class="s4">)</span>
+
+    <span class="s1">from_dtypes </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">leaf</span><span class="s4">.</span><span class="s1">dtype </span><span class="s3">for </span><span class="s1">leaf </span><span class="s3">in </span><span class="s1">leaves</span><span class="s4">)</span>
+    <span class="s1">to_dtype </span><span class="s4">= </span><span class="s1">from_dtypes</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s3">for </span><span class="s1">from_dtype </span><span class="s3">in </span><span class="s1">from_dtypes</span><span class="s4">[</span><span class="s6">1</span><span class="s4">:]:</span>
+        <span class="s1">to_dtype </span><span class="s4">= </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">promote_types</span><span class="s4">(</span><span class="s1">to_dtype</span><span class="s4">, </span><span class="s1">from_dtype</span><span class="s4">)</span>
+    <span class="s1">sizes </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">leaf</span><span class="s4">.</span><span class="s1">numel</span><span class="s4">() </span><span class="s3">for </span><span class="s1">leaf </span><span class="s3">in </span><span class="s1">leaves</span><span class="s4">)</span>
+    <span class="s1">shapes </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">leaf</span><span class="s4">.</span><span class="s1">shape </span><span class="s3">for </span><span class="s1">leaf </span><span class="s3">in </span><span class="s1">leaves</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">all</span><span class="s4">(</span><span class="s1">dt </span><span class="s4">== </span><span class="s1">to_dtype </span><span class="s3">for </span><span class="s1">dt </span><span class="s3">in </span><span class="s1">from_dtypes</span><span class="s4">):</span>
+        <span class="s0"># Skip any dtype conversion, resulting in a dtype-polymorphic `unravel`.</span>
+        <span class="s1">raveled </span><span class="s4">= </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">cat</span><span class="s4">([</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">ravel</span><span class="s4">(</span><span class="s1">leaf</span><span class="s4">) </span><span class="s3">for </span><span class="s1">leaf </span><span class="s3">in </span><span class="s1">leaves</span><span class="s4">])</span>
+        <span class="s3">return </span><span class="s4">(</span>
+            <span class="s1">raveled</span><span class="s4">,</span>
+            <span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">(</span><span class="s1">_unravel_leaves_single_dtype</span><span class="s4">, </span><span class="s1">sizes</span><span class="s4">, </span><span class="s1">shapes</span><span class="s4">),</span>
+        <span class="s4">)</span>
+
+    <span class="s0"># When there is more than one distinct input dtype, we perform type conversions and produce a</span>
+    <span class="s0"># dtype-specific unravel function.</span>
+    <span class="s1">raveled </span><span class="s4">= </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">cat</span><span class="s4">([</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">ravel</span><span class="s4">(</span><span class="s1">leaf</span><span class="s4">).</span><span class="s1">to</span><span class="s4">(</span><span class="s1">to_dtype</span><span class="s4">) </span><span class="s3">for </span><span class="s1">leaf </span><span class="s3">in </span><span class="s1">leaves</span><span class="s4">])</span>
+    <span class="s3">return </span><span class="s4">(</span>
+        <span class="s1">raveled</span><span class="s4">,</span>
+        <span class="s1">functools</span><span class="s4">.</span><span class="s1">partial</span><span class="s4">(</span><span class="s1">_unravel_leaves</span><span class="s4">, </span><span class="s1">sizes</span><span class="s4">, </span><span class="s1">shapes</span><span class="s4">, </span><span class="s1">from_dtypes</span><span class="s4">, </span><span class="s1">to_dtype</span><span class="s4">),</span>
+    <span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_unravel_empty</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">: </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">) </span><span class="s1">-&gt; list</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">]:</span>
+    <span class="s3">if not </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">is_tensor</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">f'Expected a tensor to unravel, got </span><span class="s3">{</span><span class="s1">type</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">)</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">flat</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">!= (</span><span class="s6">0</span><span class="s4">,):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">f'The unravel function expected a tensor of shape </span><span class="s3">{</span><span class="s4">(</span><span class="s6">0</span><span class="s4">,)</span><span class="s3">}</span><span class="s5">, got shape </span><span class="s3">{</span><span class="s1">flat</span><span class="s4">.</span><span class="s1">shape</span><span class="s3">}</span><span class="s5">.'</span><span class="s4">,</span>
+        <span class="s4">)</span>
+    <span class="s3">return </span><span class="s4">[]</span>
+
+
+<span class="s3">def </span><span class="s1">_unravel_leaves_single_dtype</span><span class="s4">(</span>
+    <span class="s1">sizes</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">int</span><span class="s4">, ...],</span>
+    <span class="s1">shapes</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">int</span><span class="s4">, ...]],</span>
+    <span class="s1">flat</span><span class="s4">: </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; list</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">]:</span>
+    <span class="s3">if not </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">is_tensor</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">f'Expected a tensor to unravel, got </span><span class="s3">{</span><span class="s1">type</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">)</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">flat</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">!= (</span><span class="s1">sum</span><span class="s4">(</span><span class="s1">sizes</span><span class="s4">),):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">f'The unravel function expected a tensor of shape </span><span class="s3">{</span><span class="s4">(</span><span class="s1">sum</span><span class="s4">(</span><span class="s1">sizes</span><span class="s4">),)</span><span class="s3">}</span><span class="s5">, '</span>
+            <span class="s5">f'got shape </span><span class="s3">{</span><span class="s1">flat</span><span class="s4">.</span><span class="s1">shape</span><span class="s3">}</span><span class="s5">.'</span><span class="s4">,</span>
+        <span class="s4">)</span>
+
+    <span class="s1">chunks </span><span class="s4">= </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">, </span><span class="s1">list</span><span class="s4">(</span><span class="s1">sizes</span><span class="s4">))</span>
+    <span class="s3">return </span><span class="s4">[</span><span class="s1">chunk</span><span class="s4">.</span><span class="s1">reshape</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">) </span><span class="s3">for </span><span class="s1">chunk</span><span class="s4">, </span><span class="s1">shape </span><span class="s3">in </span><span class="s1">safe_zip</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">, </span><span class="s1">shapes</span><span class="s4">)]</span>
+
+
+<span class="s3">def </span><span class="s1">_unravel_leaves</span><span class="s4">(</span>
+    <span class="s1">sizes</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">int</span><span class="s4">, ...],</span>
+    <span class="s1">shapes</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">int</span><span class="s4">, ...]],</span>
+    <span class="s1">from_dtypes</span><span class="s4">: </span><span class="s1">tuple</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">, ...],</span>
+    <span class="s1">to_dtype</span><span class="s4">: </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">,</span>
+    <span class="s1">flat</span><span class="s4">: </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; list</span><span class="s4">[</span><span class="s1">torch</span><span class="s4">.</span><span class="s1">Tensor</span><span class="s4">]:</span>
+    <span class="s3">if not </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">is_tensor</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">f'Expected a tensor to unravel, got </span><span class="s3">{</span><span class="s1">type</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">)</span><span class="s3">!r}</span><span class="s5">.'</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">flat</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">!= (</span><span class="s1">sum</span><span class="s4">(</span><span class="s1">sizes</span><span class="s4">),):</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">f'The unravel function expected a tensor of shape </span><span class="s3">{</span><span class="s4">(</span><span class="s1">sum</span><span class="s4">(</span><span class="s1">sizes</span><span class="s4">),)</span><span class="s3">}</span><span class="s5">, '</span>
+            <span class="s5">f'got shape </span><span class="s3">{</span><span class="s1">flat</span><span class="s4">.</span><span class="s1">shape</span><span class="s3">}</span><span class="s5">.'</span><span class="s4">,</span>
+        <span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">flat</span><span class="s4">.</span><span class="s1">dtype </span><span class="s4">!= </span><span class="s1">to_dtype</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+            <span class="s5">f'The unravel function expected a tensor of dtype </span><span class="s3">{</span><span class="s1">to_dtype</span><span class="s3">}</span><span class="s5">, got dtype </span><span class="s3">{</span><span class="s1">flat</span><span class="s4">.</span><span class="s1">dtype</span><span class="s3">}</span><span class="s5">.'</span><span class="s4">,</span>
+        <span class="s4">)</span>
+
+    <span class="s1">chunks </span><span class="s4">= </span><span class="s1">torch</span><span class="s4">.</span><span class="s1">split</span><span class="s4">(</span><span class="s1">flat</span><span class="s4">, </span><span class="s1">list</span><span class="s4">(</span><span class="s1">sizes</span><span class="s4">))</span>
+    <span class="s3">with </span><span class="s1">warnings</span><span class="s4">.</span><span class="s1">catch_warnings</span><span class="s4">():</span>
+        <span class="s1">warnings</span><span class="s4">.</span><span class="s1">simplefilter</span><span class="s4">(</span><span class="s5">'ignore'</span><span class="s4">)  </span><span class="s0"># ignore complex-to-real cast warning</span>
+        <span class="s3">return </span><span class="s4">[</span>
+            <span class="s1">chunk</span><span class="s4">.</span><span class="s1">reshape</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">).</span><span class="s1">to</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+            <span class="s3">for </span><span class="s1">chunk</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype </span><span class="s3">in </span><span class="s1">safe_zip</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">, </span><span class="s1">shapes</span><span class="s4">, </span><span class="s1">from_dtypes</span><span class="s4">)</span>
+        <span class="s4">]</span>
+</pre>
+</body>
+</html>

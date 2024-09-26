@@ -1,0 +1,637 @@
+<html>
+<head>
+<title>files.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #2aacb8;}
+.s6 { color: #6aab73;}
+.s7 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+files.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is part of h5py, a Python interface to the HDF5 library.</span>
+<span class="s0">#</span>
+<span class="s0"># http://www.h5py.org</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright 2008-2013 Andrew Collette and contributors</span>
+<span class="s0">#</span>
+<span class="s0"># License:  Standard 3-clause BSD; see &quot;license.txt&quot; for full license terms</span>
+<span class="s0">#           and contributor agreement.</span>
+
+<span class="s2">&quot;&quot;&quot; 
+    Implements high-level support for HDF5 file objects. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">import </span><span class="s1">os</span>
+<span class="s3">from </span><span class="s1">warnings </span><span class="s3">import </span><span class="s1">warn</span>
+
+<span class="s3">from </span><span class="s4">.</span><span class="s1">compat </span><span class="s3">import </span><span class="s1">filename_decode</span><span class="s4">, </span><span class="s1">filename_encode</span>
+
+<span class="s3">from </span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">phil</span><span class="s4">, </span><span class="s1">with_phil</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">group </span><span class="s3">import </span><span class="s1">Group</span>
+<span class="s3">from </span><span class="s4">.. </span><span class="s3">import </span><span class="s1">h5</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">, </span><span class="s1">h5p</span><span class="s4">, </span><span class="s1">h5i</span><span class="s4">, </span><span class="s1">h5fd</span><span class="s4">, </span><span class="s1">_objects</span>
+<span class="s3">from </span><span class="s4">.. </span><span class="s3">import </span><span class="s1">version</span>
+
+<span class="s1">mpi </span><span class="s4">= </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">mpi</span>
+<span class="s1">ros3 </span><span class="s4">= </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">ros3</span>
+<span class="s1">direct_vfd </span><span class="s4">= </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">direct_vfd</span>
+<span class="s1">hdf5_version </span><span class="s4">= </span><span class="s1">version</span><span class="s4">.</span><span class="s1">hdf5_version_tuple</span><span class="s4">[</span><span class="s5">0</span><span class="s4">:</span><span class="s5">3</span><span class="s4">]</span>
+
+<span class="s1">swmr_support </span><span class="s4">= </span><span class="s3">True</span>
+
+
+<span class="s1">libver_dict </span><span class="s4">= {</span><span class="s6">'earliest'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_EARLIEST</span><span class="s4">, </span><span class="s6">'latest'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_LATEST</span><span class="s4">,</span>
+               <span class="s6">'v108'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_V18</span><span class="s4">, </span><span class="s6">'v110'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_V110</span><span class="s4">}</span>
+<span class="s1">libver_dict_r </span><span class="s4">= </span><span class="s1">dict</span><span class="s4">((</span><span class="s1">y</span><span class="s4">, </span><span class="s1">x</span><span class="s4">) </span><span class="s3">for </span><span class="s1">x</span><span class="s4">, </span><span class="s1">y </span><span class="s3">in </span><span class="s1">libver_dict</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+
+<span class="s3">if </span><span class="s1">hdf5_version </span><span class="s4">&gt;= (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">11</span><span class="s4">, </span><span class="s5">4</span><span class="s4">):</span>
+    <span class="s1">libver_dict</span><span class="s4">.</span><span class="s1">update</span><span class="s4">({</span><span class="s6">'v112'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_V112</span><span class="s4">})</span>
+    <span class="s1">libver_dict_r</span><span class="s4">.</span><span class="s1">update</span><span class="s4">({</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_V112</span><span class="s4">: </span><span class="s6">'v112'</span><span class="s4">})</span>
+
+<span class="s3">if </span><span class="s1">hdf5_version </span><span class="s4">&gt;= (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">13</span><span class="s4">, </span><span class="s5">0</span><span class="s4">):</span>
+    <span class="s1">libver_dict</span><span class="s4">.</span><span class="s1">update</span><span class="s4">({</span><span class="s6">'v114'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_V114</span><span class="s4">})</span>
+    <span class="s1">libver_dict_r</span><span class="s4">.</span><span class="s1">update</span><span class="s4">({</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_V114</span><span class="s4">: </span><span class="s6">'v114'</span><span class="s4">})</span>
+
+
+<span class="s3">def </span><span class="s1">_set_fapl_mpio</span><span class="s4">(</span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Set file access property list for mpio driver&quot;&quot;&quot;</span>
+    <span class="s3">if not </span><span class="s1">mpi</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;h5py was built without MPI support, can't use mpio driver&quot;</span><span class="s4">)</span>
+
+    <span class="s3">import </span><span class="s1">mpi4py</span><span class="s4">.</span><span class="s1">MPI</span>
+    <span class="s1">kwargs</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s6">'info'</span><span class="s4">, </span><span class="s1">mpi4py</span><span class="s4">.</span><span class="s1">MPI</span><span class="s4">.</span><span class="s1">Info</span><span class="s4">())</span>
+    <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_mpio</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_set_fapl_fileobj</span><span class="s4">(</span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Set the Python file object driver in a file access property list&quot;&quot;&quot;</span>
+    <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fileobj_driver</span><span class="s4">(</span><span class="s1">h5fd</span><span class="s4">.</span><span class="s1">fileobj_driver</span><span class="s4">, </span><span class="s1">kwargs</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s6">'fileobj'</span><span class="s4">))</span>
+
+
+<span class="s1">_drivers </span><span class="s4">= {</span>
+    <span class="s6">'sec2'</span><span class="s4">: </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_sec2</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">),</span>
+    <span class="s6">'stdio'</span><span class="s4">: </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_stdio</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">),</span>
+    <span class="s6">'core'</span><span class="s4">: </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_core</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">),</span>
+    <span class="s6">'family'</span><span class="s4">: </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_family</span><span class="s4">(</span>
+        <span class="s1">memb_fapl</span><span class="s4">=</span><span class="s1">plist</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">(),</span>
+        <span class="s4">**</span><span class="s1">kwargs</span>
+    <span class="s4">),</span>
+    <span class="s6">'mpio'</span><span class="s4">: </span><span class="s1">_set_fapl_mpio</span><span class="s4">,</span>
+    <span class="s6">'fileobj'</span><span class="s4">: </span><span class="s1">_set_fapl_fileobj</span><span class="s4">,</span>
+    <span class="s6">'split'</span><span class="s4">: </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_split</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">),</span>
+<span class="s4">}</span>
+
+<span class="s3">if </span><span class="s1">ros3</span><span class="s4">:</span>
+    <span class="s1">_drivers</span><span class="s4">[</span><span class="s6">'ros3'</span><span class="s4">] = </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_ros3</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">)</span>
+
+<span class="s3">if </span><span class="s1">direct_vfd</span><span class="s4">:</span>
+    <span class="s1">_drivers</span><span class="s4">[</span><span class="s6">'direct'</span><span class="s4">] = </span><span class="s3">lambda </span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">: </span><span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_direct</span><span class="s4">(**</span><span class="s1">kwargs</span><span class="s4">)  </span><span class="s0"># noqa</span>
+
+
+<span class="s3">def </span><span class="s1">register_driver</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">set_fapl</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Register a custom driver. 
+ 
+    Parameters 
+    ---------- 
+    name : str 
+        The name of the driver. 
+    set_fapl : callable[PropFAID, **kwargs] -&gt; NoneType 
+        The function to set the fapl to use your custom driver. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">_drivers</span><span class="s4">[</span><span class="s1">name</span><span class="s4">] = </span><span class="s1">set_fapl</span>
+
+
+<span class="s3">def </span><span class="s1">unregister_driver</span><span class="s4">(</span><span class="s1">name</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Unregister a custom driver. 
+ 
+    Parameters 
+    ---------- 
+    name : str 
+        The name of the driver. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">del </span><span class="s1">_drivers</span><span class="s4">[</span><span class="s1">name</span><span class="s4">]</span>
+
+
+<span class="s3">def </span><span class="s1">registered_drivers</span><span class="s4">():</span>
+    <span class="s2">&quot;&quot;&quot;Return a frozenset of the names of all of the registered drivers. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">return </span><span class="s1">frozenset</span><span class="s4">(</span><span class="s1">_drivers</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">make_fapl</span><span class="s4">(</span><span class="s1">driver</span><span class="s4">, </span><span class="s1">libver</span><span class="s4">, </span><span class="s1">rdcc_nslots</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">, </span><span class="s1">locking</span><span class="s4">,</span>
+              <span class="s1">page_buf_size</span><span class="s4">, </span><span class="s1">min_meta_keep</span><span class="s4">, </span><span class="s1">min_raw_keep</span><span class="s4">,</span>
+              <span class="s1">alignment_threshold</span><span class="s4">, </span><span class="s1">alignment_interval</span><span class="s4">, </span><span class="s1">meta_block_size</span><span class="s4">,</span>
+              <span class="s4">**</span><span class="s1">kwds</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Set up a file access property list &quot;&quot;&quot;</span>
+    <span class="s1">plist </span><span class="s4">= </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">FILE_ACCESS</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">libver </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">libver </span><span class="s3">in </span><span class="s1">libver_dict</span><span class="s4">:</span>
+            <span class="s1">low </span><span class="s4">= </span><span class="s1">libver_dict</span><span class="s4">[</span><span class="s1">libver</span><span class="s4">]</span>
+            <span class="s1">high </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_LATEST</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">low</span><span class="s4">, </span><span class="s1">high </span><span class="s4">= (</span><span class="s1">libver_dict</span><span class="s4">[</span><span class="s1">x</span><span class="s4">] </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">libver</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s0"># we default to earliest</span>
+        <span class="s1">low</span><span class="s4">, </span><span class="s1">high </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_EARLIEST</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">LIBVER_LATEST</span>
+    <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_libver_bounds</span><span class="s4">(</span><span class="s1">low</span><span class="s4">, </span><span class="s1">high</span><span class="s4">)</span>
+    <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_alignment</span><span class="s4">(</span><span class="s1">alignment_threshold</span><span class="s4">, </span><span class="s1">alignment_interval</span><span class="s4">)</span>
+
+    <span class="s1">cache_settings </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">plist</span><span class="s4">.</span><span class="s1">get_cache</span><span class="s4">())</span>
+    <span class="s3">if </span><span class="s1">rdcc_nslots </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">1</span><span class="s4">] = </span><span class="s1">rdcc_nslots</span>
+    <span class="s3">if </span><span class="s1">rdcc_nbytes </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">2</span><span class="s4">] = </span><span class="s1">rdcc_nbytes</span>
+    <span class="s3">if </span><span class="s1">rdcc_w0 </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">3</span><span class="s4">] = </span><span class="s1">rdcc_w0</span>
+    <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_cache</span><span class="s4">(*</span><span class="s1">cache_settings</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">page_buf_size</span><span class="s4">:</span>
+        <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_page_buffer_size</span><span class="s4">(</span><span class="s1">int</span><span class="s4">(</span><span class="s1">page_buf_size</span><span class="s4">), </span><span class="s1">int</span><span class="s4">(</span><span class="s1">min_meta_keep</span><span class="s4">),</span>
+                                   <span class="s1">int</span><span class="s4">(</span><span class="s1">min_raw_keep</span><span class="s4">))</span>
+
+    <span class="s3">if </span><span class="s1">meta_block_size </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_meta_block_size</span><span class="s4">(</span><span class="s1">int</span><span class="s4">(</span><span class="s1">meta_block_size</span><span class="s4">))</span>
+
+    <span class="s3">if </span><span class="s1">locking </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">hdf5_version </span><span class="s4">&lt; (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">12</span><span class="s4">, </span><span class="s5">1</span><span class="s4">) </span><span class="s3">and </span><span class="s4">(</span><span class="s1">hdf5_version</span><span class="s4">[:</span><span class="s5">2</span><span class="s4">] != (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">10</span><span class="s4">) </span><span class="s3">or </span><span class="s1">hdf5_version</span><span class="s4">[</span><span class="s5">2</span><span class="s4">] &lt; </span><span class="s5">7</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                <span class="s6">&quot;HDF5 version &gt;= 1.12.1 or 1.10.x &gt;= 1.10.7 required for file locking.&quot;</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">locking </span><span class="s3">in </span><span class="s4">(</span><span class="s6">&quot;false&quot;</span><span class="s4">, </span><span class="s3">False</span><span class="s4">):</span>
+            <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_file_locking</span><span class="s4">(</span><span class="s3">False</span><span class="s4">, </span><span class="s1">ignore_when_disabled</span><span class="s4">=</span><span class="s3">False</span><span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">locking </span><span class="s3">in </span><span class="s4">(</span><span class="s6">&quot;true&quot;</span><span class="s4">, </span><span class="s3">True</span><span class="s4">):</span>
+            <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_file_locking</span><span class="s4">(</span><span class="s3">True</span><span class="s4">, </span><span class="s1">ignore_when_disabled</span><span class="s4">=</span><span class="s3">False</span><span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">locking </span><span class="s4">== </span><span class="s6">&quot;best-effort&quot;</span><span class="s4">:</span>
+            <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_file_locking</span><span class="s4">(</span><span class="s3">True</span><span class="s4">, </span><span class="s1">ignore_when_disabled</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">f&quot;Unsupported locking value: </span><span class="s3">{</span><span class="s1">locking</span><span class="s3">}</span><span class="s6">&quot;</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">driver </span><span class="s3">is None or </span><span class="s4">(</span><span class="s1">driver </span><span class="s4">== </span><span class="s6">'windows' </span><span class="s3">and </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">platform </span><span class="s4">== </span><span class="s6">'win32'</span><span class="s4">):</span>
+        <span class="s0"># Prevent swallowing unused key arguments</span>
+        <span class="s3">if </span><span class="s1">kwds</span><span class="s4">:</span>
+            <span class="s1">msg </span><span class="s4">= </span><span class="s6">&quot;'{key}' is an invalid keyword argument for this function&quot; </span><span class="s1">\</span>
+                  <span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">key</span><span class="s4">=</span><span class="s1">next</span><span class="s4">(</span><span class="s1">iter</span><span class="s4">(</span><span class="s1">kwds</span><span class="s4">)))</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s1">msg</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">plist</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s1">set_fapl </span><span class="s4">= </span><span class="s1">_drivers</span><span class="s4">[</span><span class="s1">driver</span><span class="s4">]</span>
+    <span class="s3">except </span><span class="s1">KeyError</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">'Unknown driver type &quot;%s&quot;' </span><span class="s4">% </span><span class="s1">driver</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">driver </span><span class="s4">== </span><span class="s6">'ros3'</span><span class="s4">:</span>
+            <span class="s1">token </span><span class="s4">= </span><span class="s1">kwds</span><span class="s4">.</span><span class="s1">pop</span><span class="s4">(</span><span class="s6">'session_token'</span><span class="s4">, </span><span class="s3">None</span><span class="s4">)</span>
+            <span class="s1">set_fapl</span><span class="s4">(</span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">token</span><span class="s4">:</span>
+                <span class="s3">if </span><span class="s1">hdf5_version </span><span class="s4">&lt; (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">14</span><span class="s4">, </span><span class="s5">2</span><span class="s4">):</span>
+                    <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">'HDF5 &gt;= 1.14.2 required for AWS session token'</span><span class="s4">)</span>
+                <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_fapl_ros3_token</span><span class="s4">(</span><span class="s1">token</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">set_fapl</span><span class="s4">(</span><span class="s1">plist</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">plist</span>
+
+
+<span class="s3">def </span><span class="s1">make_fcpl</span><span class="s4">(</span><span class="s1">track_order</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">fs_strategy</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">fs_persist</span><span class="s4">=</span><span class="s3">False</span><span class="s4">,</span>
+              <span class="s1">fs_threshold</span><span class="s4">=</span><span class="s5">1</span><span class="s4">, </span><span class="s1">fs_page_size</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Set up a file creation property list &quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">track_order </span><span class="s3">or </span><span class="s1">fs_strategy</span><span class="s4">:</span>
+        <span class="s1">plist </span><span class="s4">= </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">FILE_CREATE</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">track_order</span><span class="s4">:</span>
+            <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_link_creation_order</span><span class="s4">(</span>
+                <span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_TRACKED </span><span class="s4">| </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_INDEXED</span><span class="s4">)</span>
+            <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_attr_creation_order</span><span class="s4">(</span>
+                <span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_TRACKED </span><span class="s4">| </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_INDEXED</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">fs_strategy</span><span class="s4">:</span>
+            <span class="s1">strategies </span><span class="s4">= {</span>
+                <span class="s6">'fsm'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">FSPACE_STRATEGY_FSM_AGGR</span><span class="s4">,</span>
+                <span class="s6">'page'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">FSPACE_STRATEGY_PAGE</span><span class="s4">,</span>
+                <span class="s6">'aggregate'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">FSPACE_STRATEGY_AGGR</span><span class="s4">,</span>
+                <span class="s6">'none'</span><span class="s4">: </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">FSPACE_STRATEGY_NONE</span>
+            <span class="s4">}</span>
+            <span class="s1">fs_strat_num </span><span class="s4">= </span><span class="s1">strategies</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">fs_strategy</span><span class="s4">, -</span><span class="s5">1</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">fs_strat_num </span><span class="s4">== -</span><span class="s5">1</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Invalid file space strategy type&quot;</span><span class="s4">)</span>
+
+            <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_file_space_strategy</span><span class="s4">(</span><span class="s1">fs_strat_num</span><span class="s4">, </span><span class="s1">fs_persist</span><span class="s4">, </span><span class="s1">fs_threshold</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">fs_page_size </span><span class="s3">and </span><span class="s1">fs_strategy </span><span class="s4">== </span><span class="s6">'page'</span><span class="s4">:</span>
+                <span class="s1">plist</span><span class="s4">.</span><span class="s1">set_file_space_page_size</span><span class="s4">(</span><span class="s1">int</span><span class="s4">(</span><span class="s1">fs_page_size</span><span class="s4">))</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s1">plist </span><span class="s4">= </span><span class="s3">None</span>
+    <span class="s3">return </span><span class="s1">plist</span>
+
+
+<span class="s3">def </span><span class="s1">make_fid</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">mode</span><span class="s4">, </span><span class="s1">userblock_size</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">, </span><span class="s1">fcpl</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">swmr</span><span class="s4">=</span><span class="s3">False</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Get a new FileID by opening or creating a file. 
+    Also validates mode argument.&quot;&quot;&quot;</span>
+
+    <span class="s3">if </span><span class="s1">userblock_size </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">mode </span><span class="s3">in </span><span class="s4">(</span><span class="s6">'r'</span><span class="s4">, </span><span class="s6">'r+'</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;User block may only be specified &quot;</span>
+                             <span class="s6">&quot;when creating a file&quot;</span><span class="s4">)</span>
+        <span class="s3">try</span><span class="s4">:</span>
+            <span class="s1">userblock_size </span><span class="s4">= </span><span class="s1">int</span><span class="s4">(</span><span class="s1">userblock_size</span><span class="s4">)</span>
+        <span class="s3">except </span><span class="s4">(</span><span class="s1">TypeError</span><span class="s4">, </span><span class="s1">ValueError</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;User block size must be an integer&quot;</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">fcpl </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">fcpl </span><span class="s4">= </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">FILE_CREATE</span><span class="s4">)</span>
+        <span class="s1">fcpl</span><span class="s4">.</span><span class="s1">set_userblock</span><span class="s4">(</span><span class="s1">userblock_size</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">mode </span><span class="s4">== </span><span class="s6">'r'</span><span class="s4">:</span>
+        <span class="s1">flags </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_RDONLY</span>
+        <span class="s3">if </span><span class="s1">swmr </span><span class="s3">and </span><span class="s1">swmr_support</span><span class="s4">:</span>
+            <span class="s1">flags </span><span class="s4">|= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_SWMR_READ</span>
+        <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">open</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">flags</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">=</span><span class="s1">fapl</span><span class="s4">)</span>
+    <span class="s3">elif </span><span class="s1">mode </span><span class="s4">== </span><span class="s6">'r+'</span><span class="s4">:</span>
+        <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">open</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_RDWR</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">=</span><span class="s1">fapl</span><span class="s4">)</span>
+    <span class="s3">elif </span><span class="s1">mode </span><span class="s3">in </span><span class="s4">[</span><span class="s6">'w-'</span><span class="s4">, </span><span class="s6">'x'</span><span class="s4">]:</span>
+        <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_EXCL</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">=</span><span class="s1">fapl</span><span class="s4">, </span><span class="s1">fcpl</span><span class="s4">=</span><span class="s1">fcpl</span><span class="s4">)</span>
+    <span class="s3">elif </span><span class="s1">mode </span><span class="s4">== </span><span class="s6">'w'</span><span class="s4">:</span>
+        <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_TRUNC</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">=</span><span class="s1">fapl</span><span class="s4">, </span><span class="s1">fcpl</span><span class="s4">=</span><span class="s1">fcpl</span><span class="s4">)</span>
+    <span class="s3">elif </span><span class="s1">mode </span><span class="s4">== </span><span class="s6">'a'</span><span class="s4">:</span>
+        <span class="s0"># Open in append mode (read/write).</span>
+        <span class="s0"># If that fails, create a new file only if it won't clobber an</span>
+        <span class="s0"># existing one (ACC_EXCL)</span>
+        <span class="s3">try</span><span class="s4">:</span>
+            <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">open</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_RDWR</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">=</span><span class="s1">fapl</span><span class="s4">)</span>
+        <span class="s0"># Not all drivers raise FileNotFoundError (commented those that do not)</span>
+        <span class="s3">except </span><span class="s1">FileNotFoundError </span><span class="s3">if </span><span class="s1">fapl</span><span class="s4">.</span><span class="s1">get_driver</span><span class="s4">() </span><span class="s3">in </span><span class="s4">(</span>
+            <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">SEC2</span><span class="s4">,</span>
+            <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">DIRECT </span><span class="s3">if </span><span class="s1">direct_vfd </span><span class="s3">else </span><span class="s4">-</span><span class="s5">1</span><span class="s4">,</span>
+            <span class="s0"># h5fd.STDIO,</span>
+            <span class="s0"># h5fd.CORE,</span>
+            <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">FAMILY</span><span class="s4">,</span>
+            <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">WINDOWS</span><span class="s4">,</span>
+            <span class="s0"># h5fd.MPIO,</span>
+            <span class="s0"># h5fd.MPIPOSIX,</span>
+            <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">fileobj_driver</span><span class="s4">,</span>
+            <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">ROS3D </span><span class="s3">if </span><span class="s1">ros3 </span><span class="s3">else </span><span class="s4">-</span><span class="s5">1</span><span class="s4">,</span>
+        <span class="s4">) </span><span class="s3">else </span><span class="s1">OSError</span><span class="s4">:</span>
+            <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_EXCL</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">=</span><span class="s1">fapl</span><span class="s4">, </span><span class="s1">fcpl</span><span class="s4">=</span><span class="s1">fcpl</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Invalid mode; must be one of r, r+, w, w-, x, a&quot;</span><span class="s4">)</span>
+
+    <span class="s3">try</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">userblock_size </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">existing_fcpl </span><span class="s4">= </span><span class="s1">fid</span><span class="s4">.</span><span class="s1">get_create_plist</span><span class="s4">()</span>
+            <span class="s3">if </span><span class="s1">existing_fcpl</span><span class="s4">.</span><span class="s1">get_userblock</span><span class="s4">() != </span><span class="s1">userblock_size</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Requested userblock size (%d) does not match that of existing file (%d)&quot; </span><span class="s4">% (</span><span class="s1">userblock_size</span><span class="s4">, </span><span class="s1">existing_fcpl</span><span class="s4">.</span><span class="s1">get_userblock</span><span class="s4">()))</span>
+    <span class="s3">except </span><span class="s1">Exception </span><span class="s3">as </span><span class="s1">e</span><span class="s4">:</span>
+        <span class="s1">fid</span><span class="s4">.</span><span class="s1">close</span><span class="s4">()</span>
+        <span class="s3">raise </span><span class="s1">e</span>
+
+    <span class="s3">return </span><span class="s1">fid</span>
+
+
+<span class="s3">class </span><span class="s1">File</span><span class="s4">(</span><span class="s1">Group</span><span class="s4">):</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Represents an HDF5 file. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">attrs</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Attributes attached to this object &quot;&quot;&quot;</span>
+        <span class="s0"># hdf5 complains that a file identifier is an invalid location for an</span>
+        <span class="s0"># attribute. Instead of self, pass the root group to AttributeManager:</span>
+        <span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">attrs</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">attrs</span><span class="s4">.</span><span class="s1">AttributeManager</span><span class="s4">(</span><span class="s1">self</span><span class="s4">[</span><span class="s6">'/'</span><span class="s4">])</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">filename</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;File name on disk&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">filename_decode</span><span class="s4">(</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">get_name</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">))</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">driver</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Low-level HDF5 file driver used to open file&quot;&quot;&quot;</span>
+        <span class="s1">drivers </span><span class="s4">= {</span><span class="s1">h5fd</span><span class="s4">.</span><span class="s1">SEC2</span><span class="s4">: </span><span class="s6">'sec2'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">STDIO</span><span class="s4">: </span><span class="s6">'stdio'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">CORE</span><span class="s4">: </span><span class="s6">'core'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">FAMILY</span><span class="s4">: </span><span class="s6">'family'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">WINDOWS</span><span class="s4">: </span><span class="s6">'windows'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">MPIO</span><span class="s4">: </span><span class="s6">'mpio'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">MPIPOSIX</span><span class="s4">: </span><span class="s6">'mpiposix'</span><span class="s4">,</span>
+                   <span class="s1">h5fd</span><span class="s4">.</span><span class="s1">fileobj_driver</span><span class="s4">: </span><span class="s6">'fileobj'</span><span class="s4">}</span>
+        <span class="s3">if </span><span class="s1">ros3</span><span class="s4">:</span>
+            <span class="s1">drivers</span><span class="s4">[</span><span class="s1">h5fd</span><span class="s4">.</span><span class="s1">ROS3D</span><span class="s4">] = </span><span class="s6">'ros3'</span>
+        <span class="s3">if </span><span class="s1">direct_vfd</span><span class="s4">:</span>
+            <span class="s1">drivers</span><span class="s4">[</span><span class="s1">h5fd</span><span class="s4">.</span><span class="s1">DIRECT</span><span class="s4">] = </span><span class="s6">'direct'</span>
+        <span class="s3">return </span><span class="s1">drivers</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_access_plist</span><span class="s4">().</span><span class="s1">get_driver</span><span class="s4">(), </span><span class="s6">'unknown'</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">mode</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Python mode used to open file &quot;&quot;&quot;</span>
+        <span class="s1">write_intent </span><span class="s4">= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_RDWR</span>
+        <span class="s3">if </span><span class="s1">swmr_support</span><span class="s4">:</span>
+            <span class="s1">write_intent </span><span class="s4">|= </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_SWMR_WRITE</span>
+        <span class="s3">return </span><span class="s6">'r+' </span><span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_intent</span><span class="s4">() &amp; </span><span class="s1">write_intent </span><span class="s3">else </span><span class="s6">'r'</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">libver</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;File format version bounds (2-tuple: low, high)&quot;&quot;&quot;</span>
+        <span class="s1">bounds </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_access_plist</span><span class="s4">().</span><span class="s1">get_libver_bounds</span><span class="s4">()</span>
+        <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">libver_dict_r</span><span class="s4">[</span><span class="s1">x</span><span class="s4">] </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">bounds</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">userblock_size</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; User block size (in bytes) &quot;&quot;&quot;</span>
+        <span class="s1">fcpl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_create_plist</span><span class="s4">()</span>
+        <span class="s3">return </span><span class="s1">fcpl</span><span class="s4">.</span><span class="s1">get_userblock</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">meta_block_size</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Meta block size (in bytes) &quot;&quot;&quot;</span>
+        <span class="s1">fapl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_access_plist</span><span class="s4">()</span>
+        <span class="s3">return </span><span class="s1">fapl</span><span class="s4">.</span><span class="s1">get_meta_block_size</span><span class="s4">()</span>
+
+    <span class="s3">if </span><span class="s1">mpi</span><span class="s4">:</span>
+
+        <span class="s4">@</span><span class="s1">property</span>
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">atomic</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot; Set/get MPI-IO atomic mode 
+            &quot;&quot;&quot;</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_mpi_atomicity</span><span class="s4">()</span>
+
+        <span class="s4">@</span><span class="s1">atomic</span><span class="s4">.</span><span class="s1">setter</span>
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">atomic</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">value</span><span class="s4">):</span>
+            <span class="s0"># pylint: disable=missing-docstring</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">set_mpi_atomicity</span><span class="s4">(</span><span class="s1">value</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">swmr_mode</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Controls single-writer multiple-reader mode &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">swmr_support </span><span class="s3">and </span><span class="s1">bool</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_intent</span><span class="s4">() &amp; (</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_SWMR_READ </span><span class="s4">| </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">ACC_SWMR_WRITE</span><span class="s4">))</span>
+
+    <span class="s4">@</span><span class="s1">swmr_mode</span><span class="s4">.</span><span class="s1">setter</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">swmr_mode</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">value</span><span class="s4">):</span>
+        <span class="s0"># pylint: disable=missing-docstring</span>
+        <span class="s3">if </span><span class="s1">value</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">start_swmr_write</span><span class="s4">()</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;It is not possible to forcibly switch SWMR mode off.&quot;</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">mode</span><span class="s4">=</span><span class="s6">'r'</span><span class="s4">, </span><span class="s1">driver</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">libver</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">userblock_size</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">swmr</span><span class="s4">=</span><span class="s3">False</span><span class="s4">,</span>
+                 <span class="s1">rdcc_nslots</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">track_order</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                 <span class="s1">fs_strategy</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">fs_persist</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">fs_threshold</span><span class="s4">=</span><span class="s5">1</span><span class="s4">, </span><span class="s1">fs_page_size</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                 <span class="s1">page_buf_size</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">min_meta_keep</span><span class="s4">=</span><span class="s5">0</span><span class="s4">, </span><span class="s1">min_raw_keep</span><span class="s4">=</span><span class="s5">0</span><span class="s4">, </span><span class="s1">locking</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                 <span class="s1">alignment_threshold</span><span class="s4">=</span><span class="s5">1</span><span class="s4">, </span><span class="s1">alignment_interval</span><span class="s4">=</span><span class="s5">1</span><span class="s4">, </span><span class="s1">meta_block_size</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Create a new file object. 
+ 
+        See the h5py user guide for a detailed explanation of the options. 
+ 
+        name 
+            Name of the file on disk, or file-like object.  Note: for files 
+            created with the 'core' driver, HDF5 still requires this be 
+            non-empty. 
+        mode 
+            r        Readonly, file must exist (default) 
+            r+       Read/write, file must exist 
+            w        Create file, truncate if exists 
+            w- or x  Create file, fail if exists 
+            a        Read/write if exists, create otherwise 
+        driver 
+            Name of the driver to use.  Legal values are None (default, 
+            recommended), 'core', 'sec2', 'direct', 'stdio', 'mpio', 'ros3'. 
+        libver 
+            Library version bounds.  Supported values: 'earliest', 'v108', 
+            'v110', 'v112'  and 'latest'. The 'v108', 'v110' and 'v112' 
+            options can only be specified with the HDF5 1.10.2 library or later. 
+        userblock_size 
+            Desired size of user block.  Only allowed when creating a new 
+            file (mode w, w- or x). 
+        swmr 
+            Open the file in SWMR read mode. Only used when mode = 'r'. 
+        rdcc_nbytes 
+            Total size of the dataset chunk cache in bytes. The default size 
+            is 1024**2 (1 MiB) per dataset. Applies to all datasets unless individually changed. 
+        rdcc_w0 
+            The chunk preemption policy for all datasets.  This must be 
+            between 0 and 1 inclusive and indicates the weighting according to 
+            which chunks which have been fully read or written are penalized 
+            when determining which chunks to flush from cache.  A value of 0 
+            means fully read or written chunks are treated no differently than 
+            other chunks (the preemption is strictly LRU) while a value of 1 
+            means fully read or written chunks are always preempted before 
+            other chunks.  If your application only reads or writes data once, 
+            this can be safely set to 1.  Otherwise, this should be set lower 
+            depending on how often you re-read or re-write the same data.  The 
+            default value is 0.75. Applies to all datasets unless individually changed. 
+        rdcc_nslots 
+            The number of chunk slots in the raw data chunk cache for this 
+            file. Increasing this value reduces the number of cache collisions, 
+            but slightly increases the memory used. Due to the hashing 
+            strategy, this value should ideally be a prime number. As a rule of 
+            thumb, this value should be at least 10 times the number of chunks 
+            that can fit in rdcc_nbytes bytes. For maximum performance, this 
+            value should be set approximately 100 times that number of 
+            chunks. The default value is 521. Applies to all datasets unless individually changed. 
+        track_order 
+            Track dataset/group/attribute creation order under root group 
+            if True. If None use global default h5.get_config().track_order. 
+        fs_strategy 
+            The file space handling strategy to be used.  Only allowed when 
+            creating a new file (mode w, w- or x).  Defined as: 
+            &quot;fsm&quot;        FSM, Aggregators, VFD 
+            &quot;page&quot;       Paged FSM, VFD 
+            &quot;aggregate&quot;  Aggregators, VFD 
+            &quot;none&quot;       VFD 
+            If None use HDF5 defaults. 
+        fs_page_size 
+            File space page size in bytes. Only used when fs_strategy=&quot;page&quot;. If 
+            None use the HDF5 default (4096 bytes). 
+        fs_persist 
+            A boolean value to indicate whether free space should be persistent 
+            or not.  Only allowed when creating a new file.  The default value 
+            is False. 
+        fs_threshold 
+            The smallest free-space section size that the free space manager 
+            will track.  Only allowed when creating a new file.  The default 
+            value is 1. 
+        page_buf_size 
+            Page buffer size in bytes. Only allowed for HDF5 files created with 
+            fs_strategy=&quot;page&quot;. Must be a power of two value and greater or 
+            equal than the file space page size when creating the file. It is 
+            not used by default. 
+        min_meta_keep 
+            Minimum percentage of metadata to keep in the page buffer before 
+            allowing pages containing metadata to be evicted. Applicable only if 
+            page_buf_size is set. Default value is zero. 
+        min_raw_keep 
+            Minimum percentage of raw data to keep in the page buffer before 
+            allowing pages containing raw data to be evicted. Applicable only if 
+            page_buf_size is set. Default value is zero. 
+        locking 
+            The file locking behavior. Defined as: 
+ 
+            - False (or &quot;false&quot;) --  Disable file locking 
+            - True (or &quot;true&quot;)   --  Enable file locking 
+            - &quot;best-effort&quot;      --  Enable file locking but ignore some errors 
+            - None               --  Use HDF5 defaults 
+ 
+            .. warning:: 
+ 
+                The HDF5_USE_FILE_LOCKING environment variable can override 
+                this parameter. 
+ 
+            Only available with HDF5 &gt;= 1.12.1 or 1.10.x &gt;= 1.10.7. 
+ 
+        alignment_threshold 
+            Together with ``alignment_interval``, this property ensures that 
+            any file object greater than or equal in size to the alignment 
+            threshold (in bytes) will be aligned on an address which is a 
+            multiple of alignment interval. 
+ 
+        alignment_interval 
+            This property should be used in conjunction with 
+            ``alignment_threshold``. See the description above. For more 
+            details, see 
+            https://portal.hdfgroup.org/display/HDF5/H5P_SET_ALIGNMENT 
+ 
+        meta_block_size 
+            Set the current minimum size, in bytes, of new metadata block allocations. 
+            See https://portal.hdfgroup.org/display/HDF5/H5P_SET_META_BLOCK_SIZE 
+ 
+        Additional keywords 
+            Passed on to the selected file driver. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">driver </span><span class="s4">== </span><span class="s6">'ros3'</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">ros3</span><span class="s4">:</span>
+                <span class="s3">from </span><span class="s1">urllib</span><span class="s4">.</span><span class="s1">parse </span><span class="s3">import </span><span class="s1">urlparse</span>
+                <span class="s1">url </span><span class="s4">= </span><span class="s1">urlparse</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+                <span class="s3">if </span><span class="s1">url</span><span class="s4">.</span><span class="s1">scheme </span><span class="s4">== </span><span class="s6">'s3'</span><span class="s4">:</span>
+                    <span class="s1">aws_region </span><span class="s4">= </span><span class="s1">kwds</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s6">'aws_region'</span><span class="s4">, </span><span class="s7">b''</span><span class="s4">).</span><span class="s1">decode</span><span class="s4">(</span><span class="s6">'ascii'</span><span class="s4">)</span>
+                    <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">aws_region</span><span class="s4">) == </span><span class="s5">0</span><span class="s4">:</span>
+                        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">'AWS region required for s3:// location'</span><span class="s4">)</span>
+                    <span class="s1">name </span><span class="s4">= </span><span class="s6">f'https://s3.</span><span class="s3">{</span><span class="s1">aws_region</span><span class="s3">}</span><span class="s6">.amazonaws.com/</span><span class="s3">{</span><span class="s1">url</span><span class="s4">.</span><span class="s1">netloc</span><span class="s3">}{</span><span class="s1">url</span><span class="s4">.</span><span class="s1">path</span><span class="s3">}</span><span class="s6">'</span>
+                <span class="s3">elif </span><span class="s1">url</span><span class="s4">.</span><span class="s1">scheme </span><span class="s3">not in </span><span class="s4">(</span><span class="s6">'https'</span><span class="s4">, </span><span class="s6">'http'</span><span class="s4">):</span>
+                    <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">f'</span><span class="s3">{</span><span class="s1">name</span><span class="s3">}</span><span class="s6">: S3 location must begin with '</span>
+                                     <span class="s6">'either &quot;https://&quot;, &quot;http://&quot;, or &quot;s3://&quot;'</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                    <span class="s6">&quot;h5py was built without ROS3 support, can't use ros3 driver&quot;</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">locking </span><span class="s3">is not None and </span><span class="s1">hdf5_version </span><span class="s4">&lt; (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">12</span><span class="s4">, </span><span class="s5">1</span><span class="s4">) </span><span class="s3">and </span><span class="s4">(</span>
+                <span class="s1">hdf5_version</span><span class="s4">[:</span><span class="s5">2</span><span class="s4">] != (</span><span class="s5">1</span><span class="s4">, </span><span class="s5">10</span><span class="s4">) </span><span class="s3">or </span><span class="s1">hdf5_version</span><span class="s4">[</span><span class="s5">2</span><span class="s4">] &lt; </span><span class="s5">7</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;HDF5 version &gt;= 1.12.1 or 1.10.x &gt;= 1.10.7 required for file locking options.&quot;</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">_objects</span><span class="s4">.</span><span class="s1">ObjectID</span><span class="s4">):</span>
+            <span class="s3">if </span><span class="s1">fs_strategy</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Unable to set file space strategy of an existing file&quot;</span><span class="s4">)</span>
+
+            <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+                <span class="s1">fid </span><span class="s4">= </span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">get_file_id</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s6">'read'</span><span class="s4">) </span><span class="s3">and </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s6">'seek'</span><span class="s4">):</span>
+                <span class="s3">if </span><span class="s1">driver </span><span class="s3">not in </span><span class="s4">(</span><span class="s3">None</span><span class="s4">, </span><span class="s6">'fileobj'</span><span class="s4">):</span>
+                    <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Driver must be 'fileobj' for file-like object if specified.&quot;</span><span class="s4">)</span>
+                <span class="s1">driver </span><span class="s4">= </span><span class="s6">'fileobj'</span>
+                <span class="s3">if </span><span class="s1">kwds</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s6">'fileobj'</span><span class="s4">, </span><span class="s1">name</span><span class="s4">) != </span><span class="s1">name</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Invalid value of 'fileobj' argument; &quot;</span>
+                                     <span class="s6">&quot;must equal to file-like object if specified.&quot;</span><span class="s4">)</span>
+                <span class="s1">kwds</span><span class="s4">.</span><span class="s1">update</span><span class="s4">(</span><span class="s1">fileobj</span><span class="s4">=</span><span class="s1">name</span><span class="s4">)</span>
+                <span class="s1">name </span><span class="s4">= </span><span class="s1">repr</span><span class="s4">(</span><span class="s1">name</span><span class="s4">).</span><span class="s1">encode</span><span class="s4">(</span><span class="s6">'ASCII'</span><span class="s4">, </span><span class="s6">'replace'</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">name </span><span class="s4">= </span><span class="s1">filename_encode</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">track_order </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">track_order </span><span class="s4">= </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">track_order</span>
+
+            <span class="s3">if </span><span class="s1">fs_strategy </span><span class="s3">and </span><span class="s1">mode </span><span class="s3">not in </span><span class="s4">(</span><span class="s6">'w'</span><span class="s4">, </span><span class="s6">'w-'</span><span class="s4">, </span><span class="s6">'x'</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Unable to set file space strategy of an existing file&quot;</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">swmr </span><span class="s3">and </span><span class="s1">mode </span><span class="s4">!= </span><span class="s6">'r'</span><span class="s4">:</span>
+                <span class="s1">warn</span><span class="s4">(</span>
+                    <span class="s6">&quot;swmr=True only affects read ('r') mode. For swmr write &quot;</span>
+                    <span class="s6">&quot;mode, set f.swmr_mode = True after opening the file.&quot;</span><span class="s4">,</span>
+                    <span class="s1">stacklevel</span><span class="s4">=</span><span class="s5">2</span><span class="s4">,</span>
+                <span class="s4">)</span>
+
+            <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+                <span class="s1">fapl </span><span class="s4">= </span><span class="s1">make_fapl</span><span class="s4">(</span><span class="s1">driver</span><span class="s4">, </span><span class="s1">libver</span><span class="s4">, </span><span class="s1">rdcc_nslots</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">,</span>
+                                 <span class="s1">locking</span><span class="s4">, </span><span class="s1">page_buf_size</span><span class="s4">, </span><span class="s1">min_meta_keep</span><span class="s4">, </span><span class="s1">min_raw_keep</span><span class="s4">,</span>
+                                 <span class="s1">alignment_threshold</span><span class="s4">=</span><span class="s1">alignment_threshold</span><span class="s4">,</span>
+                                 <span class="s1">alignment_interval</span><span class="s4">=</span><span class="s1">alignment_interval</span><span class="s4">,</span>
+                                 <span class="s1">meta_block_size</span><span class="s4">=</span><span class="s1">meta_block_size</span><span class="s4">,</span>
+                                 <span class="s4">**</span><span class="s1">kwds</span><span class="s4">)</span>
+                <span class="s1">fcpl </span><span class="s4">= </span><span class="s1">make_fcpl</span><span class="s4">(</span><span class="s1">track_order</span><span class="s4">=</span><span class="s1">track_order</span><span class="s4">, </span><span class="s1">fs_strategy</span><span class="s4">=</span><span class="s1">fs_strategy</span><span class="s4">,</span>
+                                 <span class="s1">fs_persist</span><span class="s4">=</span><span class="s1">fs_persist</span><span class="s4">, </span><span class="s1">fs_threshold</span><span class="s4">=</span><span class="s1">fs_threshold</span><span class="s4">,</span>
+                                 <span class="s1">fs_page_size</span><span class="s4">=</span><span class="s1">fs_page_size</span><span class="s4">)</span>
+                <span class="s1">fid </span><span class="s4">= </span><span class="s1">make_fid</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">mode</span><span class="s4">, </span><span class="s1">userblock_size</span><span class="s4">, </span><span class="s1">fapl</span><span class="s4">, </span><span class="s1">fcpl</span><span class="s4">, </span><span class="s1">swmr</span><span class="s4">=</span><span class="s1">swmr</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">libver</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">):</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_libver </span><span class="s4">= </span><span class="s1">libver</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_libver </span><span class="s4">= (</span><span class="s1">libver</span><span class="s4">, </span><span class="s6">'latest'</span><span class="s4">)</span>
+
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">fid</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">close</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Close the file.  All open objects become invalid &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s0"># Check that the file is still open, otherwise skip</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">valid</span><span class="s4">:</span>
+                <span class="s0"># We have to explicitly murder all open objects related to the file</span>
+
+                <span class="s0"># Close file-resident objects first, then the files.</span>
+                <span class="s0"># Otherwise we get errors in MPI mode.</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">_close_open_objects</span><span class="s4">(</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">OBJ_LOCAL </span><span class="s4">| ~</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">OBJ_FILE</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">_close_open_objects</span><span class="s4">(</span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">OBJ_LOCAL </span><span class="s4">| </span><span class="s1">h5f</span><span class="s4">.</span><span class="s1">OBJ_FILE</span><span class="s4">)</span>
+
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">close</span><span class="s4">()</span>
+                <span class="s1">_objects</span><span class="s4">.</span><span class="s1">nonlocal_close</span><span class="s4">()</span>
+
+    <span class="s3">def </span><span class="s1">flush</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Tell the HDF5 library to flush its buffers. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s1">h5f</span><span class="s4">.</span><span class="s1">flush</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__enter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__exit__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">):</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">close</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">:</span>
+            <span class="s1">r </span><span class="s4">= </span><span class="s6">'&lt;Closed HDF5 file&gt;'</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s0"># Filename has to be forced to Unicode if it comes back bytes</span>
+            <span class="s0"># Mode is always a &quot;native&quot; string</span>
+            <span class="s1">filename </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">filename</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">filename</span><span class="s4">, </span><span class="s1">bytes</span><span class="s4">):  </span><span class="s0"># Can't decode fname</span>
+                <span class="s1">filename </span><span class="s4">= </span><span class="s1">filename</span><span class="s4">.</span><span class="s1">decode</span><span class="s4">(</span><span class="s6">'utf8'</span><span class="s4">, </span><span class="s6">'replace'</span><span class="s4">)</span>
+            <span class="s1">r </span><span class="s4">= </span><span class="s6">f'&lt;HDF5 file &quot;</span><span class="s3">{</span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">basename</span><span class="s4">(</span><span class="s1">filename</span><span class="s4">)</span><span class="s3">}</span><span class="s6">&quot; (mode </span><span class="s3">{</span><span class="s1">self</span><span class="s4">.</span><span class="s1">mode</span><span class="s3">}</span><span class="s6">)&gt;'</span>
+
+        <span class="s3">return </span><span class="s1">r</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,1810 @@
+<html>
+<head>
+<title>apihelpers.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+apihelpers.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># Private/public helper functions for API functions</span>
+
+<span class="s0">from lxml.includes cimport uri</span>
+
+
+<span class="s0">cdef void displayNode(xmlNode* c_node, indent) noexcept:</span>
+    <span class="s0"># to help with debugging</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">try:</span>
+        <span class="s0">print(indent * ' ', &lt;long&gt;c_node)</span>
+        <span class="s0">c_child = c_node.children</span>
+        <span class="s0">while c_child is not NULL:</span>
+            <span class="s0">displayNode(c_child, indent + 1)</span>
+            <span class="s0">c_child = c_child.next</span>
+    <span class="s0">finally:</span>
+        <span class="s0">return  # swallow any exceptions</span>
+
+<span class="s0">cdef inline bint _isHtmlDocument(_Element element) except -1:</span>
+    <span class="s0">cdef xmlNode* c_node = element._c_node</span>
+    <span class="s0">return (</span>
+        <span class="s0">c_node is not NULL and c_node.doc is not NULL and</span>
+        <span class="s0">c_node.doc.properties &amp; tree.XML_DOC_HTML != 0</span>
+    <span class="s0">)</span>
+
+<span class="s0">cdef inline int _assertValidNode(_Element element) except -1:</span>
+    <span class="s0">assert element._c_node is not NULL, &quot;invalid Element proxy at %s&quot; % id(element)</span>
+
+<span class="s0">cdef inline int _assertValidDoc(_Document doc) except -1:</span>
+    <span class="s0">assert doc._c_doc is not NULL, &quot;invalid Document proxy at %s&quot; % id(doc)</span>
+
+<span class="s0">cdef _Document _documentOrRaise(object input):</span>
+    <span class="s0">&quot;&quot;&quot;Call this to get the document of a _Document, _ElementTree or _Element</span>
+    <span class="s0">object, or to raise an exception if it can't be determined.</span>
+
+    <span class="s0">Should be used in all API functions for consistency.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Document doc</span>
+    <span class="s0">if isinstance(input, _ElementTree):</span>
+        <span class="s0">if (&lt;_ElementTree&gt;input)._context_node is not None:</span>
+            <span class="s0">doc = (&lt;_ElementTree&gt;input)._context_node._doc</span>
+        <span class="s0">else:</span>
+            <span class="s0">doc = None</span>
+    <span class="s0">elif isinstance(input, _Element):</span>
+        <span class="s0">doc = (&lt;_Element&gt;input)._doc</span>
+    <span class="s0">elif isinstance(input, _Document):</span>
+        <span class="s0">doc = &lt;_Document&gt;input</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError, f&quot;Invalid input object: {python._fqtypename(input).decode('utf8')}&quot;</span>
+    <span class="s0">if doc is None:</span>
+        <span class="s0">raise ValueError, f&quot;Input object has no document: {python._fqtypename(input).decode('utf8')}&quot;</span>
+    <span class="s0">_assertValidDoc(doc)</span>
+    <span class="s0">return doc</span>
+
+<span class="s0">cdef _Element _rootNodeOrRaise(object input):</span>
+    <span class="s0">&quot;&quot;&quot;Call this to get the root node of a _Document, _ElementTree or</span>
+     <span class="s0">_Element object, or to raise an exception if it can't be determined.</span>
+
+    <span class="s0">Should be used in all API functions for consistency.</span>
+     <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Element node</span>
+    <span class="s0">if isinstance(input, _ElementTree):</span>
+        <span class="s0">node = (&lt;_ElementTree&gt;input)._context_node</span>
+    <span class="s0">elif isinstance(input, _Element):</span>
+        <span class="s0">node = &lt;_Element&gt;input</span>
+    <span class="s0">elif isinstance(input, _Document):</span>
+        <span class="s0">node = (&lt;_Document&gt;input).getroot()</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError, f&quot;Invalid input object: {python._fqtypename(input).decode('utf8')}&quot;</span>
+    <span class="s0">if (node is None or not node._c_node or</span>
+            <span class="s0">node._c_node.type != tree.XML_ELEMENT_NODE):</span>
+        <span class="s0">raise ValueError, f&quot;Input object is not an XML element: {python._fqtypename(input).decode('utf8')}&quot;</span>
+    <span class="s0">_assertValidNode(node)</span>
+    <span class="s0">return node</span>
+
+<span class="s0">cdef bint _isAncestorOrSame(xmlNode* c_ancestor, xmlNode* c_node) noexcept:</span>
+    <span class="s0">while c_node:</span>
+        <span class="s0">if c_node is c_ancestor:</span>
+            <span class="s0">return True</span>
+        <span class="s0">c_node = c_node.parent</span>
+    <span class="s0">return False</span>
+
+<span class="s0">cdef _Element _makeElement(tag, xmlDoc* c_doc, _Document doc,</span>
+                           <span class="s0">_BaseParser parser, text, tail, attrib, nsmap,</span>
+                           <span class="s0">dict extra_attrs):</span>
+    <span class="s0">&quot;&quot;&quot;Create a new element and initialize text content, namespaces and</span>
+    <span class="s0">attributes.</span>
+
+    <span class="s0">This helper function will reuse as much of the existing document as</span>
+    <span class="s0">possible:</span>
+
+    <span class="s0">If 'parser' is None, the parser will be inherited from 'doc' or the</span>
+    <span class="s0">default parser will be used.</span>
+
+    <span class="s0">If 'doc' is None, 'c_doc' is used to create a new _Document and the new</span>
+    <span class="s0">element is made its root node.</span>
+
+    <span class="s0">If 'c_doc' is also NULL, a new xmlDoc will be created.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">if doc is not None:</span>
+        <span class="s0">c_doc = doc._c_doc</span>
+    <span class="s0">ns_utf, name_utf = _getNsTag(tag)</span>
+    <span class="s0">if parser is not None and parser._for_html:</span>
+        <span class="s0">_htmlTagValidOrRaise(name_utf)</span>
+        <span class="s0">if c_doc is NULL:</span>
+            <span class="s0">c_doc = _newHTMLDoc()</span>
+    <span class="s0">else:</span>
+        <span class="s0">_tagValidOrRaise(name_utf)</span>
+        <span class="s0">if c_doc is NULL:</span>
+            <span class="s0">c_doc = _newXMLDoc()</span>
+    <span class="s0">c_node = _createElement(c_doc, name_utf)</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">if doc is None and c_doc is not NULL:</span>
+            <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">try:</span>
+        <span class="s0">if doc is None:</span>
+            <span class="s0">tree.xmlDocSetRootElement(c_doc, c_node)</span>
+            <span class="s0">doc = _documentFactory(c_doc, parser)</span>
+        <span class="s0">if text is not None:</span>
+            <span class="s0">_setNodeText(c_node, text)</span>
+        <span class="s0">if tail is not None:</span>
+            <span class="s0">_setTailText(c_node, tail)</span>
+        <span class="s0"># add namespaces to node if necessary</span>
+        <span class="s0">_setNodeNamespaces(c_node, doc, ns_utf, nsmap)</span>
+        <span class="s0">_initNodeAttributes(c_node, doc, attrib, extra_attrs)</span>
+        <span class="s0">return _elementFactory(doc, c_node)</span>
+    <span class="s0">except:</span>
+        <span class="s0"># free allocated c_node/c_doc unless Python does it for us</span>
+        <span class="s0">if c_node.doc is not c_doc:</span>
+            <span class="s0"># node not yet in document =&gt; will not be freed by document</span>
+            <span class="s0">if tail is not None:</span>
+                <span class="s0">_removeText(c_node.next) # tail</span>
+            <span class="s0">tree.xmlFreeNode(c_node)</span>
+        <span class="s0">if doc is None:</span>
+            <span class="s0"># c_doc will not be freed by doc</span>
+            <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+        <span class="s0">raise</span>
+
+<span class="s0">cdef int _initNewElement(_Element element, bint is_html, name_utf, ns_utf,</span>
+                         <span class="s0">_BaseParser parser, attrib, nsmap, dict extra_attrs) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Initialise a new Element object.</span>
+
+    <span class="s0">This is used when users instantiate a Python Element subclass</span>
+    <span class="s0">directly, without it being mapped to an existing XML node.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef _Document doc</span>
+    <span class="s0">if is_html:</span>
+        <span class="s0">_htmlTagValidOrRaise(name_utf)</span>
+        <span class="s0">c_doc = _newHTMLDoc()</span>
+    <span class="s0">else:</span>
+        <span class="s0">_tagValidOrRaise(name_utf)</span>
+        <span class="s0">c_doc = _newXMLDoc()</span>
+    <span class="s0">c_node = _createElement(c_doc, name_utf)</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">if c_doc is not NULL:</span>
+            <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">tree.xmlDocSetRootElement(c_doc, c_node)</span>
+    <span class="s0">doc = _documentFactory(c_doc, parser)</span>
+    <span class="s0"># add namespaces to node if necessary</span>
+    <span class="s0">_setNodeNamespaces(c_node, doc, ns_utf, nsmap)</span>
+    <span class="s0">_initNodeAttributes(c_node, doc, attrib, extra_attrs)</span>
+    <span class="s0">_registerProxy(element, doc, c_node)</span>
+    <span class="s0">element._init()</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef _Element _makeSubElement(_Element parent, tag, text, tail,</span>
+                              <span class="s0">attrib, nsmap, dict extra_attrs):</span>
+    <span class="s0">&quot;&quot;&quot;Create a new child element and initialize text content, namespaces and</span>
+    <span class="s0">attributes.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef xmlDoc* c_doc</span>
+    <span class="s0">if parent is None or parent._doc is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">_assertValidNode(parent)</span>
+    <span class="s0">ns_utf, name_utf = _getNsTag(tag)</span>
+    <span class="s0">c_doc = parent._doc._c_doc</span>
+
+    <span class="s0">if parent._doc._parser is not None and parent._doc._parser._for_html:</span>
+        <span class="s0">_htmlTagValidOrRaise(name_utf)</span>
+    <span class="s0">else:</span>
+        <span class="s0">_tagValidOrRaise(name_utf)</span>
+
+    <span class="s0">c_node = _createElement(c_doc, name_utf)</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">tree.xmlAddChild(parent._c_node, c_node)</span>
+
+    <span class="s0">try:</span>
+        <span class="s0">if text is not None:</span>
+            <span class="s0">_setNodeText(c_node, text)</span>
+        <span class="s0">if tail is not None:</span>
+            <span class="s0">_setTailText(c_node, tail)</span>
+
+        <span class="s0"># add namespaces to node if necessary</span>
+        <span class="s0">_setNodeNamespaces(c_node, parent._doc, ns_utf, nsmap)</span>
+        <span class="s0">_initNodeAttributes(c_node, parent._doc, attrib, extra_attrs)</span>
+        <span class="s0">return _elementFactory(parent._doc, c_node)</span>
+    <span class="s0">except:</span>
+        <span class="s0"># make sure we clean up in case of an error</span>
+        <span class="s0">_removeNode(parent._doc, c_node)</span>
+        <span class="s0">raise</span>
+
+
+<span class="s0">cdef int _setNodeNamespaces(xmlNode* c_node, _Document doc,</span>
+                            <span class="s0">object node_ns_utf, object nsmap) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Lookup current namespace prefixes, then set namespace structure for</span>
+    <span class="s0">node (if 'node_ns_utf' was provided) and register new ns-prefix mappings.</span>
+
+    <span class="s0">'node_ns_utf' should only be passed for a newly created node.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">cdef list nsdefs</span>
+
+    <span class="s0">if nsmap:</span>
+        <span class="s0">for prefix, href in _iter_nsmap(nsmap):</span>
+            <span class="s0">href_utf = _utf8(href)</span>
+            <span class="s0">_uriValidOrRaise(href_utf)</span>
+            <span class="s0">c_href = _xcstr(href_utf)</span>
+            <span class="s0">if prefix is not None:</span>
+                <span class="s0">prefix_utf = _utf8(prefix)</span>
+                <span class="s0">_prefixValidOrRaise(prefix_utf)</span>
+                <span class="s0">c_prefix = _xcstr(prefix_utf)</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_prefix = &lt;const_xmlChar*&gt;NULL</span>
+            <span class="s0"># add namespace with prefix if it is not already known</span>
+            <span class="s0">c_ns = tree.xmlSearchNs(doc._c_doc, c_node, c_prefix)</span>
+            <span class="s0">if c_ns is NULL or \</span>
+                    <span class="s0">c_ns.href is NULL or \</span>
+                    <span class="s0">tree.xmlStrcmp(c_ns.href, c_href) != 0:</span>
+                <span class="s0">c_ns = tree.xmlNewNs(c_node, c_href, c_prefix)</span>
+            <span class="s0">if href_utf == node_ns_utf:</span>
+                <span class="s0">tree.xmlSetNs(c_node, c_ns)</span>
+                <span class="s0">node_ns_utf = None</span>
+
+    <span class="s0">if node_ns_utf is not None:</span>
+        <span class="s0">_uriValidOrRaise(node_ns_utf)</span>
+        <span class="s0">doc._setNodeNs(c_node, _xcstr(node_ns_utf))</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef dict _build_nsmap(xmlNode* c_node):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Namespace prefix-&gt;URI mapping known in the context of this Element.</span>
+    <span class="s0">This includes all namespace declarations of the parents.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">nsmap = {}</span>
+    <span class="s0">while c_node is not NULL and c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">c_ns = c_node.nsDef</span>
+        <span class="s0">while c_ns is not NULL:</span>
+            <span class="s0">if c_ns.prefix or c_ns.href:</span>
+                <span class="s0">prefix = funicodeOrNone(c_ns.prefix)</span>
+                <span class="s0">if prefix not in nsmap:</span>
+                    <span class="s0">nsmap[prefix] = funicodeOrNone(c_ns.href)</span>
+            <span class="s0">c_ns = c_ns.next</span>
+        <span class="s0">c_node = c_node.parent</span>
+    <span class="s0">return nsmap</span>
+
+
+<span class="s0">cdef _iter_nsmap(nsmap):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Create a reproducibly ordered iterable from an nsmap mapping.</span>
+    <span class="s0">Tries to preserve an existing order and sorts if it assumes no order.</span>
+
+    <span class="s0">The difference to _iter_attrib() is that None doesn't sort with strings</span>
+    <span class="s0">in Py3.x.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if isinstance(nsmap, dict):</span>
+        <span class="s0"># dicts are insertion-ordered in Py3.6+ =&gt; keep the user provided order.</span>
+        <span class="s0">return nsmap.items()</span>
+    <span class="s0">if len(nsmap) &lt;= 1:</span>
+        <span class="s0">return nsmap.items()</span>
+    <span class="s0"># nsmap will usually be a plain unordered dict =&gt; avoid type checking overhead</span>
+    <span class="s0">if type(nsmap) is not dict and isinstance(nsmap, OrderedDict):</span>
+        <span class="s0">return nsmap.items()  # keep existing order</span>
+    <span class="s0">if None not in nsmap:</span>
+        <span class="s0">return sorted(nsmap.items())</span>
+
+    <span class="s0"># Move the default namespace to the end.  This makes sure libxml2</span>
+    <span class="s0"># prefers a prefix if the ns is defined redundantly on the same</span>
+    <span class="s0"># element.  That way, users can work around a problem themselves</span>
+    <span class="s0"># where default namespace attributes on non-default namespaced</span>
+    <span class="s0"># elements serialise without prefix (i.e. into the non-default</span>
+    <span class="s0"># namespace).</span>
+    <span class="s0">default_ns = nsmap[None]</span>
+    <span class="s0">nsdefs = [(k, v) for k, v in nsmap.items() if k is not None]</span>
+    <span class="s0">nsdefs.sort()</span>
+    <span class="s0">nsdefs.append((None, default_ns))</span>
+    <span class="s0">return nsdefs</span>
+
+
+<span class="s0">cdef _iter_attrib(attrib):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Create a reproducibly ordered iterable from an attrib mapping.</span>
+    <span class="s0">Tries to preserve an existing order and sorts if it assumes no order.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0"># dicts are insertion-ordered in Py3.6+ =&gt; keep the user provided order.</span>
+    <span class="s0">if isinstance(attrib, (dict, _Attrib, OrderedDict)):</span>
+        <span class="s0">return attrib.items()</span>
+    <span class="s0"># assume it's an unordered mapping of some kind</span>
+    <span class="s0">return sorted(attrib.items())</span>
+
+
+<span class="s0">cdef _initNodeAttributes(xmlNode* c_node, _Document doc, attrib, dict extra):</span>
+    <span class="s0">&quot;&quot;&quot;Initialise the attributes of an element node.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef bint is_html</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">if attrib is not None and not hasattr(attrib, 'items'):</span>
+        <span class="s0">raise TypeError, f&quot;Invalid attribute dictionary: {python._fqtypename(attrib).decode('utf8')}&quot;</span>
+    <span class="s0">if not attrib and not extra:</span>
+        <span class="s0">return  # nothing to do</span>
+    <span class="s0">is_html = doc._parser._for_html</span>
+    <span class="s0">seen = set()</span>
+    <span class="s0">if extra:</span>
+        <span class="s0">for name, value in extra.items():</span>
+            <span class="s0">_addAttributeToNode(c_node, doc, is_html, name, value, seen)</span>
+    <span class="s0">if attrib:</span>
+        <span class="s0">for name, value in _iter_attrib(attrib):</span>
+            <span class="s0">_addAttributeToNode(c_node, doc, is_html, name, value, seen)</span>
+
+
+<span class="s0">cdef int _addAttributeToNode(xmlNode* c_node, _Document doc, bint is_html,</span>
+                             <span class="s0">name, value, set seen_tags) except -1:</span>
+    <span class="s0">ns_utf, name_utf = tag = _getNsTag(name)</span>
+    <span class="s0">if tag in seen_tags:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">seen_tags.add(tag)</span>
+    <span class="s0">if not is_html:</span>
+        <span class="s0">_attributeValidOrRaise(name_utf)</span>
+    <span class="s0">value_utf = _utf8(value)</span>
+    <span class="s0">if ns_utf is None:</span>
+        <span class="s0">tree.xmlNewProp(c_node, _xcstr(name_utf), _xcstr(value_utf))</span>
+    <span class="s0">else:</span>
+        <span class="s0">_uriValidOrRaise(ns_utf)</span>
+        <span class="s0">c_ns = doc._findOrBuildNodeNs(c_node, _xcstr(ns_utf), NULL, 1)</span>
+        <span class="s0">tree.xmlNewNsProp(c_node, c_ns,</span>
+                          <span class="s0">_xcstr(name_utf), _xcstr(value_utf))</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">ctypedef struct _ns_node_ref:</span>
+    <span class="s0">xmlNs* ns</span>
+    <span class="s0">xmlNode* node</span>
+
+
+<span class="s0">cdef int _collectNsDefs(xmlNode* c_element, _ns_node_ref **_c_ns_list,</span>
+                        <span class="s0">size_t *_c_ns_list_len, size_t *_c_ns_list_size) except -1:</span>
+    <span class="s0">c_ns_list = _c_ns_list[0]</span>
+    <span class="s0">cdef size_t c_ns_list_len = _c_ns_list_len[0]</span>
+    <span class="s0">cdef size_t c_ns_list_size = _c_ns_list_size[0]</span>
+
+    <span class="s0">c_nsdef = c_element.nsDef</span>
+    <span class="s0">while c_nsdef is not NULL:</span>
+        <span class="s0">if c_ns_list_len &gt;= c_ns_list_size:</span>
+            <span class="s0">if c_ns_list is NULL:</span>
+                <span class="s0">c_ns_list_size = 20</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_ns_list_size *= 2</span>
+            <span class="s0">c_nsref_ptr = &lt;_ns_node_ref*&gt; python.lxml_realloc(</span>
+                <span class="s0">c_ns_list, c_ns_list_size, sizeof(_ns_node_ref))</span>
+            <span class="s0">if c_nsref_ptr is NULL:</span>
+                <span class="s0">if c_ns_list is not NULL:</span>
+                    <span class="s0">python.lxml_free(c_ns_list)</span>
+                    <span class="s0">_c_ns_list[0] = NULL</span>
+                <span class="s0">raise MemoryError()</span>
+            <span class="s0">c_ns_list = c_nsref_ptr</span>
+
+        <span class="s0">c_ns_list[c_ns_list_len] = _ns_node_ref(c_nsdef, c_element)</span>
+        <span class="s0">c_ns_list_len += 1</span>
+        <span class="s0">c_nsdef = c_nsdef.next</span>
+
+    <span class="s0">_c_ns_list_size[0] = c_ns_list_size</span>
+    <span class="s0">_c_ns_list_len[0] = c_ns_list_len</span>
+    <span class="s0">_c_ns_list[0] = c_ns_list</span>
+
+
+<span class="s0">cdef int _removeUnusedNamespaceDeclarations(xmlNode* c_element, set prefixes_to_keep) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Remove any namespace declarations from a subtree that are not used by</span>
+    <span class="s0">any of its elements (or attributes).</span>
+
+    <span class="s0">If a 'prefixes_to_keep' is provided, it must be a set of prefixes.</span>
+    <span class="s0">Any corresponding namespace mappings will not be removed as part of the cleanup.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef _ns_node_ref* c_ns_list = NULL</span>
+    <span class="s0">cdef size_t c_ns_list_size = 0</span>
+    <span class="s0">cdef size_t c_ns_list_len = 0</span>
+    <span class="s0">cdef size_t i</span>
+
+    <span class="s0">if c_element.parent and c_element.parent.type == tree.XML_DOCUMENT_NODE:</span>
+        <span class="s0"># include declarations on the document node</span>
+        <span class="s0">_collectNsDefs(c_element.parent, &amp;c_ns_list, &amp;c_ns_list_len, &amp;c_ns_list_size)</span>
+
+    <span class="s0">tree.BEGIN_FOR_EACH_ELEMENT_FROM(c_element, c_element, 1)</span>
+    <span class="s0"># collect all new namespace declarations into the ns list</span>
+    <span class="s0">if c_element.nsDef:</span>
+        <span class="s0">_collectNsDefs(c_element, &amp;c_ns_list, &amp;c_ns_list_len, &amp;c_ns_list_size)</span>
+
+    <span class="s0"># remove all namespace declarations from the list that are referenced</span>
+    <span class="s0">if c_ns_list_len and c_element.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">c_node = c_element</span>
+        <span class="s0">while c_node and c_ns_list_len:</span>
+            <span class="s0">if c_node.ns:</span>
+                <span class="s0">for i in range(c_ns_list_len):</span>
+                    <span class="s0">if c_node.ns is c_ns_list[i].ns:</span>
+                        <span class="s0">c_ns_list_len -= 1</span>
+                        <span class="s0">c_ns_list[i] = c_ns_list[c_ns_list_len]</span>
+                        <span class="s0">#c_ns_list[c_ns_list_len] = _ns_node_ref(NULL, NULL)</span>
+                        <span class="s0">break</span>
+            <span class="s0">if c_node is c_element:</span>
+                <span class="s0"># continue with attributes</span>
+                <span class="s0">c_node = &lt;xmlNode*&gt;c_element.properties</span>
+            <span class="s0">else:</span>
+                <span class="s0">c_node = c_node.next</span>
+    <span class="s0">tree.END_FOR_EACH_ELEMENT_FROM(c_element)</span>
+
+    <span class="s0">if c_ns_list is NULL:</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0"># free all namespace declarations that remained in the list,</span>
+    <span class="s0"># except for those we should keep explicitly</span>
+    <span class="s0">cdef xmlNs* c_nsdef</span>
+    <span class="s0">for i in range(c_ns_list_len):</span>
+        <span class="s0">if prefixes_to_keep is not None:</span>
+            <span class="s0">if c_ns_list[i].ns.prefix and c_ns_list[i].ns.prefix in prefixes_to_keep:</span>
+                <span class="s0">continue</span>
+        <span class="s0">c_node = c_ns_list[i].node</span>
+        <span class="s0">c_nsdef = c_node.nsDef</span>
+        <span class="s0">if c_nsdef is c_ns_list[i].ns:</span>
+            <span class="s0">c_node.nsDef = c_node.nsDef.next</span>
+        <span class="s0">else:</span>
+            <span class="s0">while c_nsdef.next is not c_ns_list[i].ns:</span>
+                <span class="s0">c_nsdef = c_nsdef.next</span>
+            <span class="s0">c_nsdef.next = c_nsdef.next.next</span>
+        <span class="s0">tree.xmlFreeNs(c_ns_list[i].ns)</span>
+    
+    <span class="s0">if c_ns_list is not NULL:</span>
+        <span class="s0">python.lxml_free(c_ns_list)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef xmlNs* _searchNsByHref(xmlNode* c_node, const_xmlChar* c_href, bint is_attribute) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Search a namespace declaration that covers a node (element or</span>
+    <span class="s0">attribute).</span>
+
+    <span class="s0">For attributes, try to find a prefixed namespace declaration</span>
+    <span class="s0">instead of the default namespaces.  This helps in supporting</span>
+    <span class="s0">round-trips for attributes on elements with a different namespace.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">cdef xmlNs* c_default_ns = NULL</span>
+    <span class="s0">cdef xmlNode* c_element</span>
+    <span class="s0">if c_href is NULL or c_node is NULL or c_node.type == tree.XML_ENTITY_REF_NODE:</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">if tree.xmlStrcmp(c_href, tree.XML_XML_NAMESPACE) == 0:</span>
+        <span class="s0"># no special cases here, let libxml2 handle this</span>
+        <span class="s0">return tree.xmlSearchNsByHref(c_node.doc, c_node, c_href)</span>
+    <span class="s0">if c_node.type == tree.XML_ATTRIBUTE_NODE:</span>
+        <span class="s0">is_attribute = 1</span>
+    <span class="s0">while c_node is not NULL and c_node.type != tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">c_node = c_node.parent</span>
+    <span class="s0">c_element = c_node</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+            <span class="s0">c_ns = c_node.nsDef</span>
+            <span class="s0">while c_ns is not NULL:</span>
+                <span class="s0">if c_ns.href is not NULL and tree.xmlStrcmp(c_href, c_ns.href) == 0:</span>
+                    <span class="s0">if c_ns.prefix is NULL and is_attribute:</span>
+                        <span class="s0"># for attributes, continue searching a named</span>
+                        <span class="s0"># prefix, but keep the first default namespace</span>
+                        <span class="s0"># declaration that we found</span>
+                        <span class="s0">if c_default_ns is NULL:</span>
+                            <span class="s0">c_default_ns = c_ns</span>
+                    <span class="s0">elif tree.xmlSearchNs(</span>
+                        <span class="s0">c_element.doc, c_element, c_ns.prefix) is c_ns:</span>
+                        <span class="s0"># start node is in namespace scope =&gt; found!</span>
+                        <span class="s0">return c_ns</span>
+                <span class="s0">c_ns = c_ns.next</span>
+            <span class="s0">if c_node is not c_element and c_node.ns is not NULL:</span>
+                <span class="s0"># optimise: the node may have the namespace itself</span>
+                <span class="s0">c_ns = c_node.ns</span>
+                <span class="s0">if c_ns.href is not NULL and tree.xmlStrcmp(c_href, c_ns.href) == 0:</span>
+                    <span class="s0">if c_ns.prefix is NULL and is_attribute:</span>
+                        <span class="s0"># for attributes, continue searching a named</span>
+                        <span class="s0"># prefix, but keep the first default namespace</span>
+                        <span class="s0"># declaration that we found</span>
+                        <span class="s0">if c_default_ns is NULL:</span>
+                            <span class="s0">c_default_ns = c_ns</span>
+                    <span class="s0">elif tree.xmlSearchNs(</span>
+                        <span class="s0">c_element.doc, c_element, c_ns.prefix) is c_ns:</span>
+                        <span class="s0"># start node is in namespace scope =&gt; found!</span>
+                        <span class="s0">return c_ns</span>
+        <span class="s0">c_node = c_node.parent</span>
+    <span class="s0"># nothing found =&gt; use a matching default namespace or fail</span>
+    <span class="s0">if c_default_ns is not NULL:</span>
+        <span class="s0">if tree.xmlSearchNs(c_element.doc, c_element, NULL) is c_default_ns:</span>
+            <span class="s0">return c_default_ns</span>
+    <span class="s0">return NULL</span>
+
+<span class="s0">cdef int _replaceNodeByChildren(_Document doc, xmlNode* c_node) except -1:</span>
+    <span class="s0"># NOTE: this does not deallocate the node, just unlink it!</span>
+    <span class="s0">cdef xmlNode* c_parent</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">if c_node.children is NULL:</span>
+        <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">c_parent = c_node.parent</span>
+    <span class="s0"># fix parent links of children</span>
+    <span class="s0">c_child = c_node.children</span>
+    <span class="s0">while c_child is not NULL:</span>
+        <span class="s0">c_child.parent = c_parent</span>
+        <span class="s0">c_child = c_child.next</span>
+
+    <span class="s0"># fix namespace references of children if their parent's namespace</span>
+    <span class="s0"># declarations get lost</span>
+    <span class="s0">if c_node.nsDef is not NULL:</span>
+        <span class="s0">c_child = c_node.children</span>
+        <span class="s0">while c_child is not NULL:</span>
+            <span class="s0">moveNodeToDocument(doc, doc._c_doc, c_child)</span>
+            <span class="s0">c_child = c_child.next</span>
+
+    <span class="s0"># fix sibling links to/from child slice</span>
+    <span class="s0">if c_node.prev is NULL:</span>
+        <span class="s0">c_parent.children = c_node.children</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_node.prev.next = c_node.children</span>
+        <span class="s0">c_node.children.prev = c_node.prev</span>
+    <span class="s0">if c_node.next is NULL:</span>
+        <span class="s0">c_parent.last = c_node.last</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_node.next.prev = c_node.last</span>
+        <span class="s0">c_node.last.next = c_node.next</span>
+
+    <span class="s0"># unlink c_node</span>
+    <span class="s0">c_node.children = c_node.last = NULL</span>
+    <span class="s0">c_node.parent = c_node.next = c_node.prev = NULL</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef unicode _attributeValue(xmlNode* c_element, xmlAttr* c_attrib_node):</span>
+    <span class="s0">c_href = _getNs(&lt;xmlNode*&gt;c_attrib_node)</span>
+    <span class="s0">value = tree.xmlGetNsProp(c_element, c_attrib_node.name, c_href)</span>
+    <span class="s0">try:</span>
+        <span class="s0">result = funicode(value)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">tree.xmlFree(value)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef unicode _attributeValueFromNsName(xmlNode* c_element,</span>
+                                       <span class="s0">const_xmlChar* c_href, const_xmlChar* c_name):</span>
+    <span class="s0">c_result = tree.xmlGetNsProp(c_element, c_name, c_href)</span>
+    <span class="s0">if c_result is NULL:</span>
+        <span class="s0">return None</span>
+    <span class="s0">try:</span>
+        <span class="s0">result = funicode(c_result)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">tree.xmlFree(c_result)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef object _getNodeAttributeValue(xmlNode* c_node, key, default):</span>
+    <span class="s0">ns, tag = _getNsTag(key)</span>
+    <span class="s0">c_href = &lt;const_xmlChar*&gt;NULL if ns is None else _xcstr(ns)</span>
+    <span class="s0">c_result = tree.xmlGetNsProp(c_node, _xcstr(tag), c_href)</span>
+    <span class="s0">if c_result is NULL:</span>
+        <span class="s0"># XXX free namespace that is not in use..?</span>
+        <span class="s0">return default</span>
+    <span class="s0">try:</span>
+        <span class="s0">result = funicode(c_result)</span>
+    <span class="s0">finally:</span>
+        <span class="s0">tree.xmlFree(c_result)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef inline object _getAttributeValue(_Element element, key, default):</span>
+    <span class="s0">return _getNodeAttributeValue(element._c_node, key, default)</span>
+
+<span class="s0">cdef int _setAttributeValue(_Element element, key, value) except -1:</span>
+    <span class="s0">cdef const_xmlChar* c_value</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">ns, tag = _getNsTag(key)</span>
+    <span class="s0">is_html = element._doc._parser._for_html</span>
+    <span class="s0">if not is_html:</span>
+        <span class="s0">_attributeValidOrRaise(tag)</span>
+    <span class="s0">c_tag = _xcstr(tag)</span>
+    <span class="s0">if value is None and is_html:</span>
+        <span class="s0">c_value = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">if isinstance(value, QName):</span>
+            <span class="s0">value = _resolveQNameText(element, value)</span>
+        <span class="s0">else:</span>
+            <span class="s0">value = _utf8(value)</span>
+        <span class="s0">c_value = _xcstr(value)</span>
+    <span class="s0">if ns is None:</span>
+        <span class="s0">c_ns = NULL</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_ns = element._doc._findOrBuildNodeNs(element._c_node, _xcstr(ns), NULL, 1)</span>
+    <span class="s0">tree.xmlSetNsProp(element._c_node, c_ns, c_tag, c_value)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _delAttribute(_Element element, key) except -1:</span>
+    <span class="s0">ns, tag = _getNsTag(key)</span>
+    <span class="s0">c_href = &lt;const_xmlChar*&gt;NULL if ns is None else _xcstr(ns)</span>
+    <span class="s0">if _delAttributeFromNsName(element._c_node, c_href, _xcstr(tag)):</span>
+        <span class="s0">raise KeyError, key</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _delAttributeFromNsName(xmlNode* c_node, const_xmlChar* c_href, const_xmlChar* c_name) noexcept:</span>
+    <span class="s0">c_attr = tree.xmlHasNsProp(c_node, c_name, c_href)</span>
+    <span class="s0">if c_attr is NULL:</span>
+        <span class="s0"># XXX free namespace that is not in use..?</span>
+        <span class="s0">return -1</span>
+    <span class="s0">tree.xmlRemoveProp(c_attr)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef list _collectAttributes(xmlNode* c_node, int collecttype):</span>
+    <span class="s0">&quot;&quot;&quot;Collect all attributes of a node in a list.  Depending on collecttype,</span>
+    <span class="s0">it collects either the name (1), the value (2) or the name-value tuples.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef Py_ssize_t count</span>
+    <span class="s0">c_attr = c_node.properties</span>
+    <span class="s0">count = 0</span>
+    <span class="s0">while c_attr is not NULL:</span>
+        <span class="s0">if c_attr.type == tree.XML_ATTRIBUTE_NODE:</span>
+            <span class="s0">count += 1</span>
+        <span class="s0">c_attr = c_attr.next</span>
+
+    <span class="s0">if not count:</span>
+        <span class="s0">return []</span>
+
+    <span class="s0">attributes = [None] * count</span>
+    <span class="s0">c_attr = c_node.properties</span>
+    <span class="s0">count = 0</span>
+    <span class="s0">while c_attr is not NULL:</span>
+        <span class="s0">if c_attr.type == tree.XML_ATTRIBUTE_NODE:</span>
+            <span class="s0">if collecttype == 1:</span>
+                <span class="s0">item = _namespacedName(&lt;xmlNode*&gt;c_attr)</span>
+            <span class="s0">elif collecttype == 2:</span>
+                <span class="s0">item = _attributeValue(c_node, c_attr)</span>
+            <span class="s0">else:</span>
+                <span class="s0">item = (_namespacedName(&lt;xmlNode*&gt;c_attr),</span>
+                        <span class="s0">_attributeValue(c_node, c_attr))</span>
+            <span class="s0">attributes[count] = item</span>
+            <span class="s0">count += 1</span>
+        <span class="s0">c_attr = c_attr.next</span>
+    <span class="s0">return attributes</span>
+
+<span class="s0">cdef object __RE_XML_ENCODING = re.compile(</span>
+    <span class="s0">r'^(&lt;\?xml[^&gt;]+)\s+encoding\s*=\s*[&quot;\'][^&quot;\']*[&quot;\'](\s*\?&gt;|)', re.U)</span>
+
+<span class="s0">cdef object __REPLACE_XML_ENCODING = __RE_XML_ENCODING.sub</span>
+<span class="s0">cdef object __HAS_XML_ENCODING = __RE_XML_ENCODING.match</span>
+
+<span class="s0">cdef object _stripEncodingDeclaration(object xml_string):</span>
+    <span class="s0"># this is a hack to remove the XML encoding declaration from unicode</span>
+    <span class="s0">return __REPLACE_XML_ENCODING(r'\g&lt;1&gt;\g&lt;2&gt;', xml_string)</span>
+
+<span class="s0">cdef bint _hasEncodingDeclaration(object xml_string) except -1:</span>
+    <span class="s0"># check if a (unicode) string has an XML encoding declaration</span>
+    <span class="s0">return __HAS_XML_ENCODING(xml_string) is not None</span>
+
+<span class="s0">cdef inline bint _hasText(xmlNode* c_node) noexcept:</span>
+    <span class="s0">return c_node is not NULL and _textNodeOrSkip(c_node.children) is not NULL</span>
+
+<span class="s0">cdef inline bint _hasTail(xmlNode* c_node) noexcept:</span>
+    <span class="s0">return c_node is not NULL and _textNodeOrSkip(c_node.next) is not NULL</span>
+
+<span class="s0">cdef inline bint _hasNonWhitespaceTail(xmlNode* c_node) except -1:</span>
+    <span class="s0">return _hasNonWhitespaceText(c_node, tail=True)</span>
+
+<span class="s0">cdef bint _hasNonWhitespaceText(xmlNode* c_node, bint tail=False) except -1:</span>
+    <span class="s0">c_text_node = c_node and _textNodeOrSkip(c_node.next if tail else c_node.children)</span>
+    <span class="s0">if c_text_node is NULL:</span>
+        <span class="s0">return False</span>
+    <span class="s0">while c_text_node is not NULL:</span>
+        <span class="s0">if c_text_node.content[0] != c'\0' and not _collectText(c_text_node).isspace():</span>
+            <span class="s0">return True</span>
+        <span class="s0">c_text_node = _textNodeOrSkip(c_text_node.next)</span>
+    <span class="s0">return False</span>
+
+<span class="s0">cdef unicode _collectText(xmlNode* c_node):</span>
+    <span class="s0">&quot;&quot;&quot;Collect all text nodes and return them as a unicode string.</span>
+
+    <span class="s0">Start collecting at c_node.</span>
+    
+    <span class="s0">If there was no text to collect, return None</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef Py_ssize_t scount</span>
+    <span class="s0">cdef xmlChar* c_text</span>
+    <span class="s0">cdef xmlNode* c_node_cur</span>
+    <span class="s0"># check for multiple text nodes</span>
+    <span class="s0">scount = 0</span>
+    <span class="s0">c_text = NULL</span>
+    <span class="s0">c_node_cur = c_node = _textNodeOrSkip(c_node)</span>
+    <span class="s0">while c_node_cur is not NULL:</span>
+        <span class="s0">if c_node_cur.content[0] != c'\0':</span>
+            <span class="s0">c_text = c_node_cur.content</span>
+        <span class="s0">scount += 1</span>
+        <span class="s0">c_node_cur = _textNodeOrSkip(c_node_cur.next)</span>
+
+    <span class="s0"># handle two most common cases first</span>
+    <span class="s0">if c_text is NULL:</span>
+        <span class="s0">return '' if scount &gt; 0 else None</span>
+    <span class="s0">if scount == 1:</span>
+        <span class="s0">return funicode(c_text)</span>
+
+    <span class="s0"># the rest is not performance critical anymore</span>
+    <span class="s0">result = b''</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">result += &lt;unsigned char*&gt;c_node.content</span>
+        <span class="s0">c_node = _textNodeOrSkip(c_node.next)</span>
+    <span class="s0">return funicode(&lt;const_xmlChar*&gt;&lt;unsigned char*&gt;result)</span>
+
+<span class="s0">cdef void _removeText(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Remove all text nodes.</span>
+
+    <span class="s0">Start removing at c_node.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0">c_node = _textNodeOrSkip(c_node)</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">c_next = _textNodeOrSkip(c_node.next)</span>
+        <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+        <span class="s0">tree.xmlFreeNode(c_node)</span>
+        <span class="s0">c_node = c_next</span>
+
+<span class="s0">cdef xmlNode* _createTextNode(xmlDoc* doc, value) except NULL:</span>
+    <span class="s0">cdef xmlNode* c_text_node</span>
+    <span class="s0">if isinstance(value, CDATA):</span>
+        <span class="s0">c_text_node = tree.xmlNewCDataBlock(</span>
+            <span class="s0">doc, _xcstr((&lt;CDATA&gt;value)._utf8_data),</span>
+            <span class="s0">python.PyBytes_GET_SIZE((&lt;CDATA&gt;value)._utf8_data))</span>
+    <span class="s0">else:</span>
+        <span class="s0">text = _utf8(value)</span>
+        <span class="s0">c_text_node = tree.xmlNewDocText(doc, _xcstr(text))</span>
+    <span class="s0">if not c_text_node:</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">return c_text_node</span>
+
+<span class="s0">cdef int _setNodeText(xmlNode* c_node, value) except -1:</span>
+    <span class="s0"># remove all text nodes at the start first</span>
+    <span class="s0">_removeText(c_node.children)</span>
+    <span class="s0">if value is None:</span>
+        <span class="s0">return 0</span>
+    <span class="s0"># now add new text node with value at start</span>
+    <span class="s0">c_text_node = _createTextNode(c_node.doc, value)</span>
+    <span class="s0">if c_node.children is NULL:</span>
+        <span class="s0">tree.xmlAddChild(c_node, c_text_node)</span>
+    <span class="s0">else:</span>
+        <span class="s0">tree.xmlAddPrevSibling(c_node.children, c_text_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _setTailText(xmlNode* c_node, value) except -1:</span>
+    <span class="s0"># remove all text nodes at the start first</span>
+    <span class="s0">_removeText(c_node.next)</span>
+    <span class="s0">if value is None:</span>
+        <span class="s0">return 0</span>
+    <span class="s0"># now append new text node with value</span>
+    <span class="s0">c_text_node = _createTextNode(c_node.doc, value)</span>
+    <span class="s0">tree.xmlAddNextSibling(c_node, c_text_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef bytes _resolveQNameText(_Element element, value):</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">ns, tag = _getNsTag(value)</span>
+    <span class="s0">if ns is None:</span>
+        <span class="s0">return tag</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_ns = element._doc._findOrBuildNodeNs(</span>
+            <span class="s0">element._c_node, _xcstr(ns), NULL, 0)</span>
+        <span class="s0">return python.PyBytes_FromFormat('%s:%s', c_ns.prefix, _cstr(tag))</span>
+
+<span class="s0">cdef inline bint _hasChild(xmlNode* c_node) noexcept:</span>
+    <span class="s0">return c_node is not NULL and _findChildForwards(c_node, 0) is not NULL</span>
+
+<span class="s0">cdef inline Py_ssize_t _countElements(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;Counts the elements within the following siblings and the node itself.&quot;</span>
+    <span class="s0">cdef Py_ssize_t count</span>
+    <span class="s0">count = 0</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if _isElement(c_node):</span>
+            <span class="s0">count += 1</span>
+        <span class="s0">c_node = c_node.next</span>
+    <span class="s0">return count</span>
+
+<span class="s0">cdef int _findChildSlice(</span>
+    <span class="s0">slice sliceobject, xmlNode* c_parent,</span>
+    <span class="s0">xmlNode** c_start_node, Py_ssize_t* c_step, Py_ssize_t* c_length) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Resolve a children slice.</span>
+
+    <span class="s0">Returns the start node, step size and the slice length in the</span>
+    <span class="s0">pointer arguments.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef Py_ssize_t start = 0, stop = 0, childcount</span>
+    <span class="s0">childcount = _countElements(c_parent.children)</span>
+    <span class="s0">if childcount == 0:</span>
+        <span class="s0">c_start_node[0] = NULL</span>
+        <span class="s0">c_length[0] = 0</span>
+        <span class="s0">if sliceobject.step is None:</span>
+            <span class="s0">c_step[0] = 1</span>
+        <span class="s0">else:</span>
+            <span class="s0">python._PyEval_SliceIndex(sliceobject.step, c_step)</span>
+        <span class="s0">return 0</span>
+    <span class="s0">python.PySlice_GetIndicesEx(</span>
+        <span class="s0">sliceobject, childcount, &amp;start, &amp;stop, c_step, c_length)</span>
+    <span class="s0">if start &gt; childcount // 2:</span>
+        <span class="s0">c_start_node[0] = _findChildBackwards(c_parent, childcount - start - 1)</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_start_node[0] = _findChild(c_parent, start)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef bint _isFullSlice(slice sliceobject) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Conservative guess if this slice is a full slice as in ``s[:]``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef Py_ssize_t step = 0</span>
+    <span class="s0">if sliceobject is None:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">if sliceobject.start is None and \</span>
+            <span class="s0">sliceobject.stop is None:</span>
+        <span class="s0">if sliceobject.step is None:</span>
+            <span class="s0">return 1</span>
+        <span class="s0">python._PyEval_SliceIndex(sliceobject.step, &amp;step)</span>
+        <span class="s0">if step == 1:</span>
+            <span class="s0">return 1</span>
+        <span class="s0">return 0</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef _collectChildren(_Element element):</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef list result = []</span>
+    <span class="s0">c_node = element._c_node.children</span>
+    <span class="s0">if c_node is not NULL:</span>
+        <span class="s0">if not _isElement(c_node):</span>
+            <span class="s0">c_node = _nextElement(c_node)</span>
+        <span class="s0">while c_node is not NULL:</span>
+            <span class="s0">result.append(_elementFactory(element._doc, c_node))</span>
+            <span class="s0">c_node = _nextElement(c_node)</span>
+    <span class="s0">return result</span>
+
+<span class="s0">cdef inline xmlNode* _findChild(xmlNode* c_node, Py_ssize_t index) noexcept:</span>
+    <span class="s0">if index &lt; 0:</span>
+        <span class="s0">return _findChildBackwards(c_node, -index - 1)</span>
+    <span class="s0">else:</span>
+        <span class="s0">return _findChildForwards(c_node, index)</span>
+    
+<span class="s0">cdef inline xmlNode* _findChildForwards(xmlNode* c_node, Py_ssize_t index) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Return child element of c_node with index, or return NULL if not found.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">cdef Py_ssize_t c</span>
+    <span class="s0">c_child = c_node.children</span>
+    <span class="s0">c = 0</span>
+    <span class="s0">while c_child is not NULL:</span>
+        <span class="s0">if _isElement(c_child):</span>
+            <span class="s0">if c == index:</span>
+                <span class="s0">return c_child</span>
+            <span class="s0">c += 1</span>
+        <span class="s0">c_child = c_child.next</span>
+    <span class="s0">return NULL</span>
+
+<span class="s0">cdef inline xmlNode* _findChildBackwards(xmlNode* c_node, Py_ssize_t index) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Return child element of c_node with index, or return NULL if not found.</span>
+    <span class="s0">Search from the end.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">cdef Py_ssize_t c</span>
+    <span class="s0">c_child = c_node.last</span>
+    <span class="s0">c = 0</span>
+    <span class="s0">while c_child is not NULL:</span>
+        <span class="s0">if _isElement(c_child):</span>
+            <span class="s0">if c == index:</span>
+                <span class="s0">return c_child</span>
+            <span class="s0">c += 1</span>
+        <span class="s0">c_child = c_child.prev</span>
+    <span class="s0">return NULL</span>
+    
+<span class="s0">cdef inline xmlNode* _textNodeOrSkip(xmlNode* c_node) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;Return the node if it's a text node.  Skip over ignorable nodes in a</span>
+    <span class="s0">series of text nodes.  Return NULL if a non-ignorable node is found.</span>
+
+    <span class="s0">This is used to skip over XInclude nodes when collecting adjacent text</span>
+    <span class="s0">nodes.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if c_node.type == tree.XML_TEXT_NODE or \</span>
+               <span class="s0">c_node.type == tree.XML_CDATA_SECTION_NODE:</span>
+            <span class="s0">return c_node</span>
+        <span class="s0">elif c_node.type == tree.XML_XINCLUDE_START or \</span>
+                 <span class="s0">c_node.type == tree.XML_XINCLUDE_END:</span>
+            <span class="s0">c_node = c_node.next</span>
+        <span class="s0">else:</span>
+            <span class="s0">return NULL</span>
+    <span class="s0">return NULL</span>
+
+<span class="s0">cdef inline xmlNode* _nextElement(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Given a node, find the next sibling that is an element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">c_node = c_node.next</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if _isElement(c_node):</span>
+            <span class="s0">return c_node</span>
+        <span class="s0">c_node = c_node.next</span>
+    <span class="s0">return NULL</span>
+
+<span class="s0">cdef inline xmlNode* _previousElement(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Given a node, find the next sibling that is an element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">c_node = c_node.prev</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if _isElement(c_node):</span>
+            <span class="s0">return c_node</span>
+        <span class="s0">c_node = c_node.prev</span>
+    <span class="s0">return NULL</span>
+
+<span class="s0">cdef inline xmlNode* _parentElement(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;Given a node, find the parent element.&quot;</span>
+    <span class="s0">if c_node is NULL or not _isElement(c_node):</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">c_node = c_node.parent</span>
+    <span class="s0">if c_node is NULL or not _isElement(c_node):</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">return c_node</span>
+
+<span class="s0">cdef inline bint _tagMatches(xmlNode* c_node, const_xmlChar* c_href, const_xmlChar* c_name) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Tests if the node matches namespace URI and tag name.</span>
+
+    <span class="s0">A node matches if it matches both c_href and c_name.</span>
+
+    <span class="s0">A node matches c_href if any of the following is true:</span>
+    <span class="s0">* c_href is NULL</span>
+    <span class="s0">* its namespace is NULL and c_href is the empty string</span>
+    <span class="s0">* its namespace string equals the c_href string</span>
+
+    <span class="s0">A node matches c_name if any of the following is true:</span>
+    <span class="s0">* c_name is NULL</span>
+    <span class="s0">* its name string equals the c_name string</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">if c_node.type != tree.XML_ELEMENT_NODE:</span>
+        <span class="s0"># not an element, only succeed if we match everything</span>
+        <span class="s0">return c_name is NULL and c_href is NULL</span>
+    <span class="s0">if c_name is NULL:</span>
+        <span class="s0">if c_href is NULL:</span>
+            <span class="s0"># always match</span>
+            <span class="s0">return 1</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_node_href = _getNs(c_node)</span>
+            <span class="s0">if c_node_href is NULL:</span>
+                <span class="s0">return c_href[0] == c'\0'</span>
+            <span class="s0">else:</span>
+                <span class="s0">return tree.xmlStrcmp(c_node_href, c_href) == 0</span>
+    <span class="s0">elif c_href is NULL:</span>
+        <span class="s0">if _getNs(c_node) is not NULL:</span>
+            <span class="s0">return 0</span>
+        <span class="s0">return c_node.name == c_name or tree.xmlStrcmp(c_node.name, c_name) == 0</span>
+    <span class="s0">elif c_node.name == c_name or tree.xmlStrcmp(c_node.name, c_name) == 0:</span>
+        <span class="s0">c_node_href = _getNs(c_node)</span>
+        <span class="s0">if c_node_href is NULL:</span>
+            <span class="s0">return c_href[0] == c'\0'</span>
+        <span class="s0">else:</span>
+            <span class="s0">return tree.xmlStrcmp(c_node_href, c_href) == 0</span>
+    <span class="s0">else:</span>
+        <span class="s0">return 0</span>
+
+<span class="s0">cdef inline bint _tagMatchesExactly(xmlNode* c_node, qname* c_qname) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Tests if the node matches namespace URI and tag name.</span>
+
+    <span class="s0">This differs from _tagMatches() in that it does not consider a</span>
+    <span class="s0">NULL value in qname.href a wildcard, and that it expects the c_name</span>
+    <span class="s0">to be taken from the doc dict, i.e. it only compares the names by</span>
+    <span class="s0">address.</span>
+
+    <span class="s0">A node matches if it matches both href and c_name of the qname.</span>
+
+    <span class="s0">A node matches c_href if any of the following is true:</span>
+    <span class="s0">* its namespace is NULL and c_href is the empty string</span>
+    <span class="s0">* its namespace string equals the c_href string</span>
+
+    <span class="s0">A node matches c_name if any of the following is true:</span>
+    <span class="s0">* c_name is NULL</span>
+    <span class="s0">* its name string points to the same address (!) as c_name</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return _nsTagMatchesExactly(_getNs(c_node), c_node.name, c_qname)</span>
+
+<span class="s0">cdef inline bint _nsTagMatchesExactly(const_xmlChar* c_node_href,</span>
+                                      <span class="s0">const_xmlChar* c_node_name,</span>
+                                      <span class="s0">qname* c_qname) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Tests if name and namespace URI match those of c_qname.</span>
+
+    <span class="s0">This differs from _tagMatches() in that it does not consider a</span>
+    <span class="s0">NULL value in qname.href a wildcard, and that it expects the c_name</span>
+    <span class="s0">to be taken from the doc dict, i.e. it only compares the names by</span>
+    <span class="s0">address.</span>
+
+    <span class="s0">A node matches if it matches both href and c_name of the qname.</span>
+
+    <span class="s0">A node matches c_href if any of the following is true:</span>
+    <span class="s0">* its namespace is NULL and c_href is the empty string</span>
+    <span class="s0">* its namespace string equals the c_href string</span>
+
+    <span class="s0">A node matches c_name if any of the following is true:</span>
+    <span class="s0">* c_name is NULL</span>
+    <span class="s0">* its name string points to the same address (!) as c_name</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef char* c_href</span>
+    <span class="s0">if c_qname.c_name is not NULL and c_qname.c_name is not c_node_name:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">if c_qname.href is NULL:</span>
+        <span class="s0">return 1</span>
+    <span class="s0">c_href = python.__cstr(c_qname.href)</span>
+    <span class="s0">if c_href[0] == b'\0':</span>
+        <span class="s0">return c_node_href is NULL or c_node_href[0] == b'\0'</span>
+    <span class="s0">elif c_node_href is NULL:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">else:</span>
+        <span class="s0">return tree.xmlStrcmp(&lt;const_xmlChar*&gt;c_href, c_node_href) == 0</span>
+
+<span class="s0">cdef Py_ssize_t _mapTagsToQnameMatchArray(xmlDoc* c_doc, list ns_tags,</span>
+                                          <span class="s0">qname* c_ns_tags, bint force_into_dict) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Map a sequence of (name, namespace) pairs to a qname array for efficient</span>
+    <span class="s0">matching with _tagMatchesExactly() above.</span>
+
+    <span class="s0">Note that each qname struct in the array owns its href byte string object</span>
+    <span class="s0">if it is not NULL.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef Py_ssize_t count = 0, i</span>
+    <span class="s0">cdef bytes ns, tag</span>
+    <span class="s0">for ns, tag in ns_tags:</span>
+        <span class="s0">if tag is None:</span>
+            <span class="s0">c_tag = &lt;const_xmlChar*&gt;NULL</span>
+        <span class="s0">elif force_into_dict:</span>
+            <span class="s0">c_tag = tree.xmlDictLookup(c_doc.dict, _xcstr(tag), len(tag))</span>
+            <span class="s0">if c_tag is NULL:</span>
+                <span class="s0"># clean up before raising the error</span>
+                <span class="s0">for i in xrange(count):</span>
+                    <span class="s0">cpython.ref.Py_XDECREF(c_ns_tags[i].href)</span>
+                <span class="s0">raise MemoryError()</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_tag = tree.xmlDictExists(c_doc.dict, _xcstr(tag), len(tag))</span>
+            <span class="s0">if c_tag is NULL:</span>
+                <span class="s0"># not in the dict =&gt; not in the document</span>
+                <span class="s0">continue</span>
+        <span class="s0">c_ns_tags[count].c_name = c_tag</span>
+        <span class="s0">if ns is None:</span>
+            <span class="s0">c_ns_tags[count].href = NULL</span>
+        <span class="s0">else:</span>
+            <span class="s0">cpython.ref.Py_INCREF(ns) # keep an owned reference!</span>
+            <span class="s0">c_ns_tags[count].href = &lt;python.PyObject*&gt;ns</span>
+        <span class="s0">count += 1</span>
+    <span class="s0">return count</span>
+
+<span class="s0">cdef int _removeNode(_Document doc, xmlNode* c_node) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Unlink and free a node and subnodes if possible.  Otherwise, make sure</span>
+    <span class="s0">it's self-contained.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0">c_next = c_node.next</span>
+    <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+    <span class="s0">_moveTail(c_next, c_node)</span>
+    <span class="s0">if not attemptDeallocation(c_node):</span>
+        <span class="s0"># make namespaces absolute</span>
+        <span class="s0">moveNodeToDocument(doc, c_node.doc, c_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _removeSiblings(xmlNode* c_element, tree.xmlElementType node_type, bint with_tail) except -1:</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0">c_node = c_element.next</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">c_next = _nextElement(c_node)</span>
+        <span class="s0">if c_node.type == node_type:</span>
+            <span class="s0">if with_tail:</span>
+                <span class="s0">_removeText(c_node.next)</span>
+            <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+            <span class="s0">attemptDeallocation(c_node)</span>
+        <span class="s0">c_node = c_next</span>
+    <span class="s0">c_node = c_element.prev</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">c_next = _previousElement(c_node)</span>
+        <span class="s0">if c_node.type == node_type:</span>
+            <span class="s0">if with_tail:</span>
+                <span class="s0">_removeText(c_node.next)</span>
+            <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+            <span class="s0">attemptDeallocation(c_node)</span>
+        <span class="s0">c_node = c_next</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef void _moveTail(xmlNode* c_tail, xmlNode* c_target) noexcept:</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0"># tail support: look for any text nodes trailing this node and </span>
+    <span class="s0"># move them too</span>
+    <span class="s0">c_tail = _textNodeOrSkip(c_tail)</span>
+    <span class="s0">while c_tail is not NULL:</span>
+        <span class="s0">c_next = _textNodeOrSkip(c_tail.next)</span>
+        <span class="s0">c_target = tree.xmlAddNextSibling(c_target, c_tail)</span>
+        <span class="s0">c_tail = c_next</span>
+
+<span class="s0">cdef int _copyTail(xmlNode* c_tail, xmlNode* c_target) except -1:</span>
+    <span class="s0">cdef xmlNode* c_new_tail</span>
+    <span class="s0"># tail copying support: look for any text nodes trailing this node and</span>
+    <span class="s0"># copy it to the target node</span>
+    <span class="s0">c_tail = _textNodeOrSkip(c_tail)</span>
+    <span class="s0">while c_tail is not NULL:</span>
+        <span class="s0">if c_target.doc is not c_tail.doc:</span>
+            <span class="s0">c_new_tail = tree.xmlDocCopyNode(c_tail, c_target.doc, 0)</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_new_tail = tree.xmlCopyNode(c_tail, 0)</span>
+        <span class="s0">if c_new_tail is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">c_target = tree.xmlAddNextSibling(c_target, c_new_tail)</span>
+        <span class="s0">c_tail = _textNodeOrSkip(c_tail.next)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _copyNonElementSiblings(xmlNode* c_node, xmlNode* c_target) except -1:</span>
+    <span class="s0">cdef xmlNode* c_copy</span>
+    <span class="s0">cdef xmlNode* c_sibling = c_node</span>
+    <span class="s0">while c_sibling.prev != NULL and \</span>
+            <span class="s0">(c_sibling.prev.type == tree.XML_PI_NODE or</span>
+             <span class="s0">c_sibling.prev.type == tree.XML_COMMENT_NODE or</span>
+             <span class="s0">c_sibling.prev.type == tree.XML_DTD_NODE):</span>
+        <span class="s0">c_sibling = c_sibling.prev</span>
+    <span class="s0">while c_sibling != c_node:</span>
+        <span class="s0">if c_sibling.type == tree.XML_DTD_NODE:</span>
+            <span class="s0">c_copy = &lt;xmlNode*&gt;_copyDtd(&lt;tree.xmlDtd*&gt;c_sibling)</span>
+            <span class="s0">if c_sibling == &lt;xmlNode*&gt;c_node.doc.intSubset:</span>
+                <span class="s0">c_target.doc.intSubset = &lt;tree.xmlDtd*&gt;c_copy</span>
+            <span class="s0">else: # c_sibling == c_node.doc.extSubset</span>
+                <span class="s0">c_target.doc.extSubset = &lt;tree.xmlDtd*&gt;c_copy</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_copy = tree.xmlDocCopyNode(c_sibling, c_target.doc, 1)</span>
+            <span class="s0">if c_copy is NULL:</span>
+                <span class="s0">raise MemoryError()</span>
+        <span class="s0">tree.xmlAddPrevSibling(c_target, c_copy)</span>
+        <span class="s0">c_sibling = c_sibling.next</span>
+    <span class="s0">while c_sibling.next != NULL and \</span>
+            <span class="s0">(c_sibling.next.type == tree.XML_PI_NODE or</span>
+             <span class="s0">c_sibling.next.type == tree.XML_COMMENT_NODE):</span>
+        <span class="s0">c_sibling = c_sibling.next</span>
+        <span class="s0">c_copy = tree.xmlDocCopyNode(c_sibling, c_target.doc, 1)</span>
+        <span class="s0">if c_copy is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+        <span class="s0">tree.xmlAddNextSibling(c_target, c_copy)</span>
+
+<span class="s0">cdef int _deleteSlice(_Document doc, xmlNode* c_node,</span>
+                      <span class="s0">Py_ssize_t count, Py_ssize_t step) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Delete slice, ``count`` items starting with ``c_node`` with a step</span>
+    <span class="s0">width of ``step``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0">cdef Py_ssize_t c, i</span>
+    <span class="s0">cdef _node_to_node_function next_element</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">return 0</span>
+    <span class="s0">if step &gt; 0:</span>
+        <span class="s0">next_element = _nextElement</span>
+    <span class="s0">else:</span>
+        <span class="s0">step = -step</span>
+        <span class="s0">next_element = _previousElement</span>
+    <span class="s0"># now start deleting nodes</span>
+    <span class="s0">c = 0</span>
+    <span class="s0">c_next = c_node</span>
+    <span class="s0">while c_node is not NULL and c &lt; count:</span>
+        <span class="s0">for i in range(step):</span>
+            <span class="s0">c_next = next_element(c_next)</span>
+            <span class="s0">if c_next is NULL:</span>
+                <span class="s0">break</span>
+        <span class="s0">_removeNode(doc, c_node)</span>
+        <span class="s0">c += 1</span>
+        <span class="s0">c_node = c_next</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _replaceSlice(_Element parent, xmlNode* c_node,</span>
+                       <span class="s0">Py_ssize_t slicelength, Py_ssize_t step,</span>
+                       <span class="s0">bint left_to_right, elements) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Replace the slice of ``count`` elements starting at ``c_node`` with</span>
+    <span class="s0">positive step width ``step`` by the Elements in ``elements``.  The</span>
+    <span class="s0">direction is given by the boolean argument ``left_to_right``.</span>
+
+    <span class="s0">``c_node`` may be NULL to indicate the end of the children list.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_orig_neighbour</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0">cdef xmlDoc*  c_source_doc</span>
+    <span class="s0">cdef _Element element</span>
+    <span class="s0">cdef Py_ssize_t seqlength, i, c</span>
+    <span class="s0">cdef _node_to_node_function next_element</span>
+    <span class="s0">assert step &gt; 0</span>
+    <span class="s0">if left_to_right:</span>
+        <span class="s0">next_element = _nextElement</span>
+    <span class="s0">else:</span>
+        <span class="s0">next_element = _previousElement</span>
+
+    <span class="s0">if not isinstance(elements, (list, tuple)):</span>
+        <span class="s0">elements = list(elements)</span>
+
+    <span class="s0">if step != 1 or not left_to_right:</span>
+        <span class="s0"># *replacing* children stepwise with list =&gt; check size!</span>
+        <span class="s0">seqlength = len(elements)</span>
+        <span class="s0">if seqlength != slicelength:</span>
+            <span class="s0">raise ValueError, f&quot;attempt to assign sequence of size {seqlength} &quot; \</span>
+                <span class="s0">f&quot;to extended slice of size {slicelength}&quot;</span>
+
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0"># no children yet =&gt; add all elements straight away</span>
+        <span class="s0">if left_to_right:</span>
+            <span class="s0">for element in elements:</span>
+                <span class="s0">assert element is not None, &quot;Node must not be None&quot;</span>
+                <span class="s0">_appendChild(parent, element)</span>
+        <span class="s0">else:</span>
+            <span class="s0">for element in elements:</span>
+                <span class="s0">assert element is not None, &quot;Node must not be None&quot;</span>
+                <span class="s0">_prependChild(parent, element)</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0"># remove the elements first as some might be re-added</span>
+    <span class="s0">if left_to_right:</span>
+        <span class="s0"># L-&gt;R, remember left neighbour</span>
+        <span class="s0">c_orig_neighbour = _previousElement(c_node)</span>
+    <span class="s0">else:</span>
+        <span class="s0"># R-&gt;L, remember right neighbour</span>
+        <span class="s0">c_orig_neighbour = _nextElement(c_node)</span>
+
+    <span class="s0"># We remove the original slice elements one by one. Since we hold</span>
+    <span class="s0"># a Python reference to all elements that we will insert, it is</span>
+    <span class="s0"># safe to let _removeNode() try (and fail) to free them even if</span>
+    <span class="s0"># the element itself or one of its descendents will be reinserted.</span>
+    <span class="s0">c = 0</span>
+    <span class="s0">c_next = c_node</span>
+    <span class="s0">while c_node is not NULL and c &lt; slicelength:</span>
+        <span class="s0">for i in range(step):</span>
+            <span class="s0">c_next = next_element(c_next)</span>
+            <span class="s0">if c_next is NULL:</span>
+                <span class="s0">break</span>
+        <span class="s0">_removeNode(parent._doc, c_node)</span>
+        <span class="s0">c += 1</span>
+        <span class="s0">c_node = c_next</span>
+
+    <span class="s0"># make sure each element is inserted only once</span>
+    <span class="s0">elements = iter(elements)</span>
+
+    <span class="s0"># find the first node right of the new insertion point</span>
+    <span class="s0">if left_to_right:</span>
+        <span class="s0">if c_orig_neighbour is not NULL:</span>
+            <span class="s0">c_node = next_element(c_orig_neighbour)</span>
+        <span class="s0">else:</span>
+            <span class="s0"># before the first element</span>
+            <span class="s0">c_node = _findChildForwards(parent._c_node, 0)</span>
+    <span class="s0">elif c_orig_neighbour is NULL:</span>
+        <span class="s0"># at the end, but reversed stepping</span>
+        <span class="s0"># append one element and go to the next insertion point</span>
+        <span class="s0">for element in elements:</span>
+            <span class="s0">assert element is not None, &quot;Node must not be None&quot;</span>
+            <span class="s0">_appendChild(parent, element)</span>
+            <span class="s0">c_node = element._c_node</span>
+            <span class="s0">if slicelength &gt; 0:</span>
+                <span class="s0">slicelength -= 1</span>
+                <span class="s0">for i in range(1, step):</span>
+                    <span class="s0">c_node = next_element(c_node)</span>
+                    <span class="s0">if c_node is NULL:</span>
+                        <span class="s0">break</span>
+            <span class="s0">break</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_node = c_orig_neighbour</span>
+
+    <span class="s0">if left_to_right:</span>
+        <span class="s0"># adjust step size after removing slice as we are not stepping</span>
+        <span class="s0"># over the newly inserted elements</span>
+        <span class="s0">step -= 1</span>
+
+    <span class="s0"># now insert elements where we removed them</span>
+    <span class="s0">if c_node is not NULL:</span>
+        <span class="s0">for element in elements:</span>
+            <span class="s0">assert element is not None, &quot;Node must not be None&quot;</span>
+            <span class="s0">_assertValidNode(element)</span>
+            <span class="s0"># move element and tail over</span>
+            <span class="s0">c_source_doc = element._c_node.doc</span>
+            <span class="s0">c_next = element._c_node.next</span>
+            <span class="s0">tree.xmlAddPrevSibling(c_node, element._c_node)</span>
+            <span class="s0">_moveTail(c_next, element._c_node)</span>
+
+            <span class="s0"># integrate element into new document</span>
+            <span class="s0">moveNodeToDocument(parent._doc, c_source_doc, element._c_node)</span>
+
+            <span class="s0"># stop at the end of the slice</span>
+            <span class="s0">if slicelength &gt; 0:</span>
+                <span class="s0">slicelength -= 1</span>
+                <span class="s0">for i in range(step):</span>
+                    <span class="s0">c_node = next_element(c_node)</span>
+                    <span class="s0">if c_node is NULL:</span>
+                        <span class="s0">break</span>
+                <span class="s0">if c_node is NULL:</span>
+                    <span class="s0">break</span>
+        <span class="s0">else:</span>
+            <span class="s0"># everything inserted</span>
+            <span class="s0">return 0</span>
+
+    <span class="s0"># append the remaining elements at the respective end</span>
+    <span class="s0">if left_to_right:</span>
+        <span class="s0">for element in elements:</span>
+            <span class="s0">assert element is not None, &quot;Node must not be None&quot;</span>
+            <span class="s0">_assertValidNode(element)</span>
+            <span class="s0">_appendChild(parent, element)</span>
+    <span class="s0">else:</span>
+        <span class="s0">for element in elements:</span>
+            <span class="s0">assert element is not None, &quot;Node must not be None&quot;</span>
+            <span class="s0">_assertValidNode(element)</span>
+            <span class="s0">_prependChild(parent, element)</span>
+
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef int _linkChild(xmlNode* c_parent, xmlNode* c_node) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Adaptation of 'xmlAddChild()' that deep-fix the document links iteratively.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">assert _isElement(c_node)</span>
+    <span class="s0">c_node.parent = c_parent</span>
+    <span class="s0">if c_parent.children is NULL:</span>
+        <span class="s0">c_parent.children = c_parent.last = c_node</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_node.prev = c_parent.last</span>
+        <span class="s0">c_parent.last.next = c_node</span>
+        <span class="s0">c_parent.last = c_node</span>
+
+    <span class="s0">_setTreeDoc(c_node, c_parent.doc)</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef int _appendChild(_Element parent, _Element child) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Append a new child to a parent element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">c_node = child._c_node</span>
+    <span class="s0">c_source_doc = c_node.doc</span>
+    <span class="s0"># prevent cycles</span>
+    <span class="s0">if _isAncestorOrSame(c_node, parent._c_node):</span>
+        <span class="s0">raise ValueError(&quot;cannot append parent to itself&quot;)</span>
+    <span class="s0"># store possible text node</span>
+    <span class="s0">c_next = c_node.next</span>
+    <span class="s0"># move node itself</span>
+    <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+    <span class="s0"># do not call xmlAddChild() here since it would deep-traverse the tree</span>
+    <span class="s0">_linkChild(parent._c_node, c_node)</span>
+    <span class="s0">_moveTail(c_next, c_node)</span>
+    <span class="s0"># uh oh, elements may be pointing to different doc when</span>
+    <span class="s0"># parent element has moved; change them too..</span>
+    <span class="s0">moveNodeToDocument(parent._doc, c_source_doc, c_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _prependChild(_Element parent, _Element child) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Prepend a new child to a parent element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">c_node = child._c_node</span>
+    <span class="s0">c_source_doc = c_node.doc</span>
+    <span class="s0"># prevent cycles</span>
+    <span class="s0">if _isAncestorOrSame(c_node, parent._c_node):</span>
+        <span class="s0">raise ValueError(&quot;cannot append parent to itself&quot;)</span>
+    <span class="s0"># store possible text node</span>
+    <span class="s0">c_next = c_node.next</span>
+    <span class="s0"># move node itself</span>
+    <span class="s0">c_child = _findChildForwards(parent._c_node, 0)</span>
+    <span class="s0">if c_child is NULL:</span>
+        <span class="s0">tree.xmlUnlinkNode(c_node)</span>
+        <span class="s0"># do not call xmlAddChild() here since it would deep-traverse the tree</span>
+        <span class="s0">_linkChild(parent._c_node, c_node)</span>
+    <span class="s0">else:</span>
+        <span class="s0">tree.xmlAddPrevSibling(c_child, c_node)</span>
+    <span class="s0">_moveTail(c_next, c_node)</span>
+    <span class="s0"># uh oh, elements may be pointing to different doc when</span>
+    <span class="s0"># parent element has moved; change them too..</span>
+    <span class="s0">moveNodeToDocument(parent._doc, c_source_doc, c_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _appendSibling(_Element element, _Element sibling) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Add a new sibling behind an element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return _addSibling(element, sibling, as_next=True)</span>
+
+<span class="s0">cdef int _prependSibling(_Element element, _Element sibling) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Add a new sibling before an element.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return _addSibling(element, sibling, as_next=False)</span>
+
+<span class="s0">cdef int _addSibling(_Element element, _Element sibling, bint as_next) except -1:</span>
+    <span class="s0">c_node = sibling._c_node</span>
+    <span class="s0">c_source_doc = c_node.doc</span>
+    <span class="s0"># prevent cycles</span>
+    <span class="s0">if _isAncestorOrSame(c_node, element._c_node):</span>
+        <span class="s0">if element._c_node is c_node:</span>
+            <span class="s0">return 0  # nothing to do</span>
+        <span class="s0">raise ValueError(&quot;cannot add ancestor as sibling, please break cycle first&quot;)</span>
+    <span class="s0"># store possible text node</span>
+    <span class="s0">c_next = c_node.next</span>
+    <span class="s0"># move node itself</span>
+    <span class="s0">if as_next:</span>
+        <span class="s0"># must insert after any tail text</span>
+        <span class="s0">c_next_node = _nextElement(element._c_node)</span>
+        <span class="s0">if c_next_node is NULL:</span>
+            <span class="s0">c_next_node = element._c_node</span>
+            <span class="s0">while c_next_node.next:</span>
+                <span class="s0">c_next_node = c_next_node.next</span>
+            <span class="s0">tree.xmlAddNextSibling(c_next_node, c_node)</span>
+        <span class="s0">else:</span>
+            <span class="s0">tree.xmlAddPrevSibling(c_next_node, c_node)</span>
+    <span class="s0">else:</span>
+        <span class="s0">tree.xmlAddPrevSibling(element._c_node, c_node)</span>
+    <span class="s0">_moveTail(c_next, c_node)</span>
+    <span class="s0"># uh oh, elements may be pointing to different doc when</span>
+    <span class="s0"># parent element has moved; change them too..</span>
+    <span class="s0">moveNodeToDocument(element._doc, c_source_doc, c_node)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef inline bint isutf8(const_xmlChar* s) noexcept:</span>
+    <span class="s0">cdef xmlChar c = s[0]</span>
+    <span class="s0">while c != c'\0':</span>
+        <span class="s0">if c &amp; 0x80:</span>
+            <span class="s0">return True</span>
+        <span class="s0">s += 1</span>
+        <span class="s0">c = s[0]</span>
+    <span class="s0">return False</span>
+
+<span class="s0">cdef bint isutf8l(const_xmlChar* s, size_t length) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Search for non-ASCII characters in the string, knowing its length in advance.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef unsigned int i</span>
+    <span class="s0">cdef unsigned long non_ascii_mask</span>
+    <span class="s0">cdef const unsigned long *lptr = &lt;const unsigned long*&gt; s</span>
+
+    <span class="s0">cdef const unsigned long *end = lptr + length // sizeof(unsigned long)</span>
+    <span class="s0">if length &gt;= sizeof(non_ascii_mask):</span>
+        <span class="s0"># Build constant 0x80808080... mask (and let the C compiler fold it).</span>
+        <span class="s0">non_ascii_mask = 0</span>
+        <span class="s0">for i in range(sizeof(non_ascii_mask) // 2):</span>
+            <span class="s0">non_ascii_mask = (non_ascii_mask &lt;&lt; 16) | 0x8080</span>
+
+        <span class="s0"># Advance to long-aligned character before we start reading longs.</span>
+        <span class="s0">while (&lt;size_t&gt;s) % sizeof(unsigned long) and s &lt; &lt;const_xmlChar *&gt;end:</span>
+            <span class="s0">if s[0] &amp; 0x80:</span>
+                <span class="s0">return True</span>
+            <span class="s0">s += 1</span>
+
+        <span class="s0"># Read one long at a time</span>
+        <span class="s0">lptr = &lt;const unsigned long*&gt; s</span>
+        <span class="s0">while lptr &lt; end:</span>
+            <span class="s0">if lptr[0] &amp; non_ascii_mask:</span>
+                <span class="s0">return True</span>
+            <span class="s0">lptr += 1</span>
+        <span class="s0">s = &lt;const_xmlChar *&gt;lptr</span>
+
+    <span class="s0">while s &lt; (&lt;const_xmlChar *&gt;end + length % sizeof(unsigned long)):</span>
+        <span class="s0">if s[0] &amp; 0x80:</span>
+            <span class="s0">return True</span>
+        <span class="s0">s += 1</span>
+
+    <span class="s0">return False</span>
+
+<span class="s0">cdef int _is_valid_xml_ascii(bytes pystring) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Check if a string is XML ascii content.&quot;&quot;&quot;</span>
+    <span class="s0">cdef signed char ch</span>
+    <span class="s0"># When ch is a *signed* char, non-ascii characters are negative integers</span>
+    <span class="s0"># and xmlIsChar_ch does not accept them.</span>
+    <span class="s0">for ch in pystring:</span>
+        <span class="s0">if not tree.xmlIsChar_ch(ch):</span>
+            <span class="s0">return 0</span>
+    <span class="s0">return 1</span>
+
+<span class="s0">cdef bint _is_valid_xml_utf8(bytes pystring) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Check if a string is like valid UTF-8 XML content.&quot;&quot;&quot;</span>
+    <span class="s0">cdef const_xmlChar* s = _xcstr(pystring)</span>
+    <span class="s0">cdef const_xmlChar* c_end = s + len(pystring)</span>
+    <span class="s0">cdef unsigned long next3 = 0</span>
+    <span class="s0">if s &lt; c_end - 2:</span>
+        <span class="s0">next3 = (s[0] &lt;&lt; 8) | (s[1])</span>
+
+    <span class="s0">while s &lt; c_end - 2:</span>
+        <span class="s0">next3 = 0x00ffffff &amp; ((next3 &lt;&lt; 8) | s[2])</span>
+        <span class="s0">if s[0] &amp; 0x80:</span>
+            <span class="s0"># 0xefbfbe and 0xefbfbf are utf-8 encodings of</span>
+            <span class="s0"># forbidden characters \ufffe and \uffff</span>
+            <span class="s0">if next3 == 0x00efbfbe or next3 == 0x00efbfbf:</span>
+                <span class="s0">return 0</span>
+            <span class="s0"># 0xeda080 and 0xedbfbf are utf-8 encodings of</span>
+            <span class="s0"># \ud800 and \udfff. Anything between them (inclusive)</span>
+            <span class="s0"># is forbidden, because they are surrogate blocks in utf-16.</span>
+            <span class="s0">if 0x00eda080 &lt;= next3 &lt;= 0x00edbfbf:</span>
+                <span class="s0">return 0</span>
+        <span class="s0">elif not tree.xmlIsChar_ch(s[0]):</span>
+            <span class="s0">return 0  # invalid ascii char</span>
+        <span class="s0">s += 1</span>
+
+    <span class="s0">while s &lt; c_end:</span>
+        <span class="s0">if not s[0] &amp; 0x80 and not tree.xmlIsChar_ch(s[0]):</span>
+            <span class="s0">return 0  # invalid ascii char</span>
+        <span class="s0">s += 1</span>
+
+    <span class="s0">return 1</span>
+
+<span class="s0">cdef inline unicode funicodeOrNone(const_xmlChar* s):</span>
+    <span class="s0">return funicode(s) if s is not NULL else None</span>
+
+<span class="s0">cdef inline unicode funicodeOrEmpty(const_xmlChar* s):</span>
+    <span class="s0">return funicode(s) if s is not NULL else ''</span>
+
+<span class="s0">cdef unicode funicode(const_xmlChar* s):</span>
+    <span class="s0">return s.decode('UTF-8')</span>
+
+<span class="s0">cdef bytes _utf8(object s):</span>
+    <span class="s0">&quot;&quot;&quot;Test if a string is valid user input and encode it to UTF-8.</span>
+    <span class="s0">Reject all bytes/unicode input that contains non-XML characters.</span>
+    <span class="s0">Reject all bytes input that contains non-ASCII characters.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef int valid</span>
+    <span class="s0">cdef bytes utf8_string</span>
+    <span class="s0">if isinstance(s, unicode):</span>
+        <span class="s0">utf8_string = (&lt;unicode&gt;s).encode('utf8')</span>
+        <span class="s0">valid = _is_valid_xml_utf8(utf8_string)</span>
+    <span class="s0">elif isinstance(s, (bytes, bytearray)):</span>
+        <span class="s0">utf8_string = s if type(s) is bytes else bytes(s)</span>
+        <span class="s0">valid = _is_valid_xml_ascii(utf8_string)</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError(&quot;Argument must be bytes or unicode, got '%.200s'&quot; % type(s).__name__)</span>
+    <span class="s0">if not valid:</span>
+        <span class="s0">raise ValueError(</span>
+            <span class="s0">&quot;All strings must be XML compatible: Unicode or ASCII, no NULL bytes or control characters&quot;)</span>
+    <span class="s0">return utf8_string</span>
+
+
+<span class="s0">cdef bytes _utf8orNone(object s):</span>
+    <span class="s0">return _utf8(s) if s is not None else None</span>
+
+
+<span class="s0">cdef enum:</span>
+    <span class="s0">NO_FILE_PATH = 0</span>
+    <span class="s0">ABS_UNIX_FILE_PATH = 1</span>
+    <span class="s0">ABS_WIN_FILE_PATH = 2</span>
+    <span class="s0">REL_FILE_PATH = 3</span>
+
+
+<span class="s0">cdef bint _isFilePath(const_xmlChar* c_path) noexcept:</span>
+    <span class="s0">&quot;simple heuristic to see if a path is a filename&quot;</span>
+    <span class="s0">cdef xmlChar c</span>
+    <span class="s0"># test if it looks like an absolute Unix path or a Windows network path</span>
+    <span class="s0">if c_path[0] == c'/':</span>
+        <span class="s0">return ABS_UNIX_FILE_PATH</span>
+
+    <span class="s0"># test if it looks like an absolute Windows path or URL</span>
+    <span class="s0">if c'a' &lt;= c_path[0] &lt;= c'z' or c'A' &lt;= c_path[0] &lt;= c'Z':</span>
+        <span class="s0">c_path += 1</span>
+        <span class="s0">if c_path[0] == c':' and c_path[1] in b'\0\\':</span>
+            <span class="s0">return ABS_WIN_FILE_PATH  # C: or C:\...</span>
+
+        <span class="s0"># test if it looks like a URL with scheme://</span>
+        <span class="s0">while c'a' &lt;= c_path[0] &lt;= c'z' or c'A' &lt;= c_path[0] &lt;= c'Z':</span>
+            <span class="s0">c_path += 1</span>
+        <span class="s0">if c_path[0] == c':' and c_path[1] == c'/' and c_path[2] == c'/':</span>
+            <span class="s0">return NO_FILE_PATH</span>
+
+    <span class="s0"># assume it's a relative path</span>
+    <span class="s0">return REL_FILE_PATH</span>
+
+
+<span class="s0">cdef object _getFSPathOrObject(object obj):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Get the __fspath__ attribute of an object if it exists.</span>
+    <span class="s0">Otherwise, the original object is returned.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if _isString(obj):</span>
+        <span class="s0">return obj</span>
+    <span class="s0">try:</span>
+        <span class="s0">return python.PyOS_FSPath(obj)</span>
+    <span class="s0">except TypeError:</span>
+        <span class="s0">return obj</span>
+
+
+<span class="s0">cdef object _encodeFilename(object filename):</span>
+    <span class="s0">&quot;&quot;&quot;Make sure a filename is 8-bit encoded (or None).</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if filename is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">elif isinstance(filename, bytes):</span>
+        <span class="s0">return filename</span>
+    <span class="s0">elif isinstance(filename, unicode):</span>
+        <span class="s0">filename8 = (&lt;unicode&gt;filename).encode('utf8')</span>
+        <span class="s0">if _isFilePath(&lt;unsigned char*&gt;filename8):</span>
+            <span class="s0">try:</span>
+                <span class="s0">return python.PyUnicode_AsEncodedString(</span>
+                    <span class="s0">filename, _C_FILENAME_ENCODING, NULL)</span>
+            <span class="s0">except UnicodeEncodeError:</span>
+                <span class="s0">pass</span>
+        <span class="s0">return filename8</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError(&quot;Argument must be string or unicode.&quot;)</span>
+
+<span class="s0">cdef object _decodeFilename(const_xmlChar* c_path):</span>
+    <span class="s0">&quot;&quot;&quot;Make the filename a unicode string if we are in Py3.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return _decodeFilenameWithLength(c_path, tree.xmlStrlen(c_path))</span>
+
+<span class="s0">cdef object _decodeFilenameWithLength(const_xmlChar* c_path, size_t c_len):</span>
+    <span class="s0">&quot;&quot;&quot;Make the filename a unicode string if we are in Py3.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if _isFilePath(c_path):</span>
+        <span class="s0">try:</span>
+            <span class="s0">return python.PyUnicode_Decode(</span>
+                <span class="s0">&lt;const_char*&gt;c_path, c_len, _C_FILENAME_ENCODING, NULL)</span>
+        <span class="s0">except UnicodeDecodeError:</span>
+            <span class="s0">pass</span>
+    <span class="s0">try:</span>
+        <span class="s0">return (&lt;unsigned char*&gt;c_path)[:c_len].decode('UTF-8')</span>
+    <span class="s0">except UnicodeDecodeError:</span>
+        <span class="s0"># this is a stupid fallback, but it might still work...</span>
+        <span class="s0">return (&lt;unsigned char*&gt;c_path)[:c_len].decode('latin-1', 'replace')</span>
+
+<span class="s0">cdef object _encodeFilenameUTF8(object filename):</span>
+    <span class="s0">&quot;&quot;&quot;Recode filename as UTF-8. Tries ASCII, local filesystem encoding and</span>
+    <span class="s0">UTF-8 as source encoding.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef char* c_filename</span>
+    <span class="s0">if filename is None:</span>
+        <span class="s0">return None</span>
+    <span class="s0">elif isinstance(filename, bytes):</span>
+        <span class="s0">if not isutf8l(&lt;bytes&gt;filename, len(&lt;bytes&gt;filename)):</span>
+            <span class="s0"># plain ASCII!</span>
+            <span class="s0">return filename</span>
+        <span class="s0">c_filename = _cstr(&lt;bytes&gt;filename)</span>
+        <span class="s0">try:</span>
+            <span class="s0"># try to decode with default encoding</span>
+            <span class="s0">filename = python.PyUnicode_Decode(</span>
+                <span class="s0">c_filename, len(&lt;bytes&gt;filename),</span>
+                <span class="s0">_C_FILENAME_ENCODING, NULL)</span>
+        <span class="s0">except UnicodeDecodeError as decode_exc:</span>
+            <span class="s0">try:</span>
+                <span class="s0"># try if it's proper UTF-8</span>
+                <span class="s0">(&lt;bytes&gt;filename).decode('utf8')</span>
+                <span class="s0">return filename</span>
+            <span class="s0">except UnicodeDecodeError:</span>
+                <span class="s0">raise decode_exc # otherwise re-raise original exception</span>
+    <span class="s0">if isinstance(filename, unicode):</span>
+        <span class="s0">return (&lt;unicode&gt;filename).encode('utf8')</span>
+    <span class="s0">else:</span>
+        <span class="s0">raise TypeError(&quot;Argument must be string or unicode.&quot;)</span>
+
+<span class="s0">cdef tuple _getNsTag(tag):</span>
+    <span class="s0">&quot;&quot;&quot;Given a tag, find namespace URI and tag name.</span>
+    <span class="s0">Return None for NS uri if no namespace URI provided.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return __getNsTag(tag, 0)</span>
+
+<span class="s0">cdef tuple _getNsTagWithEmptyNs(tag):</span>
+    <span class="s0">&quot;&quot;&quot;Given a tag, find namespace URI and tag name.  Return None for NS uri</span>
+    <span class="s0">if no namespace URI provided, or the empty string if namespace</span>
+    <span class="s0">part is '{}'.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return __getNsTag(tag, 1)</span>
+
+<span class="s0">cdef tuple __getNsTag(tag, bint empty_ns):</span>
+    <span class="s0">cdef char* c_tag</span>
+    <span class="s0">cdef char* c_ns_end</span>
+    <span class="s0">cdef Py_ssize_t taglen</span>
+    <span class="s0">cdef Py_ssize_t nslen</span>
+    <span class="s0">cdef bytes ns = None</span>
+    <span class="s0"># _isString() is much faster than isinstance()</span>
+    <span class="s0">if not _isString(tag) and isinstance(tag, QName):</span>
+        <span class="s0">tag = (&lt;QName&gt;tag).text</span>
+    <span class="s0">tag = _utf8(tag)</span>
+    <span class="s0">c_tag = _cstr(tag)</span>
+    <span class="s0">if c_tag[0] == c'{':</span>
+        <span class="s0">c_tag += 1</span>
+        <span class="s0">c_ns_end = cstring_h.strchr(c_tag, c'}')</span>
+        <span class="s0">if c_ns_end is NULL:</span>
+            <span class="s0">raise ValueError, &quot;Invalid tag name&quot;</span>
+        <span class="s0">nslen  = c_ns_end - c_tag</span>
+        <span class="s0">taglen = python.PyBytes_GET_SIZE(tag) - nslen - 2</span>
+        <span class="s0">if taglen == 0:</span>
+            <span class="s0">raise ValueError, &quot;Empty tag name&quot;</span>
+        <span class="s0">if nslen &gt; 0:</span>
+            <span class="s0">ns = &lt;bytes&gt;c_tag[:nslen]</span>
+        <span class="s0">elif empty_ns:</span>
+            <span class="s0">ns = b''</span>
+        <span class="s0">tag = &lt;bytes&gt;c_ns_end[1:taglen+1]</span>
+    <span class="s0">elif python.PyBytes_GET_SIZE(tag) == 0:</span>
+        <span class="s0">raise ValueError, &quot;Empty tag name&quot;</span>
+    <span class="s0">return ns, tag</span>
+
+<span class="s0">cdef inline int _pyXmlNameIsValid(name_utf8):</span>
+    <span class="s0">return _xmlNameIsValid(_xcstr(name_utf8)) and b':' not in name_utf8</span>
+
+<span class="s0">cdef inline int _pyHtmlNameIsValid(name_utf8):</span>
+    <span class="s0">return _htmlNameIsValid(_xcstr(name_utf8))</span>
+
+<span class="s0">cdef inline int _xmlNameIsValid(const_xmlChar* c_name) noexcept:</span>
+    <span class="s0">return tree.xmlValidateNameValue(c_name)</span>
+
+<span class="s0">cdef int _htmlNameIsValid(const_xmlChar* c_name) noexcept:</span>
+    <span class="s0">if c_name is NULL or c_name[0] == c'\0':</span>
+        <span class="s0">return 0</span>
+    <span class="s0">while c_name[0] != c'\0':</span>
+        <span class="s0">if c_name[0] in b'&amp;&lt;&gt;/&quot;\'\t\n\x0B\x0C\r ':</span>
+            <span class="s0">return 0</span>
+        <span class="s0">c_name += 1</span>
+    <span class="s0">return 1</span>
+
+<span class="s0">cdef bint _characterReferenceIsValid(const_xmlChar* c_name) noexcept:</span>
+    <span class="s0">cdef bint is_hex</span>
+    <span class="s0">if c_name[0] == c'x':</span>
+        <span class="s0">c_name += 1</span>
+        <span class="s0">is_hex = 1</span>
+    <span class="s0">else:</span>
+        <span class="s0">is_hex = 0</span>
+    <span class="s0">if c_name[0] == c'\0':</span>
+        <span class="s0">return 0</span>
+    <span class="s0">while c_name[0] != c'\0':</span>
+        <span class="s0">if c_name[0] &lt; c'0' or c_name[0] &gt; c'9':</span>
+            <span class="s0">if not is_hex:</span>
+                <span class="s0">return 0</span>
+            <span class="s0">if not (c'a' &lt;= c_name[0] &lt;= c'f'):</span>
+                <span class="s0">if not (c'A' &lt;= c_name[0] &lt;= c'F'):</span>
+                    <span class="s0">return 0</span>
+        <span class="s0">c_name += 1</span>
+    <span class="s0">return 1</span>
+
+<span class="s0">cdef int _tagValidOrRaise(tag_utf) except -1:</span>
+    <span class="s0">if not _pyXmlNameIsValid(tag_utf):</span>
+        <span class="s0">raise ValueError(f&quot;Invalid tag name {(&lt;bytes&gt;tag_utf).decode('utf8')!r}&quot;)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _htmlTagValidOrRaise(tag_utf) except -1:</span>
+    <span class="s0">if not _pyHtmlNameIsValid(tag_utf):</span>
+        <span class="s0">raise ValueError(f&quot;Invalid HTML tag name {(&lt;bytes&gt;tag_utf).decode('utf8')!r}&quot;)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _attributeValidOrRaise(name_utf) except -1:</span>
+    <span class="s0">if not _pyXmlNameIsValid(name_utf):</span>
+        <span class="s0">raise ValueError(f&quot;Invalid attribute name {(&lt;bytes&gt;name_utf).decode('utf8')!r}&quot;)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _prefixValidOrRaise(tag_utf) except -1:</span>
+    <span class="s0">if not _pyXmlNameIsValid(tag_utf):</span>
+        <span class="s0">raise ValueError(f&quot;Invalid namespace prefix {(&lt;bytes&gt;tag_utf).decode('utf8')!r}&quot;)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef int _uriValidOrRaise(uri_utf) except -1:</span>
+    <span class="s0">cdef uri.xmlURI* c_uri = uri.xmlParseURI(_cstr(uri_utf))</span>
+    <span class="s0">if c_uri is NULL:</span>
+        <span class="s0">raise ValueError(f&quot;Invalid namespace URI {(&lt;bytes&gt;uri_utf).decode('utf8')!r}&quot;)</span>
+    <span class="s0">uri.xmlFreeURI(c_uri)</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef inline unicode _namespacedName(xmlNode* c_node):</span>
+    <span class="s0">return _namespacedNameFromNsName(_getNs(c_node), c_node.name)</span>
+
+
+<span class="s0">cdef unicode _namespacedNameFromNsName(const_xmlChar* c_href, const_xmlChar* c_name):</span>
+    <span class="s0">name = funicode(c_name)</span>
+    <span class="s0">if c_href is NULL:</span>
+        <span class="s0">return name</span>
+    <span class="s0">href = funicode(c_href)</span>
+    <span class="s0">return f&quot;{{{href}}}{name}&quot;</span>
+
+
+<span class="s0">cdef _getFilenameForFile(source):</span>
+    <span class="s0">&quot;&quot;&quot;Given a Python File or Gzip object, give filename back.</span>
+
+    <span class="s0">Returns None if not a file object.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0"># urllib2 provides a geturl() method</span>
+    <span class="s0">try:</span>
+        <span class="s0">return source.geturl()</span>
+    <span class="s0">except:</span>
+        <span class="s0">pass</span>
+    <span class="s0"># file instances have a name attribute</span>
+    <span class="s0">try:</span>
+        <span class="s0">filename = source.name</span>
+        <span class="s0">if _isString(filename):</span>
+            <span class="s0">return os_path_abspath(filename)</span>
+    <span class="s0">except:</span>
+        <span class="s0">pass</span>
+    <span class="s0"># gzip file instances have a filename attribute (before Py3k)</span>
+    <span class="s0">try:</span>
+        <span class="s0">filename = source.filename</span>
+        <span class="s0">if _isString(filename):</span>
+            <span class="s0">return os_path_abspath(filename)</span>
+    <span class="s0">except:</span>
+        <span class="s0">pass</span>
+    <span class="s0"># can't determine filename</span>
+    <span class="s0">return None</span>
+</pre>
+</body>
+</html>

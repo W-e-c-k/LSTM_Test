@@ -1,0 +1,1165 @@
+<html>
+<head>
+<title>dataset.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #2aacb8;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dataset.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is part of h5py, a Python interface to the HDF5 library.</span>
+<span class="s0">#</span>
+<span class="s0"># http://www.h5py.org</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright 2008-2020 Andrew Collette and contributors</span>
+<span class="s0">#</span>
+<span class="s0"># License:  Standard 3-clause BSD; see &quot;license.txt&quot; for full license terms</span>
+<span class="s0">#           and contributor agreement.</span>
+
+<span class="s2">&quot;&quot;&quot; 
+    Implements support for high-level dataset access. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">posixpath </span><span class="s3">as </span><span class="s1">pp</span>
+<span class="s3">import </span><span class="s1">sys</span>
+
+<span class="s3">import </span><span class="s1">numpy</span>
+
+<span class="s3">from </span><span class="s4">.. </span><span class="s3">import </span><span class="s1">h5</span><span class="s4">, </span><span class="s1">h5s</span><span class="s4">, </span><span class="s1">h5t</span><span class="s4">, </span><span class="s1">h5r</span><span class="s4">, </span><span class="s1">h5d</span><span class="s4">, </span><span class="s1">h5p</span><span class="s4">, </span><span class="s1">h5fd</span><span class="s4">, </span><span class="s1">h5ds</span><span class="s4">, </span><span class="s1">_selector</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s4">(</span>
+    <span class="s1">array_for_new_object</span><span class="s4">, </span><span class="s1">cached_property</span><span class="s4">, </span><span class="s1">Empty</span><span class="s4">, </span><span class="s1">find_item_type</span><span class="s4">, </span><span class="s1">HLObject</span><span class="s4">,</span>
+    <span class="s1">phil</span><span class="s4">, </span><span class="s1">product</span><span class="s4">, </span><span class="s1">with_phil</span><span class="s4">,</span>
+<span class="s4">)</span>
+<span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">filters</span>
+<span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">selections </span><span class="s3">as </span><span class="s1">sel</span>
+<span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">selections2 </span><span class="s3">as </span><span class="s1">sel2</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">datatype </span><span class="s3">import </span><span class="s1">Datatype</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">compat </span><span class="s3">import </span><span class="s1">filename_decode</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">vds </span><span class="s3">import </span><span class="s1">VDSmap</span><span class="s4">, </span><span class="s1">vds_support</span>
+
+<span class="s1">_LEGACY_GZIP_COMPRESSION_VALS </span><span class="s4">= </span><span class="s1">frozenset</span><span class="s4">(</span><span class="s1">range</span><span class="s4">(</span><span class="s5">10</span><span class="s4">))</span>
+<span class="s1">MPI </span><span class="s4">= </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">mpi</span>
+
+
+<span class="s3">def </span><span class="s1">make_new_dset</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">data</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">name</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                  <span class="s1">chunks</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">compression</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">shuffle</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                  <span class="s1">fletcher32</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">maxshape</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">compression_opts</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                  <span class="s1">fillvalue</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">scaleoffset</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">track_times</span><span class="s4">=</span><span class="s3">False</span><span class="s4">,</span>
+                  <span class="s1">external</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">track_order</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">dcpl</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">dapl</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+                  <span class="s1">efile_prefix</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">virtual_prefix</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">allow_unknown_filter</span><span class="s4">=</span><span class="s3">False</span><span class="s4">,</span>
+                  <span class="s1">rdcc_nslots</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Return a new low-level dataset identifier &quot;&quot;&quot;</span>
+
+    <span class="s0"># Convert data to a C-contiguous ndarray</span>
+    <span class="s3">if </span><span class="s1">data </span><span class="s3">is not None and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">data</span><span class="s4">, </span><span class="s1">Empty</span><span class="s4">):</span>
+        <span class="s1">data </span><span class="s4">= </span><span class="s1">array_for_new_object</span><span class="s4">(</span><span class="s1">data</span><span class="s4">, </span><span class="s1">specified_dtype</span><span class="s4">=</span><span class="s1">dtype</span><span class="s4">)</span>
+
+    <span class="s0"># Validate shape</span>
+    <span class="s3">if </span><span class="s1">shape </span><span class="s3">is None</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">data </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">dtype </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;One of data, shape or dtype must be specified&quot;</span><span class="s4">)</span>
+            <span class="s1">data </span><span class="s4">= </span><span class="s1">Empty</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s1">shape </span><span class="s4">= </span><span class="s1">data</span><span class="s4">.</span><span class="s1">shape</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s1">shape </span><span class="s4">= (</span><span class="s1">shape</span><span class="s4">,) </span><span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">int</span><span class="s4">) </span><span class="s3">else </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">data </span><span class="s3">is not None and </span><span class="s4">(</span><span class="s1">product</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">) != </span><span class="s1">product</span><span class="s4">(</span><span class="s1">data</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)):</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Shape tuple is incompatible with data&quot;</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">maxshape</span><span class="s4">, </span><span class="s1">int</span><span class="s4">):</span>
+        <span class="s1">maxshape </span><span class="s4">= (</span><span class="s1">maxshape</span><span class="s4">,)</span>
+    <span class="s1">tmp_shape </span><span class="s4">= </span><span class="s1">maxshape </span><span class="s3">if </span><span class="s1">maxshape </span><span class="s3">is not None else </span><span class="s1">shape</span>
+
+    <span class="s0"># Validate chunk shape</span>
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">, </span><span class="s1">int</span><span class="s4">) </span><span class="s3">and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">, </span><span class="s1">bool</span><span class="s4">):</span>
+        <span class="s1">chunks </span><span class="s4">= (</span><span class="s1">chunks</span><span class="s4">,)</span>
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">) </span><span class="s3">and </span><span class="s1">any</span><span class="s4">(</span>
+        <span class="s1">chunk </span><span class="s4">&gt; </span><span class="s1">dim </span><span class="s3">for </span><span class="s1">dim</span><span class="s4">, </span><span class="s1">chunk </span><span class="s3">in </span><span class="s1">zip</span><span class="s4">(</span><span class="s1">tmp_shape</span><span class="s4">, </span><span class="s1">chunks</span><span class="s4">) </span><span class="s3">if </span><span class="s1">dim </span><span class="s3">is not None</span>
+    <span class="s4">):</span>
+        <span class="s1">errmsg </span><span class="s4">= </span><span class="s6">&quot;Chunk shape must not be greater than data shape in any dimension. &quot;</span><span class="s1">\</span>
+                 <span class="s6">&quot;{} is not compatible with {}&quot;</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">chunks</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">)</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s1">errmsg</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">Datatype</span><span class="s4">):</span>
+        <span class="s0"># Named types are used as-is</span>
+        <span class="s1">tid </span><span class="s4">= </span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">id</span>
+        <span class="s1">dtype </span><span class="s4">= </span><span class="s1">tid</span><span class="s4">.</span><span class="s1">dtype  </span><span class="s0"># Following code needs this</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s0"># Validate dtype</span>
+        <span class="s3">if </span><span class="s1">dtype </span><span class="s3">is None and </span><span class="s1">data </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">dtype </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">(</span><span class="s6">&quot;=f4&quot;</span><span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">dtype </span><span class="s3">is None and </span><span class="s1">data </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">dtype </span><span class="s4">= </span><span class="s1">data</span><span class="s4">.</span><span class="s1">dtype</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">dtype </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s1">tid </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">py_create</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">logical</span><span class="s4">=</span><span class="s5">1</span><span class="s4">)</span>
+
+    <span class="s0"># Legacy</span>
+    <span class="s3">if </span><span class="s1">any</span><span class="s4">((</span><span class="s1">compression</span><span class="s4">, </span><span class="s1">shuffle</span><span class="s4">, </span><span class="s1">fletcher32</span><span class="s4">, </span><span class="s1">maxshape</span><span class="s4">, </span><span class="s1">scaleoffset</span><span class="s4">)) </span><span class="s3">and </span><span class="s1">chunks </span><span class="s3">is False</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Chunked format required for given storage options&quot;</span><span class="s4">)</span>
+
+    <span class="s0"># Legacy</span>
+    <span class="s3">if </span><span class="s1">compression </span><span class="s3">is True</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">compression_opts </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">compression_opts </span><span class="s4">= </span><span class="s5">4</span>
+        <span class="s1">compression </span><span class="s4">= </span><span class="s6">'gzip'</span>
+
+    <span class="s0"># Legacy</span>
+    <span class="s3">if </span><span class="s1">compression </span><span class="s3">in </span><span class="s1">_LEGACY_GZIP_COMPRESSION_VALS</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">compression_opts </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Conflict in compression options&quot;</span><span class="s4">)</span>
+        <span class="s1">compression_opts </span><span class="s4">= </span><span class="s1">compression</span>
+        <span class="s1">compression </span><span class="s4">= </span><span class="s6">'gzip'</span>
+    <span class="s1">dcpl </span><span class="s4">= </span><span class="s1">filters</span><span class="s4">.</span><span class="s1">fill_dcpl</span><span class="s4">(</span>
+        <span class="s1">dcpl </span><span class="s3">or </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">DATASET_CREATE</span><span class="s4">), </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">,</span>
+        <span class="s1">chunks</span><span class="s4">, </span><span class="s1">compression</span><span class="s4">, </span><span class="s1">compression_opts</span><span class="s4">, </span><span class="s1">shuffle</span><span class="s4">, </span><span class="s1">fletcher32</span><span class="s4">,</span>
+        <span class="s1">maxshape</span><span class="s4">, </span><span class="s1">scaleoffset</span><span class="s4">, </span><span class="s1">external</span><span class="s4">, </span><span class="s1">allow_unknown_filter</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">fillvalue </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s0"># prepare string-type dtypes for fillvalue</span>
+        <span class="s1">string_info </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">check_string_dtype</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">string_info </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s0"># fake vlen dtype for fixed len string fillvalue</span>
+            <span class="s0"># to not trigger unwanted encoding</span>
+            <span class="s1">dtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">string_dtype</span><span class="s4">(</span><span class="s1">string_info</span><span class="s4">.</span><span class="s1">encoding</span><span class="s4">)</span>
+            <span class="s1">fillvalue </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">(</span><span class="s1">fillvalue</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">fillvalue </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">(</span><span class="s1">fillvalue</span><span class="s4">)</span>
+        <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">set_fill_value</span><span class="s4">(</span><span class="s1">fillvalue</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">track_times </span><span class="s3">is None</span><span class="s4">:</span>
+        <span class="s0"># In case someone explicitly passes None for the default</span>
+        <span class="s1">track_times </span><span class="s4">= </span><span class="s3">False</span>
+    <span class="s3">if </span><span class="s1">track_times </span><span class="s3">in </span><span class="s4">(</span><span class="s3">True</span><span class="s4">, </span><span class="s3">False</span><span class="s4">):</span>
+        <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">set_obj_track_times</span><span class="s4">(</span><span class="s1">track_times</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;track_times must be either True or False&quot;</span><span class="s4">)</span>
+    <span class="s3">if </span><span class="s1">track_order </span><span class="s3">is True</span><span class="s4">:</span>
+        <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">set_attr_creation_order</span><span class="s4">(</span>
+            <span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_TRACKED </span><span class="s4">| </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_INDEXED</span><span class="s4">)</span>
+    <span class="s3">elif </span><span class="s1">track_order </span><span class="s3">is False</span><span class="s4">:</span>
+        <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">set_attr_creation_order</span><span class="s4">(</span><span class="s5">0</span><span class="s4">)</span>
+    <span class="s3">elif </span><span class="s1">track_order </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;track_order must be either True or False&quot;</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">maxshape </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">maxshape </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">m </span><span class="s3">if </span><span class="s1">m </span><span class="s3">is not None else </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">UNLIMITED </span><span class="s3">for </span><span class="s1">m </span><span class="s3">in </span><span class="s1">maxshape</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">any</span><span class="s4">([</span><span class="s1">efile_prefix</span><span class="s4">, </span><span class="s1">virtual_prefix</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">, </span><span class="s1">rdcc_nslots</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">]):</span>
+        <span class="s1">dapl </span><span class="s4">= </span><span class="s1">dapl </span><span class="s3">or </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">DATASET_ACCESS</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">efile_prefix </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">dapl</span><span class="s4">.</span><span class="s1">set_efile_prefix</span><span class="s4">(</span><span class="s1">efile_prefix</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">virtual_prefix </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">dapl</span><span class="s4">.</span><span class="s1">set_virtual_prefix</span><span class="s4">(</span><span class="s1">virtual_prefix</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">rdcc_nbytes </span><span class="s3">or </span><span class="s1">rdcc_nslots </span><span class="s3">or </span><span class="s1">rdcc_w0</span><span class="s4">:</span>
+        <span class="s1">cache_settings </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">dapl</span><span class="s4">.</span><span class="s1">get_chunk_cache</span><span class="s4">())</span>
+        <span class="s3">if </span><span class="s1">rdcc_nslots </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] = </span><span class="s1">rdcc_nslots</span>
+        <span class="s3">if </span><span class="s1">rdcc_nbytes </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">1</span><span class="s4">] = </span><span class="s1">rdcc_nbytes</span>
+        <span class="s3">if </span><span class="s1">rdcc_w0 </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">2</span><span class="s4">] = </span><span class="s1">rdcc_w0</span>
+        <span class="s1">dapl</span><span class="s4">.</span><span class="s1">set_chunk_cache</span><span class="s4">(*</span><span class="s1">cache_settings</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">data</span><span class="s4">, </span><span class="s1">Empty</span><span class="s4">):</span>
+        <span class="s1">sid </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">NULL</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+        <span class="s1">sid </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create_simple</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">maxshape</span><span class="s4">)</span>
+
+    <span class="s1">dset_id </span><span class="s4">= </span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">tid</span><span class="s4">, </span><span class="s1">sid</span><span class="s4">, </span><span class="s1">dcpl</span><span class="s4">=</span><span class="s1">dcpl</span><span class="s4">, </span><span class="s1">dapl</span><span class="s4">=</span><span class="s1">dapl</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s4">(</span><span class="s1">data </span><span class="s3">is not None</span><span class="s4">) </span><span class="s3">and </span><span class="s4">(</span><span class="s3">not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">data</span><span class="s4">, </span><span class="s1">Empty</span><span class="s4">)):</span>
+        <span class="s1">dset_id</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">ALL</span><span class="s4">, </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">ALL</span><span class="s4">, </span><span class="s1">data</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">dset_id</span>
+
+
+<span class="s3">def </span><span class="s1">open_dset</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">dapl</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">efile_prefix</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">virtual_prefix</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+              <span class="s1">rdcc_nslots</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot; Return an existing low-level dataset identifier &quot;&quot;&quot;</span>
+
+    <span class="s3">if </span><span class="s1">any</span><span class="s4">([</span><span class="s1">efile_prefix</span><span class="s4">, </span><span class="s1">virtual_prefix</span><span class="s4">, </span><span class="s1">rdcc_nbytes</span><span class="s4">, </span><span class="s1">rdcc_nslots</span><span class="s4">, </span><span class="s1">rdcc_w0</span><span class="s4">]):</span>
+        <span class="s1">dapl </span><span class="s4">= </span><span class="s1">dapl </span><span class="s3">or </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">DATASET_ACCESS</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">efile_prefix </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">dapl</span><span class="s4">.</span><span class="s1">set_efile_prefix</span><span class="s4">(</span><span class="s1">efile_prefix</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">virtual_prefix </span><span class="s3">is not None</span><span class="s4">:</span>
+        <span class="s1">dapl</span><span class="s4">.</span><span class="s1">set_virtual_prefix</span><span class="s4">(</span><span class="s1">virtual_prefix</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">rdcc_nbytes </span><span class="s3">or </span><span class="s1">rdcc_nslots </span><span class="s3">or </span><span class="s1">rdcc_w0</span><span class="s4">:</span>
+        <span class="s1">cache_settings </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">dapl</span><span class="s4">.</span><span class="s1">get_chunk_cache</span><span class="s4">())</span>
+        <span class="s3">if </span><span class="s1">rdcc_nslots </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] = </span><span class="s1">rdcc_nslots</span>
+        <span class="s3">if </span><span class="s1">rdcc_nbytes </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">1</span><span class="s4">] = </span><span class="s1">rdcc_nbytes</span>
+        <span class="s3">if </span><span class="s1">rdcc_w0 </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">cache_settings</span><span class="s4">[</span><span class="s5">2</span><span class="s4">] = </span><span class="s1">rdcc_w0</span>
+        <span class="s1">dapl</span><span class="s4">.</span><span class="s1">set_chunk_cache</span><span class="s4">(*</span><span class="s1">cache_settings</span><span class="s4">)</span>
+
+    <span class="s1">dset_id </span><span class="s4">= </span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">open</span><span class="s4">(</span><span class="s1">parent</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">dapl</span><span class="s4">=</span><span class="s1">dapl</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">dset_id</span>
+
+
+<span class="s3">class </span><span class="s1">AstypeWrapper</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Wrapper to convert data on reading from a dataset. 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dset</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dset </span><span class="s4">= </span><span class="s1">dset</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dtype </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">args</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">.</span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">args</span><span class="s4">, </span><span class="s1">new_dtype</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dtype</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__len__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Get the length of the underlying dataset 
+ 
+        &gt;&gt;&gt; length = len(dataset.astype('f8')) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__array__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s1">data </span><span class="s4">= </span><span class="s1">self</span><span class="s4">[:]</span>
+        <span class="s3">if </span><span class="s1">dtype </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">data </span><span class="s4">= </span><span class="s1">data</span><span class="s4">.</span><span class="s1">astype</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">data</span>
+
+
+<span class="s3">class </span><span class="s1">AsStrWrapper</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Wrapper to decode strings on reading the dataset&quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dset</span><span class="s4">, </span><span class="s1">encoding</span><span class="s4">, </span><span class="s1">errors</span><span class="s4">=</span><span class="s6">'strict'</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dset </span><span class="s4">= </span><span class="s1">dset</span>
+        <span class="s3">if </span><span class="s1">encoding </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">encoding </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">check_string_dtype</span><span class="s4">(</span><span class="s1">dset</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">).</span><span class="s1">encoding</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">encoding </span><span class="s4">= </span><span class="s1">encoding</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">errors </span><span class="s4">= </span><span class="s1">errors</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">args</span><span class="s4">):</span>
+        <span class="s1">bytes_arr </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">[</span><span class="s1">args</span><span class="s4">]</span>
+        <span class="s0"># numpy.char.decode() seems like the obvious thing to use. But it only</span>
+        <span class="s0"># accepts numpy string arrays, not object arrays of bytes (which we</span>
+        <span class="s0"># return from HDF5 variable-length strings). And the numpy</span>
+        <span class="s0"># implementation is not faster than doing it with a loop; in fact, by</span>
+        <span class="s0"># not converting the result to a numpy unicode array, the</span>
+        <span class="s0"># naive way can be faster! (Comparing with numpy 1.18.4, June 2020)</span>
+        <span class="s3">if </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">isscalar</span><span class="s4">(</span><span class="s1">bytes_arr</span><span class="s4">):</span>
+            <span class="s3">return </span><span class="s1">bytes_arr</span><span class="s4">.</span><span class="s1">decode</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">encoding</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">errors</span><span class="s4">)</span>
+
+        <span class="s3">return </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">([</span>
+            <span class="s1">b</span><span class="s4">.</span><span class="s1">decode</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">encoding</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">errors</span><span class="s4">) </span><span class="s3">for </span><span class="s1">b </span><span class="s3">in </span><span class="s1">bytes_arr</span><span class="s4">.</span><span class="s1">flat</span>
+        <span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">object</span><span class="s4">).</span><span class="s1">reshape</span><span class="s4">(</span><span class="s1">bytes_arr</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__len__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Get the length of the underlying dataset 
+ 
+        &gt;&gt;&gt; length = len(dataset.asstr()) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__array__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">([</span>
+            <span class="s1">b</span><span class="s4">.</span><span class="s1">decode</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">encoding</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">errors</span><span class="s4">) </span><span class="s3">for </span><span class="s1">b </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span>
+        <span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">object</span><span class="s4">).</span><span class="s1">reshape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">FieldsWrapper</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Wrapper to extract named fields from a dataset with a struct dtype&quot;&quot;&quot;</span>
+    <span class="s1">extract_field </span><span class="s4">= </span><span class="s3">None</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dset</span><span class="s4">, </span><span class="s1">prior_dtype</span><span class="s4">, </span><span class="s1">names</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dset </span><span class="s4">= </span><span class="s1">dset</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">names</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">extract_field </span><span class="s4">= </span><span class="s1">names</span>
+            <span class="s1">names </span><span class="s4">= [</span><span class="s1">names</span><span class="s4">]</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">read_dtype </span><span class="s4">= </span><span class="s1">readtime_dtype</span><span class="s4">(</span><span class="s1">prior_dtype</span><span class="s4">, </span><span class="s1">names</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__array__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s1">data </span><span class="s4">= </span><span class="s1">self</span><span class="s4">[:]</span>
+        <span class="s3">if </span><span class="s1">dtype </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">data </span><span class="s4">= </span><span class="s1">data</span><span class="s4">.</span><span class="s1">astype</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">data</span>
+
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">args</span><span class="s4">):</span>
+        <span class="s1">data </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">.</span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">args</span><span class="s4">, </span><span class="s1">new_dtype</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">read_dtype</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">extract_field </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">data </span><span class="s4">= </span><span class="s1">data</span><span class="s4">[</span><span class="s1">self</span><span class="s4">.</span><span class="s1">extract_field</span><span class="s4">]</span>
+        <span class="s3">return </span><span class="s1">data</span>
+
+    <span class="s3">def </span><span class="s1">__len__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Get the length of the underlying dataset 
+ 
+        &gt;&gt;&gt; length = len(dataset.fields(['x', 'y'])) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">readtime_dtype</span><span class="s4">(</span><span class="s1">basetype</span><span class="s4">, </span><span class="s1">names</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Make a NumPy compound dtype with a subset of available fields&quot;&quot;&quot;</span>
+    <span class="s3">if </span><span class="s1">basetype</span><span class="s4">.</span><span class="s1">names </span><span class="s3">is None</span><span class="s4">:  </span><span class="s0"># Names provided, but not compound</span>
+        <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Field names only allowed for compound types&quot;</span><span class="s4">)</span>
+
+    <span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">names</span><span class="s4">:  </span><span class="s0"># Check all names are legal</span>
+        <span class="s3">if </span><span class="s1">name </span><span class="s3">not in </span><span class="s1">basetype</span><span class="s4">.</span><span class="s1">names</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Field %s does not appear in this type.&quot; </span><span class="s4">% </span><span class="s1">name</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">([(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">basetype</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">[</span><span class="s1">name</span><span class="s4">][</span><span class="s5">0</span><span class="s4">]) </span><span class="s3">for </span><span class="s1">name </span><span class="s3">in </span><span class="s1">names</span><span class="s4">])</span>
+
+
+<span class="s3">if </span><span class="s1">MPI</span><span class="s4">:</span>
+    <span class="s3">class </span><span class="s1">CollectiveContext</span><span class="s4">:</span>
+
+        <span class="s2">&quot;&quot;&quot; Manages collective I/O in MPI mode &quot;&quot;&quot;</span>
+
+        <span class="s0"># We don't bother with _local as threads are forbidden in MPI mode</span>
+
+        <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dset</span><span class="s4">):</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_dset </span><span class="s4">= </span><span class="s1">dset</span>
+
+        <span class="s3">def </span><span class="s1">__enter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s0"># pylint: disable=protected-access</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">.</span><span class="s1">_dxpl</span><span class="s4">.</span><span class="s1">set_dxpl_mpio</span><span class="s4">(</span><span class="s1">h5fd</span><span class="s4">.</span><span class="s1">MPIO_COLLECTIVE</span><span class="s4">)</span>
+
+        <span class="s3">def </span><span class="s1">__exit__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">):</span>
+            <span class="s0"># pylint: disable=protected-access</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_dset</span><span class="s4">.</span><span class="s1">_dxpl</span><span class="s4">.</span><span class="s1">set_dxpl_mpio</span><span class="s4">(</span><span class="s1">h5fd</span><span class="s4">.</span><span class="s1">MPIO_INDEPENDENT</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">ChunkIterator</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot; 
+    Class to iterate through list of chunks of a given dataset 
+    &quot;&quot;&quot;</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dset</span><span class="s4">, </span><span class="s1">source_sel</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_shape </span><span class="s4">= </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">shape</span>
+        <span class="s1">rank </span><span class="s4">= </span><span class="s1">len</span><span class="s4">(</span><span class="s1">dset</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+
+        <span class="s3">if not </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">chunks</span><span class="s4">:</span>
+            <span class="s0"># can only use with chunked datasets</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Chunked dataset required&quot;</span><span class="s4">)</span>
+
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_layout </span><span class="s4">= </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">chunks</span>
+        <span class="s3">if </span><span class="s1">source_sel </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s0"># select over entire dataset</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_sel </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span>
+                <span class="s1">slice</span><span class="s4">(</span><span class="s5">0</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_shape</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">])</span>
+                <span class="s3">for </span><span class="s1">dim </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">rank</span><span class="s4">)</span>
+            <span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">source_sel</span><span class="s4">, </span><span class="s1">slice</span><span class="s4">):</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_sel </span><span class="s4">= (</span><span class="s1">source_sel</span><span class="s4">,)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_sel </span><span class="s4">= </span><span class="s1">source_sel</span>
+        <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">) != </span><span class="s1">rank</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Invalid selection - selection region must have same rank as dataset&quot;</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index </span><span class="s4">= []</span>
+        <span class="s3">for </span><span class="s1">dim </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">rank</span><span class="s4">):</span>
+            <span class="s1">s </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s3">if </span><span class="s1">s</span><span class="s4">.</span><span class="s1">start </span><span class="s4">&lt; </span><span class="s5">0 </span><span class="s3">or </span><span class="s1">s</span><span class="s4">.</span><span class="s1">stop </span><span class="s4">&gt; </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_shape</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">] </span><span class="s3">or </span><span class="s1">s</span><span class="s4">.</span><span class="s1">stop </span><span class="s4">&lt;= </span><span class="s1">s</span><span class="s4">.</span><span class="s1">start</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Invalid selection - selection region must be within dataset space&quot;</span><span class="s4">)</span>
+            <span class="s1">index </span><span class="s4">= </span><span class="s1">s</span><span class="s4">.</span><span class="s1">start </span><span class="s4">// </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_layout</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">index</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__iter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">self</span>
+
+    <span class="s3">def </span><span class="s1">__next__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s1">rank </span><span class="s4">= </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_shape</span><span class="s4">)</span>
+        <span class="s1">slices </span><span class="s4">= []</span>
+        <span class="s3">if </span><span class="s1">rank </span><span class="s4">== </span><span class="s5">0 </span><span class="s3">or </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] * </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_layout</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] &gt;= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">[</span><span class="s5">0</span><span class="s4">].</span><span class="s1">stop</span><span class="s4">:</span>
+            <span class="s0"># ran past the last chunk, end iteration</span>
+            <span class="s3">raise </span><span class="s1">StopIteration</span><span class="s4">()</span>
+
+        <span class="s3">for </span><span class="s1">dim </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">rank</span><span class="s4">):</span>
+            <span class="s1">s </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s1">start </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">] * </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_layout</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s1">stop </span><span class="s4">= (</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">] + </span><span class="s5">1</span><span class="s4">) * </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_layout</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s0"># adjust the start if this is an edge chunk</span>
+            <span class="s3">if </span><span class="s1">start </span><span class="s4">&lt; </span><span class="s1">s</span><span class="s4">.</span><span class="s1">start</span><span class="s4">:</span>
+                <span class="s1">start </span><span class="s4">= </span><span class="s1">s</span><span class="s4">.</span><span class="s1">start</span>
+            <span class="s3">if </span><span class="s1">stop </span><span class="s4">&gt; </span><span class="s1">s</span><span class="s4">.</span><span class="s1">stop</span><span class="s4">:</span>
+                <span class="s1">stop </span><span class="s4">= </span><span class="s1">s</span><span class="s4">.</span><span class="s1">stop  </span><span class="s0"># trim to end of the selection</span>
+            <span class="s1">s </span><span class="s4">= </span><span class="s1">slice</span><span class="s4">(</span><span class="s1">start</span><span class="s4">, </span><span class="s1">stop</span><span class="s4">, </span><span class="s5">1</span><span class="s4">)</span>
+            <span class="s1">slices</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">s</span><span class="s4">)</span>
+
+        <span class="s0"># bump up the last index and carry forward if we run outside the selection</span>
+        <span class="s1">dim </span><span class="s4">= </span><span class="s1">rank </span><span class="s4">- </span><span class="s5">1</span>
+        <span class="s3">while </span><span class="s1">dim </span><span class="s4">&gt;= </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s1">s </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_sel</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">] += </span><span class="s5">1</span>
+
+            <span class="s1">chunk_end </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">] * </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_layout</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s3">if </span><span class="s1">chunk_end </span><span class="s4">&lt; </span><span class="s1">s</span><span class="s4">.</span><span class="s1">stop</span><span class="s4">:</span>
+                <span class="s0"># we still have room to extend along this dimensions</span>
+                <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">slices</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">dim </span><span class="s4">&gt; </span><span class="s5">0</span><span class="s4">:</span>
+                <span class="s0"># reset to the start and continue iterating with higher dimension</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_chunk_index</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">] = </span><span class="s1">s</span><span class="s4">.</span><span class="s1">start </span><span class="s4">// </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_layout</span><span class="s4">[</span><span class="s1">dim</span><span class="s4">]</span>
+            <span class="s1">dim </span><span class="s4">-= </span><span class="s5">1</span>
+        <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">slices</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">Dataset</span><span class="s4">(</span><span class="s1">HLObject</span><span class="s4">):</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Represents an HDF5 dataset 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">astype</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Get a wrapper allowing you to perform reads to a 
+        different destination type, e.g.: 
+ 
+        &gt;&gt;&gt; double_precision = dataset.astype('f8')[0:100:2] 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">AstypeWrapper</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">asstr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">encoding</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">errors</span><span class="s4">=</span><span class="s6">'strict'</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Get a wrapper to read string data as Python strings: 
+ 
+        &gt;&gt;&gt; str_array = dataset.asstr()[:] 
+ 
+        The parameters have the same meaning as in ``bytes.decode()``. 
+        If ``encoding`` is unspecified, it will use the encoding in the HDF5 
+        datatype (either ascii or utf-8). 
+        &quot;&quot;&quot;</span>
+        <span class="s1">string_info </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">check_string_dtype</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">string_info </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span>
+                <span class="s6">&quot;dset.asstr() can only be used on datasets with &quot;</span>
+                <span class="s6">&quot;an HDF5 string datatype&quot;</span>
+            <span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">encoding </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">encoding </span><span class="s4">= </span><span class="s1">string_info</span><span class="s4">.</span><span class="s1">encoding</span>
+        <span class="s3">return </span><span class="s1">AsStrWrapper</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">encoding</span><span class="s4">, </span><span class="s1">errors</span><span class="s4">=</span><span class="s1">errors</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">fields</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">names</span><span class="s4">, *, </span><span class="s1">_prior_dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Get a wrapper to read a subset of fields from a compound data type: 
+ 
+        &gt;&gt;&gt; 2d_coords = dataset.fields(['x', 'y'])[:] 
+ 
+        If names is a string, a single field is extracted, and the resulting 
+        arrays will have that dtype. Otherwise, it should be an iterable, 
+        and the read data will have a compound dtype. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">_prior_dtype </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">_prior_dtype </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span>
+        <span class="s3">return </span><span class="s1">FieldsWrapper</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">_prior_dtype</span><span class="s4">, </span><span class="s1">names</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">MPI</span><span class="s4">:</span>
+        <span class="s4">@</span><span class="s1">property</span>
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">collective</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot; Context manager for MPI collective reads &amp; writes &quot;&quot;&quot;</span>
+            <span class="s3">return </span><span class="s1">CollectiveContext</span><span class="s4">(</span><span class="s1">self</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">dims</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Access dimension scales attached to this dataset. &quot;&quot;&quot;</span>
+        <span class="s3">from </span><span class="s4">.</span><span class="s1">dims </span><span class="s3">import </span><span class="s1">DimensionManager</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">DimensionManager</span><span class="s4">(</span><span class="s1">self</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">ndim</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Numpy-style attribute giving the number of dimensions&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">rank</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Numpy-style shape tuple giving dataset dimensions&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s6">'shape' </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'shape'</span><span class="s4">]</span>
+
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s1">shape </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">shape</span>
+
+        <span class="s0"># If the file is read-only, cache the shape to speed-up future uses.</span>
+        <span class="s0"># This cache is invalidated by .refresh() when using SWMR.</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_readonly</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'shape'</span><span class="s4">] = </span><span class="s1">shape</span>
+        <span class="s3">return </span><span class="s1">shape</span>
+
+    <span class="s4">@</span><span class="s1">shape</span><span class="s4">.</span><span class="s1">setter</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">shape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">):</span>
+        <span class="s0"># pylint: disable=missing-docstring</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">resize</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">size</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Numpy-style attribute giving the total dataset size&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s6">'size' </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'size'</span><span class="s4">]</span>
+
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_is_empty</span><span class="s4">:</span>
+            <span class="s1">size </span><span class="s4">= </span><span class="s3">None</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">size </span><span class="s4">= </span><span class="s1">product</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+
+        <span class="s0"># If the file is read-only, cache the size to speed-up future uses.</span>
+        <span class="s0"># This cache is invalidated by .refresh() when using SWMR.</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_readonly</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'size'</span><span class="s4">] = </span><span class="s1">size</span>
+        <span class="s3">return </span><span class="s1">size</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">nbytes</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Numpy-style attribute giving the raw dataset size as the number of bytes&quot;&quot;&quot;</span>
+        <span class="s1">size </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">size</span>
+        <span class="s3">if </span><span class="s1">size </span><span class="s3">is None</span><span class="s4">:  </span><span class="s0"># if we are an empty 0-D array, then there are no bytes in the dataset</span>
+            <span class="s3">return </span><span class="s5">0</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">itemsize </span><span class="s4">* </span><span class="s1">size</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">_selector</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Internal object for optimised selection of data&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s6">'_selector' </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'_selector'</span><span class="s4">]</span>
+
+        <span class="s1">slr </span><span class="s4">= </span><span class="s1">_selector</span><span class="s4">.</span><span class="s1">Selector</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_space</span><span class="s4">())</span>
+
+        <span class="s0"># If the file is read-only, cache the reader to speed up future uses.</span>
+        <span class="s0"># This cache is invalidated by .refresh() when using SWMR.</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_readonly</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'_selector'</span><span class="s4">] = </span><span class="s1">slr</span>
+        <span class="s3">return </span><span class="s1">slr</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">_fast_reader</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Internal object for optimised reading of data&quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s6">'_fast_reader' </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'_fast_reader'</span><span class="s4">]</span>
+
+        <span class="s1">rdr </span><span class="s4">= </span><span class="s1">_selector</span><span class="s4">.</span><span class="s1">Reader</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">)</span>
+
+        <span class="s0"># If the file is read-only, cache the reader to speed up future uses.</span>
+        <span class="s0"># This cache is invalidated by .refresh() when using SWMR.</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_readonly</span><span class="s4">:</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">[</span><span class="s6">'_fast_reader'</span><span class="s4">] = </span><span class="s1">rdr</span>
+        <span class="s3">return </span><span class="s1">rdr</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">dtype</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Numpy dtype representing the datatype&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">dtype</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">chunks</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Dataset chunks (or None)&quot;&quot;&quot;</span>
+        <span class="s1">dcpl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span>
+        <span class="s3">if </span><span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_layout</span><span class="s4">() == </span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">CHUNKED</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_chunk</span><span class="s4">()</span>
+        <span class="s3">return None</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">compression</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Compression strategy (or None)&quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s4">(</span><span class="s6">'gzip'</span><span class="s4">,</span><span class="s6">'lzf'</span><span class="s4">,</span><span class="s6">'szip'</span><span class="s4">):</span>
+            <span class="s3">if </span><span class="s1">x </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_filters</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">x</span>
+        <span class="s3">return None</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">compression_opts</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Compression setting.  Int(0-9) for gzip, 2-tuple for szip. &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_filters</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">compression</span><span class="s4">, </span><span class="s3">None</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">shuffle</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Shuffle filter present (T/F)&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s6">'shuffle' </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_filters</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">fletcher32</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Fletcher32 filter is present (T/F)&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s6">'fletcher32' </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_filters</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">scaleoffset</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Scale/offset filter settings. For integer data types, this is 
+        the number of bits stored, or 0 for auto-detected. For floating 
+        point data types, this is the number of decimal places retained. 
+        If the scale/offset filter is not in use, this is None.&quot;&quot;&quot;</span>
+        <span class="s3">try</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_filters</span><span class="s4">[</span><span class="s6">'scaleoffset'</span><span class="s4">][</span><span class="s5">1</span><span class="s4">]</span>
+        <span class="s3">except </span><span class="s1">KeyError</span><span class="s4">:</span>
+            <span class="s3">return None</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">external</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;External file settings. Returns a list of tuples of 
+        (name, offset, size) for each external file entry, or returns None 
+        if no external files are used.&quot;&quot;&quot;</span>
+        <span class="s1">count </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span><span class="s4">.</span><span class="s1">get_external_count</span><span class="s4">()</span>
+        <span class="s3">if </span><span class="s1">count</span><span class="s4">&lt;=</span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s3">return None</span>
+        <span class="s1">ext_list </span><span class="s4">= </span><span class="s1">list</span><span class="s4">()</span>
+        <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">count</span><span class="s4">):</span>
+            <span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">offset</span><span class="s4">, </span><span class="s1">size</span><span class="s4">) = </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span><span class="s4">.</span><span class="s1">get_external</span><span class="s4">(</span><span class="s1">x</span><span class="s4">)</span>
+            <span class="s1">ext_list</span><span class="s4">.</span><span class="s1">append</span><span class="s4">( (</span><span class="s1">filename_decode</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">offset</span><span class="s4">, </span><span class="s1">size</span><span class="s4">) )</span>
+        <span class="s3">return </span><span class="s1">ext_list</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">maxshape</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Shape up to which this dataset can be resized.  Axes with value 
+        None have no resize limit. &quot;&quot;&quot;</span>
+        <span class="s1">space </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_space</span><span class="s4">()</span>
+        <span class="s1">dims </span><span class="s4">= </span><span class="s1">space</span><span class="s4">.</span><span class="s1">get_simple_extent_dims</span><span class="s4">(</span><span class="s3">True</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">dims </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s3">return None</span>
+
+        <span class="s3">return </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x </span><span class="s3">if </span><span class="s1">x </span><span class="s4">!= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">UNLIMITED </span><span class="s3">else None for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">dims</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">fillvalue</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Fill value for this dataset (0 by default)&quot;&quot;&quot;</span>
+        <span class="s1">arr </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">((</span><span class="s5">1</span><span class="s4">,), </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span><span class="s4">.</span><span class="s1">get_fill_value</span><span class="s4">(</span><span class="s1">arr</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">arr</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]</span>
+
+    <span class="s4">@</span><span class="s1">cached_property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">_extent_type</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Get extent type for this dataset - SIMPLE, SCALAR or NULL&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_space</span><span class="s4">().</span><span class="s1">get_simple_extent_type</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">cached_property</span>
+    <span class="s3">def </span><span class="s1">_is_empty</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Check if extent type is empty&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_extent_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">NULL</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">bind</span><span class="s4">, *, </span><span class="s1">readonly</span><span class="s4">=</span><span class="s3">False</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create a new Dataset object by binding to a low-level DatasetID. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">bind</span><span class="s4">, </span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">DatasetID</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;%s is not a DatasetID&quot; </span><span class="s4">% </span><span class="s1">bind</span><span class="s4">)</span>
+        <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">bind</span><span class="s4">)</span>
+
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_create_plist</span><span class="s4">()</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_dxpl </span><span class="s4">= </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">DATASET_XFER</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_filters </span><span class="s4">= </span><span class="s1">filters</span><span class="s4">.</span><span class="s1">get_filters</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_readonly </span><span class="s4">= </span><span class="s1">readonly</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props </span><span class="s4">= {}</span>
+
+    <span class="s3">def </span><span class="s1">resize</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">size</span><span class="s4">, </span><span class="s1">axis</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Resize the dataset, or the specified axis. 
+ 
+        The dataset must be stored in chunked format; it can be resized up to 
+        the &quot;maximum shape&quot; (keyword maxshape) specified at creation time. 
+        The rank of the dataset cannot be changed. 
+ 
+        &quot;Size&quot; should be a shape tuple, or if an axis is specified, an integer. 
+ 
+        BEWARE: This functions differently than the NumPy resize() method! 
+        The data is not &quot;reshuffled&quot; to fit in the new shape; each axis is 
+        grown or shrunk independently.  The coordinates of existing data are 
+        fixed. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">chunks </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Only chunked datasets can be resized&quot;</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">axis </span><span class="s3">is not None</span><span class="s4">:</span>
+                <span class="s3">if not </span><span class="s4">(</span><span class="s1">axis </span><span class="s4">&gt;=</span><span class="s5">0 </span><span class="s3">and </span><span class="s1">axis </span><span class="s4">&lt; </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">rank</span><span class="s4">):</span>
+                    <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Invalid axis (0 to %s allowed)&quot; </span><span class="s4">% (</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">rank</span><span class="s4">-</span><span class="s5">1</span><span class="s4">))</span>
+                <span class="s3">try</span><span class="s4">:</span>
+                    <span class="s1">newlen </span><span class="s4">= </span><span class="s1">int</span><span class="s4">(</span><span class="s1">size</span><span class="s4">)</span>
+                <span class="s3">except </span><span class="s1">TypeError</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Argument must be a single int if axis is specified&quot;</span><span class="s4">)</span>
+                <span class="s1">size </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+                <span class="s1">size</span><span class="s4">[</span><span class="s1">axis</span><span class="s4">] = </span><span class="s1">newlen</span>
+
+            <span class="s1">size </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">size</span><span class="s4">)</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">set_extent</span><span class="s4">(</span><span class="s1">size</span><span class="s4">)</span>
+            <span class="s0">#h5f.flush(self.id)  # THG recommends</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__len__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; The size of the first axis.  TypeError if scalar. 
+ 
+        Limited to 2**32 on 32-bit systems; Dataset.len() is preferred. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">size </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">len</span><span class="s4">()</span>
+        <span class="s3">if </span><span class="s1">size </span><span class="s4">&gt; </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">maxsize</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">OverflowError</span><span class="s4">(</span><span class="s6">&quot;Value too big for Python's __len__; use Dataset.len() instead.&quot;</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">size</span>
+
+    <span class="s3">def </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; The size of the first axis.  TypeError if scalar. 
+ 
+        Use of this method is preferred to len(dset), as Python's built-in 
+        len() cannot handle values greater then 2**32 on 32-bit systems. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s1">shape </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span>
+            <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">) == </span><span class="s5">0</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Attempt to take len() of scalar dataset&quot;</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">shape</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__iter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Iterate over the first axis.  TypeError if scalar. 
+ 
+        BEWARE: Modifications to the yielded data are *NOT* written to file. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">shape </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span>
+        <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">) == </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Can't iterate over a scalar dataset&quot;</span><span class="s4">)</span>
+        <span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]):</span>
+            <span class="s3">yield </span><span class="s1">self</span><span class="s4">[</span><span class="s1">i</span><span class="s4">]</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">iter_chunks</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">sel</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Return chunk iterator.  If set, the sel argument is a slice or 
+        tuple of slices that defines the region to be used. If not set, the 
+        entire dataspace will be used for the iterator. 
+ 
+        For each chunk within the given region, the iterator yields a tuple of 
+        slices that gives the intersection of the given chunk with the 
+        selection area. 
+ 
+        A TypeError will be raised if the dataset is not chunked. 
+ 
+        A ValueError will be raised if the selection region is invalid. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">ChunkIterator</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">sel</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">cached_property</span>
+    <span class="s3">def </span><span class="s1">_fast_read_ok</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Is this dataset suitable for simple reading&quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s4">(</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_extent_type </span><span class="s4">== </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">SIMPLE</span>
+            <span class="s3">and </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_type</span><span class="s4">(), (</span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">TypeIntegerID</span><span class="s4">, </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">TypeFloatID</span><span class="s4">))</span>
+        <span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">args</span><span class="s4">, </span><span class="s1">new_dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Read a slice from the HDF5 dataset. 
+ 
+        Takes slices and recarray-style field names (more than one is 
+        allowed!) in any order.  Obeys basic NumPy rules, including 
+        broadcasting. 
+ 
+        Also supports: 
+ 
+        * Boolean &quot;mask&quot; array indexing 
+        &quot;&quot;&quot;</span>
+        <span class="s1">args </span><span class="s4">= </span><span class="s1">args </span><span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">args</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">) </span><span class="s3">else </span><span class="s4">(</span><span class="s1">args</span><span class="s4">,)</span>
+
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_fast_read_ok </span><span class="s3">and </span><span class="s4">(</span><span class="s1">new_dtype </span><span class="s3">is None</span><span class="s4">):</span>
+            <span class="s3">try</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_fast_reader</span><span class="s4">.</span><span class="s1">read</span><span class="s4">(</span><span class="s1">args</span><span class="s4">)</span>
+            <span class="s3">except </span><span class="s1">TypeError</span><span class="s4">:</span>
+                <span class="s3">pass  </span><span class="s0"># Fall back to Python read pathway below</span>
+
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_is_empty</span><span class="s4">:</span>
+            <span class="s0"># Check 'is Ellipsis' to avoid equality comparison with an array:</span>
+            <span class="s0"># array equality returns an array, not a boolean.</span>
+            <span class="s3">if </span><span class="s1">args </span><span class="s4">== () </span><span class="s3">or </span><span class="s4">(</span><span class="s1">len</span><span class="s4">(</span><span class="s1">args</span><span class="s4">) == </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">args</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] </span><span class="s3">is </span><span class="s1">Ellipsis</span><span class="s4">):</span>
+                <span class="s3">return </span><span class="s1">Empty</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Empty datasets cannot be sliced&quot;</span><span class="s4">)</span>
+
+        <span class="s0"># Sort field names from the rest of the args.</span>
+        <span class="s1">names </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">args </span><span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">x</span><span class="s4">, </span><span class="s1">str</span><span class="s4">))</span>
+
+        <span class="s3">if </span><span class="s1">names</span><span class="s4">:</span>
+            <span class="s0"># Read a subset of the fields in this structured dtype</span>
+            <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">names</span><span class="s4">) == </span><span class="s5">1</span><span class="s4">:</span>
+                <span class="s1">names </span><span class="s4">= </span><span class="s1">names</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]  </span><span class="s0"># Read with simpler dtype of this field</span>
+            <span class="s1">args </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">args </span><span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">x</span><span class="s4">, </span><span class="s1">str</span><span class="s4">))</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">(</span><span class="s1">names</span><span class="s4">, </span><span class="s1">_prior_dtype</span><span class="s4">=</span><span class="s1">new_dtype</span><span class="s4">)[</span><span class="s1">args</span><span class="s4">]</span>
+
+        <span class="s3">if </span><span class="s1">new_dtype </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">new_dtype </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span>
+        <span class="s1">mtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">py_create</span><span class="s4">(</span><span class="s1">new_dtype</span><span class="s4">)</span>
+
+        <span class="s0"># === Special-case region references ====</span>
+
+        <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">args</span><span class="s4">) == </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">args</span><span class="s4">[</span><span class="s5">0</span><span class="s4">], </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">RegionReference</span><span class="s4">):</span>
+
+            <span class="s1">obj </span><span class="s4">= </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">dereference</span><span class="s4">(</span><span class="s1">args</span><span class="s4">[</span><span class="s5">0</span><span class="s4">], </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">obj </span><span class="s4">!= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Region reference must point to this dataset&quot;</span><span class="s4">)</span>
+
+            <span class="s1">sid </span><span class="s4">= </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">get_region</span><span class="s4">(</span><span class="s1">args</span><span class="s4">[</span><span class="s5">0</span><span class="s4">], </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">)</span>
+            <span class="s1">mshape </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">guess_shape</span><span class="s4">(</span><span class="s1">sid</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">mshape </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s0"># 0D with no data (NULL or deselected SCALAR)</span>
+                <span class="s3">return </span><span class="s1">Empty</span><span class="s4">(</span><span class="s1">new_dtype</span><span class="s4">)</span>
+            <span class="s1">out </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s1">mshape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">new_dtype</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">out</span><span class="s4">.</span><span class="s1">size </span><span class="s4">== </span><span class="s5">0</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">out</span>
+
+            <span class="s1">sid_out </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create_simple</span><span class="s4">(</span><span class="s1">mshape</span><span class="s4">)</span>
+            <span class="s1">sid_out</span><span class="s4">.</span><span class="s1">select_all</span><span class="s4">()</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">read</span><span class="s4">(</span><span class="s1">sid_out</span><span class="s4">, </span><span class="s1">sid</span><span class="s4">, </span><span class="s1">out</span><span class="s4">, </span><span class="s1">mtype</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">out</span>
+
+        <span class="s0"># === Check for zero-sized datasets =====</span>
+
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">size </span><span class="s4">== </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s0"># Check 'is Ellipsis' to avoid equality comparison with an array:</span>
+            <span class="s0"># array equality returns an array, not a boolean.</span>
+            <span class="s3">if </span><span class="s1">args </span><span class="s4">== () </span><span class="s3">or </span><span class="s4">(</span><span class="s1">len</span><span class="s4">(</span><span class="s1">args</span><span class="s4">) == </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">args</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] </span><span class="s3">is </span><span class="s1">Ellipsis</span><span class="s4">):</span>
+                <span class="s3">return </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">new_dtype</span><span class="s4">)</span>
+
+        <span class="s0"># === Scalar dataspaces =================</span>
+
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">== ():</span>
+            <span class="s1">fspace </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_space</span><span class="s4">()</span>
+            <span class="s1">selection </span><span class="s4">= </span><span class="s1">sel2</span><span class="s4">.</span><span class="s1">select_read</span><span class="s4">(</span><span class="s1">fspace</span><span class="s4">, </span><span class="s1">args</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">mshape </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">arr </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">((), </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">new_dtype</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">arr </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">mshape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">new_dtype</span><span class="s4">)</span>
+            <span class="s3">for </span><span class="s1">mspace</span><span class="s4">, </span><span class="s1">fspace </span><span class="s3">in </span><span class="s1">selection</span><span class="s4">:</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">read</span><span class="s4">(</span><span class="s1">mspace</span><span class="s4">, </span><span class="s1">fspace</span><span class="s4">, </span><span class="s1">arr</span><span class="s4">, </span><span class="s1">mtype</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">mshape </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">arr</span><span class="s4">[()]</span>
+            <span class="s3">return </span><span class="s1">arr</span>
+
+        <span class="s0"># === Everything else ===================</span>
+
+        <span class="s0"># Perform the dataspace selection.</span>
+        <span class="s1">selection </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">select</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">args</span><span class="s4">, </span><span class="s1">dataset</span><span class="s4">=</span><span class="s1">self</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">nselect </span><span class="s4">== </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">new_dtype</span><span class="s4">)</span>
+
+        <span class="s1">arr </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">, </span><span class="s1">new_dtype</span><span class="s4">, </span><span class="s1">order</span><span class="s4">=</span><span class="s6">'C'</span><span class="s4">)</span>
+
+        <span class="s0"># Perform the actual read</span>
+        <span class="s1">mspace </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create_simple</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">mshape</span><span class="s4">)</span>
+        <span class="s1">fspace </span><span class="s4">= </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">id</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">read</span><span class="s4">(</span><span class="s1">mspace</span><span class="s4">, </span><span class="s1">fspace</span><span class="s4">, </span><span class="s1">arr</span><span class="s4">, </span><span class="s1">mtype</span><span class="s4">, </span><span class="s1">dxpl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dxpl</span><span class="s4">)</span>
+
+        <span class="s0"># Patch up the output for NumPy</span>
+        <span class="s3">if </span><span class="s1">arr</span><span class="s4">.</span><span class="s1">shape </span><span class="s4">== ():</span>
+            <span class="s3">return </span><span class="s1">arr</span><span class="s4">[()]   </span><span class="s0"># 0 dim array -&gt; numpy scalar</span>
+        <span class="s3">return </span><span class="s1">arr</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__setitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">args</span><span class="s4">, </span><span class="s1">val</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Write to the HDF5 dataset from a Numpy array. 
+ 
+        NumPy's broadcasting rules are honored, for &quot;simple&quot; indexing 
+        (slices and integers).  For advanced indexing, the shapes must 
+        match. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">args </span><span class="s4">= </span><span class="s1">args </span><span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">args</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">) </span><span class="s3">else </span><span class="s4">(</span><span class="s1">args</span><span class="s4">,)</span>
+
+        <span class="s0"># Sort field indices from the slicing</span>
+        <span class="s1">names </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">args </span><span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">x</span><span class="s4">, </span><span class="s1">str</span><span class="s4">))</span>
+        <span class="s1">args </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">args </span><span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">x</span><span class="s4">, </span><span class="s1">str</span><span class="s4">))</span>
+
+        <span class="s0"># Generally we try to avoid converting the arrays on the Python</span>
+        <span class="s0"># side.  However, for compound literals this is unavoidable.</span>
+        <span class="s1">vlen </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">check_vlen_dtype</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">vlen </span><span class="s3">is not None and </span><span class="s1">vlen </span><span class="s3">not in </span><span class="s4">(</span><span class="s1">bytes</span><span class="s4">, </span><span class="s1">str</span><span class="s4">):</span>
+            <span class="s3">try</span><span class="s4">:</span>
+                <span class="s1">val </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">asarray</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">vlen</span><span class="s4">)</span>
+            <span class="s3">except </span><span class="s4">(</span><span class="s1">ValueError</span><span class="s4">, </span><span class="s1">TypeError</span><span class="s4">):</span>
+                <span class="s3">try</span><span class="s4">:</span>
+                    <span class="s1">val </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">([</span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">(</span><span class="s1">x</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">vlen</span><span class="s4">)</span>
+                                       <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">val</span><span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+                <span class="s3">except </span><span class="s4">(</span><span class="s1">ValueError</span><span class="s4">, </span><span class="s1">TypeError</span><span class="s4">):</span>
+                    <span class="s3">pass</span>
+            <span class="s3">if </span><span class="s1">vlen </span><span class="s4">== </span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">:</span>
+                <span class="s3">if </span><span class="s1">val</span><span class="s4">.</span><span class="s1">ndim </span><span class="s4">&gt; </span><span class="s5">1</span><span class="s4">:</span>
+                    <span class="s1">tmp </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">empty</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">=</span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[:-</span><span class="s5">1</span><span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">object</span><span class="s4">)</span>
+                    <span class="s1">tmp</span><span class="s4">.</span><span class="s1">ravel</span><span class="s4">()[:] = [</span><span class="s1">i </span><span class="s3">for </span><span class="s1">i </span><span class="s3">in </span><span class="s1">val</span><span class="s4">.</span><span class="s1">reshape</span><span class="s4">(</span>
+                        <span class="s4">(</span><span class="s1">product</span><span class="s4">(</span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[:-</span><span class="s5">1</span><span class="s4">]), </span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[-</span><span class="s5">1</span><span class="s4">])</span>
+                    <span class="s4">)]</span>
+                <span class="s3">else</span><span class="s4">:</span>
+                    <span class="s1">tmp </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">([</span><span class="s3">None</span><span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">object</span><span class="s4">)</span>
+                    <span class="s1">tmp</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] = </span><span class="s1">val</span>
+                <span class="s1">val </span><span class="s4">= </span><span class="s1">tmp</span>
+        <span class="s3">elif </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">kind </span><span class="s4">== </span><span class="s6">&quot;O&quot; </span><span class="s3">or </span><span class="s1">\</span>
+          <span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">kind </span><span class="s4">== </span><span class="s6">'V' </span><span class="s3">and </span><span class="s1">\</span>
+          <span class="s4">(</span><span class="s3">not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">ndarray</span><span class="s4">) </span><span class="s3">or </span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">kind </span><span class="s4">!= </span><span class="s6">'V'</span><span class="s4">) </span><span class="s3">and </span><span class="s1">\</span>
+          <span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">subdtype </span><span class="s3">is None</span><span class="s4">)):</span>
+            <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">names</span><span class="s4">) == </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields </span><span class="s3">is not None</span><span class="s4">:</span>
+                <span class="s0"># Single field selected for write, from a non-array source</span>
+                <span class="s3">if not </span><span class="s1">names</span><span class="s4">[</span><span class="s5">0</span><span class="s4">] </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;No such field for indexing: %s&quot; </span><span class="s4">% </span><span class="s1">names</span><span class="s4">[</span><span class="s5">0</span><span class="s4">])</span>
+                <span class="s1">dtype </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">[</span><span class="s1">names</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]][</span><span class="s5">0</span><span class="s4">]</span>
+                <span class="s1">cast_compound </span><span class="s4">= </span><span class="s3">True</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">dtype </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span>
+                <span class="s1">cast_compound </span><span class="s4">= </span><span class="s3">False</span>
+
+            <span class="s1">val </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">asarray</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">base</span><span class="s4">, </span><span class="s1">order</span><span class="s4">=</span><span class="s6">'C'</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">cast_compound</span><span class="s4">:</span>
+                <span class="s1">val </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">view</span><span class="s4">(</span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">([(</span><span class="s1">names</span><span class="s4">[</span><span class="s5">0</span><span class="s4">], </span><span class="s1">dtype</span><span class="s4">)]))</span>
+                <span class="s1">val </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">reshape</span><span class="s4">(</span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[:</span><span class="s1">len</span><span class="s4">(</span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">) - </span><span class="s1">len</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)])</span>
+        <span class="s3">elif </span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">kind </span><span class="s4">== </span><span class="s6">'S'</span>
+              <span class="s3">and </span><span class="s4">(</span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">check_string_dtype</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">).</span><span class="s1">encoding </span><span class="s4">== </span><span class="s6">'utf-8'</span><span class="s4">)</span>
+              <span class="s3">and </span><span class="s4">(</span><span class="s1">find_item_type</span><span class="s4">(</span><span class="s1">val</span><span class="s4">) </span><span class="s3">is </span><span class="s1">str</span><span class="s4">)</span>
+        <span class="s4">):</span>
+            <span class="s0"># Writing str objects to a fixed-length UTF-8 string dataset.</span>
+            <span class="s0"># Numpy's normal conversion only handles ASCII characters, but</span>
+            <span class="s0"># when the destination is UTF-8, we want to allow any unicode.</span>
+            <span class="s0"># This *doesn't* handle numpy fixed-length unicode data ('U' dtype),</span>
+            <span class="s0"># as HDF5 has no equivalent, and converting fixed length UTF-32</span>
+            <span class="s0"># to variable length UTF-8 would obscure what's going on.</span>
+            <span class="s1">str_array </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">asarray</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">order</span><span class="s4">=</span><span class="s6">'C'</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">object</span><span class="s4">)</span>
+            <span class="s1">val </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">array</span><span class="s4">([</span>
+                <span class="s1">s</span><span class="s4">.</span><span class="s1">encode</span><span class="s4">(</span><span class="s6">'utf-8'</span><span class="s4">) </span><span class="s3">for </span><span class="s1">s </span><span class="s3">in </span><span class="s1">str_array</span><span class="s4">.</span><span class="s1">flat</span>
+            <span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">).</span><span class="s1">reshape</span><span class="s4">(</span><span class="s1">str_array</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s0"># If the input data is already an array, let HDF5 do the conversion.</span>
+            <span class="s0"># If it's a list or similar, don't make numpy guess a dtype for it.</span>
+            <span class="s1">dt </span><span class="s4">= </span><span class="s3">None if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">ndarray</span><span class="s4">) </span><span class="s3">else </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">base</span>
+            <span class="s1">val </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">asarray</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">order</span><span class="s4">=</span><span class="s6">'C'</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">dt</span><span class="s4">)</span>
+
+        <span class="s0"># Check for array dtype compatibility and convert</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">subdtype </span><span class="s3">is not None</span><span class="s4">:</span>
+            <span class="s1">shp </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">subdtype</span><span class="s4">[</span><span class="s5">1</span><span class="s4">]</span>
+            <span class="s1">valshp </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[-</span><span class="s1">len</span><span class="s4">(</span><span class="s1">shp</span><span class="s4">):]</span>
+            <span class="s3">if </span><span class="s1">valshp </span><span class="s4">!= </span><span class="s1">shp</span><span class="s4">:  </span><span class="s0"># Last dimension has to match</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;When writing to array types, last N dimensions have to match (got %s, but should be %s)&quot; </span><span class="s4">% (</span><span class="s1">valshp</span><span class="s4">, </span><span class="s1">shp</span><span class="s4">,))</span>
+            <span class="s1">mtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">py_create</span><span class="s4">(</span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">((</span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">shp</span><span class="s4">)))</span>
+            <span class="s1">mshape </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">[</span><span class="s5">0</span><span class="s4">:</span><span class="s1">len</span><span class="s4">(</span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)-</span><span class="s1">len</span><span class="s4">(</span><span class="s1">shp</span><span class="s4">)]</span>
+
+        <span class="s0"># Make a compound memory type if field-name slicing is required</span>
+        <span class="s3">elif </span><span class="s1">len</span><span class="s4">(</span><span class="s1">names</span><span class="s4">) != </span><span class="s5">0</span><span class="s4">:</span>
+
+            <span class="s1">mshape </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span>
+
+            <span class="s0"># Catch common errors</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Illegal slicing argument (not a compound dataset)&quot;</span><span class="s4">)</span>
+            <span class="s1">mismatch </span><span class="s4">= [</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">names </span><span class="s3">if </span><span class="s1">x </span><span class="s3">not in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">]</span>
+            <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">mismatch</span><span class="s4">) != </span><span class="s5">0</span><span class="s4">:</span>
+                <span class="s1">mismatch </span><span class="s4">= </span><span class="s6">&quot;, &quot;</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s6">'&quot;%s&quot;'</span><span class="s4">%</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">mismatch</span><span class="s4">)</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s6">&quot;Illegal slicing argument (fields %s not in dataset type)&quot; </span><span class="s4">% </span><span class="s1">mismatch</span><span class="s4">)</span>
+
+            <span class="s0"># Write non-compound source into a single dataset field</span>
+            <span class="s3">if </span><span class="s1">len</span><span class="s4">(</span><span class="s1">names</span><span class="s4">) == </span><span class="s5">1 </span><span class="s3">and </span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">subtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">py_create</span><span class="s4">(</span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+                <span class="s1">mtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">COMPOUND</span><span class="s4">, </span><span class="s1">subtype</span><span class="s4">.</span><span class="s1">get_size</span><span class="s4">())</span>
+                <span class="s1">mtype</span><span class="s4">.</span><span class="s1">insert</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">names</span><span class="s4">[</span><span class="s5">0</span><span class="s4">]), </span><span class="s5">0</span><span class="s4">, </span><span class="s1">subtype</span><span class="s4">)</span>
+
+            <span class="s0"># Make a new source type keeping only the requested fields</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">fieldnames </span><span class="s4">= [</span><span class="s1">x </span><span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">names </span><span class="s3">if </span><span class="s1">x </span><span class="s3">in </span><span class="s1">names</span><span class="s4">] </span><span class="s0"># Keep source order</span>
+                <span class="s1">mtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">COMPOUND</span><span class="s4">, </span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">itemsize</span><span class="s4">)</span>
+                <span class="s3">for </span><span class="s1">fieldname </span><span class="s3">in </span><span class="s1">fieldnames</span><span class="s4">:</span>
+                    <span class="s1">subtype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">py_create</span><span class="s4">(</span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">[</span><span class="s1">fieldname</span><span class="s4">][</span><span class="s5">0</span><span class="s4">])</span>
+                    <span class="s1">offset </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">fields</span><span class="s4">[</span><span class="s1">fieldname</span><span class="s4">][</span><span class="s5">1</span><span class="s4">]</span>
+                    <span class="s1">mtype</span><span class="s4">.</span><span class="s1">insert</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">fieldname</span><span class="s4">), </span><span class="s1">offset</span><span class="s4">, </span><span class="s1">subtype</span><span class="s4">)</span>
+
+        <span class="s0"># Use mtype derived from array (let DatasetID.write figure it out)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">mshape </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span>
+            <span class="s1">mtype </span><span class="s4">= </span><span class="s3">None</span>
+
+        <span class="s0"># Perform the dataspace selection</span>
+        <span class="s1">selection </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">select</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">args</span><span class="s4">, </span><span class="s1">dataset</span><span class="s4">=</span><span class="s1">self</span><span class="s4">)</span>
+
+        <span class="s3">if </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">nselect </span><span class="s4">== </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s3">return</span>
+
+        <span class="s0"># Broadcast scalars if necessary.</span>
+        <span class="s0"># In order to avoid slow broadcasting filling the destination by</span>
+        <span class="s0"># the scalar value, we create an intermediate array of the same</span>
+        <span class="s0"># size as the destination buffer provided that size is reasonable.</span>
+        <span class="s0"># We assume as reasonable a size smaller or equal as the used dataset</span>
+        <span class="s0"># chunk size if any.</span>
+        <span class="s0"># In case of dealing with a non-chunked destination dataset or with</span>
+        <span class="s0"># a selection whose size is larger than the dataset chunk size we fall</span>
+        <span class="s0"># back to using an intermediate array of size equal to the last dimension</span>
+        <span class="s0"># of the destination buffer.</span>
+        <span class="s0"># The reasoning behind is that it makes sense to assume the creator of</span>
+        <span class="s0"># the dataset used an appropriate chunk size according the available</span>
+        <span class="s0"># memory. In any case, if we cannot afford to create an intermediate</span>
+        <span class="s0"># array of the same size as the dataset chunk size, the user program has</span>
+        <span class="s0"># little hope to go much further. Solves h5py issue #1067</span>
+        <span class="s3">if </span><span class="s1">mshape </span><span class="s4">== () </span><span class="s3">and </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">array_shape </span><span class="s4">!= ():</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">subdtype </span><span class="s3">is not None</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Scalar broadcasting is not supported for array dtypes&quot;</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">chunks </span><span class="s3">and </span><span class="s4">(</span><span class="s1">product</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">chunks</span><span class="s4">) &gt;= </span><span class="s1">product</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">)):</span>
+                <span class="s1">val2 </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">empty</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">val2 </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">empty</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">[-</span><span class="s5">1</span><span class="s4">], </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">val</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">)</span>
+            <span class="s1">val2</span><span class="s4">[...] = </span><span class="s1">val</span>
+            <span class="s1">val </span><span class="s4">= </span><span class="s1">val2</span>
+            <span class="s1">mshape </span><span class="s4">= </span><span class="s1">val</span><span class="s4">.</span><span class="s1">shape</span>
+
+        <span class="s0"># Perform the write, with broadcasting</span>
+        <span class="s1">mspace </span><span class="s4">= </span><span class="s1">h5s</span><span class="s4">.</span><span class="s1">create_simple</span><span class="s4">(</span><span class="s1">selection</span><span class="s4">.</span><span class="s1">expand_shape</span><span class="s4">(</span><span class="s1">mshape</span><span class="s4">))</span>
+        <span class="s3">for </span><span class="s1">fspace </span><span class="s3">in </span><span class="s1">selection</span><span class="s4">.</span><span class="s1">broadcast</span><span class="s4">(</span><span class="s1">mshape</span><span class="s4">):</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">mspace</span><span class="s4">, </span><span class="s1">fspace</span><span class="s4">, </span><span class="s1">val</span><span class="s4">, </span><span class="s1">mtype</span><span class="s4">, </span><span class="s1">dxpl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dxpl</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">read_direct</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dest</span><span class="s4">, </span><span class="s1">source_sel</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">dest_sel</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Read data directly from HDF5 into an existing NumPy array. 
+ 
+        The destination array must be C-contiguous and writable. 
+        Selections must be the output of numpy.s_[&lt;args&gt;]. 
+ 
+        Broadcasting is supported for simple indexing. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_is_empty</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Empty datasets have no numpy representation&quot;</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">source_sel </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">source_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">SimpleSelection</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">source_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">select</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">source_sel</span><span class="s4">, </span><span class="s1">self</span><span class="s4">)  </span><span class="s0"># for numpy.s_</span>
+            <span class="s1">fspace </span><span class="s4">= </span><span class="s1">source_sel</span><span class="s4">.</span><span class="s1">id</span>
+
+            <span class="s3">if </span><span class="s1">dest_sel </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">dest_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">SimpleSelection</span><span class="s4">(</span><span class="s1">dest</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">dest_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">select</span><span class="s4">(</span><span class="s1">dest</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dest_sel</span><span class="s4">)</span>
+
+            <span class="s3">for </span><span class="s1">mspace </span><span class="s3">in </span><span class="s1">dest_sel</span><span class="s4">.</span><span class="s1">broadcast</span><span class="s4">(</span><span class="s1">source_sel</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">):</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">read</span><span class="s4">(</span><span class="s1">mspace</span><span class="s4">, </span><span class="s1">fspace</span><span class="s4">, </span><span class="s1">dest</span><span class="s4">, </span><span class="s1">dxpl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dxpl</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">write_direct</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source</span><span class="s4">, </span><span class="s1">source_sel</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">dest_sel</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Write data directly to HDF5 from a NumPy array. 
+ 
+        The source array must be C-contiguous.  Selections must be 
+        the output of numpy.s_[&lt;args&gt;]. 
+ 
+        Broadcasting is supported for simple indexing. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_is_empty</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s6">&quot;Empty datasets cannot be written to&quot;</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">source_sel </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">source_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">SimpleSelection</span><span class="s4">(</span><span class="s1">source</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">source_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">select</span><span class="s4">(</span><span class="s1">source</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">source_sel</span><span class="s4">)  </span><span class="s0"># for numpy.s_</span>
+            <span class="s1">mspace </span><span class="s4">= </span><span class="s1">source_sel</span><span class="s4">.</span><span class="s1">id</span>
+
+            <span class="s3">if </span><span class="s1">dest_sel </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">dest_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">SimpleSelection</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">dest_sel </span><span class="s4">= </span><span class="s1">sel</span><span class="s4">.</span><span class="s1">select</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dest_sel</span><span class="s4">, </span><span class="s1">self</span><span class="s4">)</span>
+
+            <span class="s3">for </span><span class="s1">fspace </span><span class="s3">in </span><span class="s1">dest_sel</span><span class="s4">.</span><span class="s1">broadcast</span><span class="s4">(</span><span class="s1">source_sel</span><span class="s4">.</span><span class="s1">array_shape</span><span class="s4">):</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">mspace</span><span class="s4">, </span><span class="s1">fspace</span><span class="s4">, </span><span class="s1">source</span><span class="s4">, </span><span class="s1">dxpl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dxpl</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__array__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create a Numpy array containing the whole dataset.  DON'T THINK 
+        THIS MEANS DATASETS ARE INTERCHANGEABLE WITH ARRAYS.  For one thing, 
+        you have to read the whole dataset every time this method is called. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">arr </span><span class="s4">= </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">zeros</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype </span><span class="s3">if </span><span class="s1">dtype </span><span class="s3">is None else </span><span class="s1">dtype</span><span class="s4">)</span>
+
+        <span class="s0"># Special case for (0,)*-shape datasets</span>
+        <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">size </span><span class="s4">== </span><span class="s5">0</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">arr</span>
+
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">read_direct</span><span class="s4">(</span><span class="s1">arr</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">arr</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">if not </span><span class="s1">self</span><span class="s4">:</span>
+            <span class="s1">r </span><span class="s4">= </span><span class="s6">'&lt;Closed HDF5 dataset&gt;'</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">name </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">namestr </span><span class="s4">= </span><span class="s6">'(&quot;anonymous&quot;)'</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">name </span><span class="s4">= </span><span class="s1">pp</span><span class="s4">.</span><span class="s1">basename</span><span class="s4">(</span><span class="s1">pp</span><span class="s4">.</span><span class="s1">normpath</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">name</span><span class="s4">))</span>
+                <span class="s1">namestr </span><span class="s4">= </span><span class="s6">'&quot;%s&quot;' </span><span class="s4">% (</span><span class="s1">name </span><span class="s3">if </span><span class="s1">name </span><span class="s4">!= </span><span class="s6">'' </span><span class="s3">else </span><span class="s6">'/'</span><span class="s4">)</span>
+            <span class="s1">r </span><span class="s4">= </span><span class="s6">'&lt;HDF5 dataset %s: shape %s, type &quot;%s&quot;&gt;' </span><span class="s4">% (</span>
+                <span class="s1">namestr</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">.</span><span class="s1">str</span>
+            <span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">r</span>
+
+    <span class="s3">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">DatasetID</span><span class="s4">, </span><span class="s6">&quot;refresh&quot;</span><span class="s4">):</span>
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">refresh</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot; Refresh the dataset metadata by reloading from the file. 
+ 
+            This is part of the SWMR features and only exist when the HDF5 
+            library version &gt;=1.9.178 
+            &quot;&quot;&quot;</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">refresh</span><span class="s4">()</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_cache_props</span><span class="s4">.</span><span class="s1">clear</span><span class="s4">()</span>
+
+    <span class="s3">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">DatasetID</span><span class="s4">, </span><span class="s6">&quot;flush&quot;</span><span class="s4">):</span>
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">flush</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot; Flush the dataset data and metadata to the file. 
+            If the dataset is chunked, raw data chunks are written to the file. 
+ 
+            This is part of the SWMR features and only exist when the HDF5 
+            library version &gt;=1.9.178 
+            &quot;&quot;&quot;</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">.</span><span class="s1">flush</span><span class="s4">()</span>
+
+    <span class="s3">if </span><span class="s1">vds_support</span><span class="s4">:</span>
+        <span class="s4">@</span><span class="s1">property</span>
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">is_virtual</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot;Check if this is a virtual dataset&quot;&quot;&quot;</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span><span class="s4">.</span><span class="s1">get_layout</span><span class="s4">() == </span><span class="s1">h5d</span><span class="s4">.</span><span class="s1">VIRTUAL</span>
+
+        <span class="s4">@</span><span class="s1">with_phil</span>
+        <span class="s3">def </span><span class="s1">virtual_sources</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot;Get a list of the data mappings for a virtual dataset&quot;&quot;&quot;</span>
+            <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">is_virtual</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span><span class="s6">&quot;Not a virtual dataset&quot;</span><span class="s4">)</span>
+            <span class="s1">dcpl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_dcpl</span>
+            <span class="s3">return </span><span class="s4">[</span>
+                <span class="s1">VDSmap</span><span class="s4">(</span><span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_virtual_vspace</span><span class="s4">(</span><span class="s1">j</span><span class="s4">),</span>
+                       <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_virtual_filename</span><span class="s4">(</span><span class="s1">j</span><span class="s4">),</span>
+                       <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_virtual_dsetname</span><span class="s4">(</span><span class="s1">j</span><span class="s4">),</span>
+                       <span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_virtual_srcspace</span><span class="s4">(</span><span class="s1">j</span><span class="s4">))</span>
+                <span class="s3">for </span><span class="s1">j </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_virtual_count</span><span class="s4">())]</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">make_scale</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">=</span><span class="s6">''</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Make this dataset an HDF5 dimension scale. 
+ 
+        You can then attach it to dimensions of other datasets like this:: 
+ 
+            other_ds.dims[0].attach_scale(ds) 
+ 
+        You can optionally pass a name to associate with this scale. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">h5ds</span><span class="s4">.</span><span class="s1">set_scale</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">))</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">is_scale</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Return ``True`` if this dataset is also a dimension scale. 
+ 
+        Return ``False`` otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">h5ds</span><span class="s4">.</span><span class="s1">is_scale</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_id</span><span class="s4">)</span>
+</pre>
+</body>
+</html>

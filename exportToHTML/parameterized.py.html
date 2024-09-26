@@ -1,0 +1,747 @@
+<html>
+<head>
+<title>parameterized.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+parameterized.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2017 The Abseil Authors.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+
+<span class="s2">&quot;&quot;&quot;Adds support for parameterized tests to Python's unittest TestCase class. 
+ 
+A parameterized test is a method in a test case that is invoked with different 
+argument tuples. 
+ 
+A simple example:: 
+ 
+    class AdditionExample(parameterized.TestCase): 
+      @parameterized.parameters( 
+        (1, 2, 3), 
+        (4, 5, 9), 
+        (1, 1, 3)) 
+      def testAddition(self, op1, op2, result): 
+        self.assertEqual(result, op1 + op2) 
+ 
+Each invocation is a separate test case and properly isolated just 
+like a normal test method, with its own setUp/tearDown cycle. In the 
+example above, there are three separate testcases, one of which will 
+fail due to an assertion error (1 + 1 != 3). 
+ 
+Parameters for individual test cases can be tuples (with positional parameters) 
+or dictionaries (with named parameters):: 
+ 
+    class AdditionExample(parameterized.TestCase): 
+      @parameterized.parameters( 
+        {'op1': 1, 'op2': 2, 'result': 3}, 
+        {'op1': 4, 'op2': 5, 'result': 9}, 
+      ) 
+      def testAddition(self, op1, op2, result): 
+        self.assertEqual(result, op1 + op2) 
+ 
+If a parameterized test fails, the error message will show the 
+original test name and the parameters for that test. 
+ 
+The id method of the test, used internally by the unittest framework, is also 
+modified to show the arguments (but note that the name reported by `id()` 
+doesn't match the actual test name, see below). To make sure that test names 
+stay the same across several invocations, object representations like:: 
+ 
+    &gt;&gt;&gt; class Foo(object): 
+    ...  pass 
+    &gt;&gt;&gt; repr(Foo()) 
+    '&lt;__main__.Foo object at 0x23d8610&gt;' 
+ 
+are turned into ``__main__.Foo``. When selecting a subset of test cases to run 
+on the command-line, the test cases contain an index suffix for each argument 
+in the order they were passed to :func:`parameters` (eg. testAddition0, 
+testAddition1, etc.) This naming scheme is subject to change; for more reliable 
+and stable names, especially in test logs, use :func:`named_parameters` instead. 
+ 
+Tests using :func:`named_parameters` are similar to :func:`parameters`, except 
+only tuples or dicts of args are supported. For tuples, the first parameter arg 
+has to be a string (or an object that returns an apt name when converted via 
+``str()``). For dicts, a value for the key ``testcase_name`` must be present and 
+must be a string (or an object that returns an apt name when converted via 
+``str()``):: 
+ 
+    class NamedExample(parameterized.TestCase): 
+      @parameterized.named_parameters( 
+        ('Normal', 'aa', 'aaa', True), 
+        ('EmptyPrefix', '', 'abc', True), 
+        ('BothEmpty', '', '', True)) 
+      def testStartsWith(self, prefix, string, result): 
+        self.assertEqual(result, string.startswith(prefix)) 
+ 
+    class NamedExample(parameterized.TestCase): 
+      @parameterized.named_parameters( 
+        {'testcase_name': 'Normal', 
+          'result': True, 'string': 'aaa', 'prefix': 'aa'}, 
+        {'testcase_name': 'EmptyPrefix', 
+          'result': True, 'string': 'abc', 'prefix': ''}, 
+        {'testcase_name': 'BothEmpty', 
+          'result': True, 'string': '', 'prefix': ''}) 
+      def testStartsWith(self, prefix, string, result): 
+        self.assertEqual(result, string.startswith(prefix)) 
+ 
+Named tests also have the benefit that they can be run individually 
+from the command line:: 
+ 
+    $ testmodule.py NamedExample.testStartsWithNormal 
+    . 
+    -------------------------------------------------------------------- 
+    Ran 1 test in 0.000s 
+ 
+    OK 
+ 
+Parameterized Classes 
+===================== 
+ 
+If invocation arguments are shared across test methods in a single 
+TestCase class, instead of decorating all test methods 
+individually, the class itself can be decorated:: 
+ 
+    @parameterized.parameters( 
+      (1, 2, 3), 
+      (4, 5, 9)) 
+    class ArithmeticTest(parameterized.TestCase): 
+      def testAdd(self, arg1, arg2, result): 
+        self.assertEqual(arg1 + arg2, result) 
+ 
+      def testSubtract(self, arg1, arg2, result): 
+        self.assertEqual(result - arg1, arg2) 
+ 
+Inputs from Iterables 
+===================== 
+ 
+If parameters should be shared across several test cases, or are dynamically 
+created from other sources, a single non-tuple iterable can be passed into 
+the decorator. This iterable will be used to obtain the test cases:: 
+ 
+    class AdditionExample(parameterized.TestCase): 
+      @parameterized.parameters( 
+        c.op1, c.op2, c.result for c in testcases 
+      ) 
+      def testAddition(self, op1, op2, result): 
+        self.assertEqual(result, op1 + op2) 
+ 
+ 
+Single-Argument Test Methods 
+============================ 
+ 
+If a test method takes only one argument, the single arguments must not be 
+wrapped into a tuple:: 
+ 
+    class NegativeNumberExample(parameterized.TestCase): 
+      @parameterized.parameters( 
+        -1, -3, -4, -5 
+      ) 
+      def testIsNegative(self, arg): 
+        self.assertTrue(IsNegative(arg)) 
+ 
+ 
+List/tuple as a Single Argument 
+=============================== 
+ 
+If a test method takes a single argument of a list/tuple, it must be wrapped 
+inside a tuple:: 
+ 
+    class ZeroSumExample(parameterized.TestCase): 
+      @parameterized.parameters( 
+        ([-1, 0, 1], ), 
+        ([-2, 0, 2], ), 
+      ) 
+      def testSumIsZero(self, arg): 
+        self.assertEqual(0, sum(arg)) 
+ 
+ 
+Cartesian product of Parameter Values as Parameterized Test Cases 
+================================================================= 
+ 
+If required to test method over a cartesian product of parameters, 
+`parameterized.product` may be used to facilitate generation of parameters 
+test combinations:: 
+ 
+    class TestModuloExample(parameterized.TestCase): 
+      @parameterized.product( 
+          num=[0, 20, 80], 
+          modulo=[2, 4], 
+          expected=[0] 
+      ) 
+      def testModuloResult(self, num, modulo, expected): 
+        self.assertEqual(expected, num % modulo) 
+ 
+This results in 6 test cases being created - one for each combination of the 
+parameters. It is also possible to supply sequences of keyword argument dicts 
+as elements of the cartesian product:: 
+ 
+    @parameterized.product( 
+        (dict(num=5, modulo=3, expected=2), 
+         dict(num=7, modulo=4, expected=3)), 
+        dtype=(int, float) 
+    ) 
+    def testModuloResult(self, num, modulo, expected, dtype): 
+      self.assertEqual(expected, dtype(num) % modulo) 
+ 
+This results in 4 test cases being created - for each of the two sets of test 
+data (supplied as kwarg dicts) and for each of the two data types (supplied as 
+a named parameter). Multiple keyword argument dicts may be supplied if required. 
+ 
+Async Support 
+============= 
+ 
+If a test needs to call async functions, it can inherit from both 
+parameterized.TestCase and another TestCase that supports async calls, such 
+as [asynctest](https://github.com/Martiusweb/asynctest):: 
+ 
+  import asynctest 
+ 
+  class AsyncExample(parameterized.TestCase, asynctest.TestCase): 
+    @parameterized.parameters( 
+      ('a', 1), 
+      ('b', 2), 
+    ) 
+    async def testSomeAsyncFunction(self, arg, expected): 
+      actual = await someAsyncFunction(arg) 
+      self.assertEqual(actual, expected) 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">collections </span><span class="s3">import </span><span class="s1">abc</span>
+<span class="s3">import </span><span class="s1">functools</span>
+<span class="s3">import </span><span class="s1">inspect</span>
+<span class="s3">import </span><span class="s1">itertools</span>
+<span class="s3">import </span><span class="s1">re</span>
+<span class="s3">import </span><span class="s1">types</span>
+<span class="s3">import </span><span class="s1">unittest</span>
+<span class="s3">import </span><span class="s1">warnings</span>
+
+<span class="s3">from </span><span class="s1">absl</span><span class="s4">.</span><span class="s1">testing </span><span class="s3">import </span><span class="s1">absltest</span>
+
+
+<span class="s1">_ADDR_RE </span><span class="s4">= </span><span class="s1">re</span><span class="s4">.</span><span class="s1">compile</span><span class="s4">(</span><span class="s5">r'\&lt;([a-zA-Z0-9_\-\.]+) object at 0x[a-fA-F0-9]+\&gt;'</span><span class="s4">)</span>
+<span class="s1">_NAMED </span><span class="s4">= </span><span class="s1">object</span><span class="s4">()</span>
+<span class="s1">_ARGUMENT_REPR </span><span class="s4">= </span><span class="s1">object</span><span class="s4">()</span>
+<span class="s1">_NAMED_DICT_KEY </span><span class="s4">= </span><span class="s5">'testcase_name'</span>
+
+
+<span class="s3">class </span><span class="s1">NoTestsError</span><span class="s4">(</span><span class="s1">Exception</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Raised when parameterized decorators do not generate any tests.&quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">DuplicateTestNameError</span><span class="s4">(</span><span class="s1">Exception</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Raised when a parameterized test has the same test name multiple times.&quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">test_class_name</span><span class="s4">, </span><span class="s1">new_test_name</span><span class="s4">, </span><span class="s1">original_test_name</span><span class="s4">):</span>
+    <span class="s1">super</span><span class="s4">(</span><span class="s1">DuplicateTestNameError</span><span class="s4">, </span><span class="s1">self</span><span class="s4">).</span><span class="s1">__init__</span><span class="s4">(</span>
+        <span class="s5">'Duplicate parameterized test name in {}: generated test name {!r} '</span>
+        <span class="s5">'(generated from {!r}) already exists. Consider using '</span>
+        <span class="s5">'named_parameters() to give your tests unique names and/or renaming '</span>
+        <span class="s5">'the conflicting test method.'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span>
+            <span class="s1">test_class_name</span><span class="s4">, </span><span class="s1">new_test_name</span><span class="s4">, </span><span class="s1">original_test_name</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_clean_repr</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">):</span>
+  <span class="s3">return </span><span class="s1">_ADDR_RE</span><span class="s4">.</span><span class="s1">sub</span><span class="s4">(</span><span class="s5">r'&lt;\1&gt;'</span><span class="s4">, </span><span class="s1">repr</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_non_string_or_bytes_iterable</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">):</span>
+  <span class="s3">return </span><span class="s4">(</span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">abc</span><span class="s4">.</span><span class="s1">Iterable</span><span class="s4">) </span><span class="s3">and not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">str</span><span class="s4">) </span><span class="s3">and</span>
+          <span class="s3">not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">bytes</span><span class="s4">))</span>
+
+
+<span class="s3">def </span><span class="s1">_format_parameter_list</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">):</span>
+  <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">, </span><span class="s1">abc</span><span class="s4">.</span><span class="s1">Mapping</span><span class="s4">):</span>
+    <span class="s3">return </span><span class="s5">', '</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s5">'%s=%s' </span><span class="s4">% (</span><span class="s1">argname</span><span class="s4">, </span><span class="s1">_clean_repr</span><span class="s4">(</span><span class="s1">value</span><span class="s4">))</span>
+                     <span class="s3">for </span><span class="s1">argname</span><span class="s4">, </span><span class="s1">value </span><span class="s3">in </span><span class="s1">testcase_params</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+  <span class="s3">elif </span><span class="s1">_non_string_or_bytes_iterable</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">):</span>
+    <span class="s3">return </span><span class="s5">', '</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">map</span><span class="s4">(</span><span class="s1">_clean_repr</span><span class="s4">, </span><span class="s1">testcase_params</span><span class="s4">))</span>
+  <span class="s3">else</span><span class="s4">:</span>
+    <span class="s3">return </span><span class="s1">_format_parameter_list</span><span class="s4">((</span><span class="s1">testcase_params</span><span class="s4">,))</span>
+
+
+<span class="s3">def </span><span class="s1">_async_wrapped</span><span class="s4">(</span><span class="s1">func</span><span class="s4">):</span>
+  <span class="s4">@</span><span class="s1">functools</span><span class="s4">.</span><span class="s1">wraps</span><span class="s4">(</span><span class="s1">func</span><span class="s4">)</span>
+  <span class="s3">async def </span><span class="s1">wrapper</span><span class="s4">(*</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+    <span class="s3">return await </span><span class="s1">func</span><span class="s4">(*</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">)</span>
+  <span class="s3">return </span><span class="s1">wrapper</span>
+
+
+<span class="s3">class </span><span class="s1">_ParameterizedTestIter</span><span class="s4">(</span><span class="s1">object</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Callable and iterable class for producing new test cases.&quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">test_method</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">, </span><span class="s1">naming_type</span><span class="s4">, </span><span class="s1">original_name</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Returns concrete test functions for a test and a list of parameters. 
+ 
+    The naming_type is used to determine the name of the concrete 
+    functions as reported by the unittest framework. If naming_type is 
+    _FIRST_ARG, the testcases must be tuples, and the first element must 
+    have a string representation that is a valid Python identifier. 
+ 
+    Args: 
+      test_method: The decorated test method. 
+      testcases: (list of tuple/dict) A list of parameter tuples/dicts for 
+          individual test invocations. 
+      naming_type: The test naming type, either _NAMED or _ARGUMENT_REPR. 
+      original_name: The original test method name. When decorated on a test 
+          method, None is passed to __init__ and test_method.__name__ is used. 
+          Note test_method.__name__ might be different than the original defined 
+          test method because of the use of other decorators. A more accurate 
+          value is set by TestGeneratorMetaclass.__new__ later. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">_test_method </span><span class="s4">= </span><span class="s1">test_method</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">testcases </span><span class="s4">= </span><span class="s1">testcases</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">_naming_type </span><span class="s4">= </span><span class="s1">naming_type</span>
+    <span class="s3">if </span><span class="s1">original_name </span><span class="s3">is None</span><span class="s4">:</span>
+      <span class="s1">original_name </span><span class="s4">= </span><span class="s1">test_method</span><span class="s4">.</span><span class="s1">__name__</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">_original_name </span><span class="s4">= </span><span class="s1">original_name</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">__name__ </span><span class="s4">= </span><span class="s1">_ParameterizedTestIter</span><span class="s4">.</span><span class="s1">__name__</span>
+
+  <span class="s3">def </span><span class="s1">__call__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">args</span><span class="s4">, **</span><span class="s1">kwargs</span><span class="s4">):</span>
+    <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span><span class="s5">'You appear to be running a parameterized test case '</span>
+                       <span class="s5">'without having inherited from parameterized.'</span>
+                       <span class="s5">'TestCase. This is bad because none of '</span>
+                       <span class="s5">'your test cases are actually being run. You may also '</span>
+                       <span class="s5">'be using another decorator before the parameterized '</span>
+                       <span class="s5">'one, in which case you should reverse the order.'</span><span class="s4">)</span>
+
+  <span class="s3">def </span><span class="s1">__iter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">test_method </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_test_method</span>
+    <span class="s1">naming_type </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_naming_type</span>
+
+    <span class="s3">def </span><span class="s1">make_bound_param_test</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">):</span>
+      <span class="s4">@</span><span class="s1">functools</span><span class="s4">.</span><span class="s1">wraps</span><span class="s4">(</span><span class="s1">test_method</span><span class="s4">)</span>
+      <span class="s3">def </span><span class="s1">bound_param_test</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">, </span><span class="s1">abc</span><span class="s4">.</span><span class="s1">Mapping</span><span class="s4">):</span>
+          <span class="s3">return </span><span class="s1">test_method</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, **</span><span class="s1">testcase_params</span><span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">_non_string_or_bytes_iterable</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">):</span>
+          <span class="s3">return </span><span class="s1">test_method</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, *</span><span class="s1">testcase_params</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+          <span class="s3">return </span><span class="s1">test_method</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">testcase_params</span><span class="s4">)</span>
+
+      <span class="s3">if </span><span class="s1">naming_type </span><span class="s3">is </span><span class="s1">_NAMED</span><span class="s4">:</span>
+        <span class="s0"># Signal the metaclass that the name of the test function is unique</span>
+        <span class="s0"># and descriptive.</span>
+        <span class="s1">bound_param_test</span><span class="s4">.</span><span class="s1">__x_use_name__ </span><span class="s4">= </span><span class="s3">True</span>
+
+        <span class="s1">testcase_name </span><span class="s4">= </span><span class="s3">None</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">, </span><span class="s1">abc</span><span class="s4">.</span><span class="s1">Mapping</span><span class="s4">):</span>
+          <span class="s3">if </span><span class="s1">_NAMED_DICT_KEY </span><span class="s3">not in </span><span class="s1">testcase_params</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span>
+                <span class="s5">'Dict for named tests must contain key &quot;%s&quot;' </span><span class="s4">% </span><span class="s1">_NAMED_DICT_KEY</span><span class="s4">)</span>
+          <span class="s0"># Create a new dict to avoid modifying the supplied testcase_params.</span>
+          <span class="s1">testcase_name </span><span class="s4">= </span><span class="s1">testcase_params</span><span class="s4">[</span><span class="s1">_NAMED_DICT_KEY</span><span class="s4">]</span>
+          <span class="s1">testcase_params </span><span class="s4">= {</span>
+              <span class="s1">k</span><span class="s4">: </span><span class="s1">v </span><span class="s3">for </span><span class="s1">k</span><span class="s4">, </span><span class="s1">v </span><span class="s3">in </span><span class="s1">testcase_params</span><span class="s4">.</span><span class="s1">items</span><span class="s4">() </span><span class="s3">if </span><span class="s1">k </span><span class="s4">!= </span><span class="s1">_NAMED_DICT_KEY</span>
+          <span class="s4">}</span>
+        <span class="s3">elif </span><span class="s1">_non_string_or_bytes_iterable</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">):</span>
+          <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s1">str</span><span class="s4">):</span>
+            <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span>
+                <span class="s5">'The first element of named test parameters is the test name '</span>
+                <span class="s5">'suffix and must be a string'</span><span class="s4">)</span>
+          <span class="s1">testcase_name </span><span class="s4">= </span><span class="s1">testcase_params</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+          <span class="s1">testcase_params </span><span class="s4">= </span><span class="s1">testcase_params</span><span class="s4">[</span><span class="s6">1</span><span class="s4">:]</span>
+        <span class="s3">else</span><span class="s4">:</span>
+          <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span>
+              <span class="s5">'Named tests must be passed a dict or non-string iterable.'</span><span class="s4">)</span>
+
+        <span class="s1">test_method_name </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_original_name</span>
+        <span class="s0"># Support PEP-8 underscore style for test naming if used.</span>
+        <span class="s3">if </span><span class="s4">(</span><span class="s1">test_method_name</span><span class="s4">.</span><span class="s1">startswith</span><span class="s4">(</span><span class="s5">'test_'</span><span class="s4">)</span>
+            <span class="s3">and </span><span class="s1">testcase_name</span>
+            <span class="s3">and not </span><span class="s1">testcase_name</span><span class="s4">.</span><span class="s1">startswith</span><span class="s4">(</span><span class="s5">'_'</span><span class="s4">)):</span>
+          <span class="s1">test_method_name </span><span class="s4">+= </span><span class="s5">'_'</span>
+
+        <span class="s1">bound_param_test</span><span class="s4">.</span><span class="s1">__name__ </span><span class="s4">= </span><span class="s1">test_method_name </span><span class="s4">+ </span><span class="s1">str</span><span class="s4">(</span><span class="s1">testcase_name</span><span class="s4">)</span>
+      <span class="s3">elif </span><span class="s1">naming_type </span><span class="s3">is </span><span class="s1">_ARGUMENT_REPR</span><span class="s4">:</span>
+        <span class="s0"># If it's a generator, convert it to a tuple and treat them as</span>
+        <span class="s0"># parameters.</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">, </span><span class="s1">types</span><span class="s4">.</span><span class="s1">GeneratorType</span><span class="s4">):</span>
+          <span class="s1">testcase_params </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">)</span>
+        <span class="s0"># The metaclass creates a unique, but non-descriptive method name for</span>
+        <span class="s0"># _ARGUMENT_REPR tests using an indexed suffix.</span>
+        <span class="s0"># To keep test names descriptive, only the original method name is used.</span>
+        <span class="s0"># To make sure test names are unique, we add a unique descriptive suffix</span>
+        <span class="s0"># __x_params_repr__ for every test.</span>
+        <span class="s1">params_repr </span><span class="s4">= </span><span class="s5">'(%s)' </span><span class="s4">% (</span><span class="s1">_format_parameter_list</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">),)</span>
+        <span class="s1">bound_param_test</span><span class="s4">.</span><span class="s1">__x_params_repr__ </span><span class="s4">= </span><span class="s1">params_repr</span>
+      <span class="s3">else</span><span class="s4">:</span>
+        <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span><span class="s5">'%s is not a valid naming type.' </span><span class="s4">% (</span><span class="s1">naming_type</span><span class="s4">,))</span>
+
+      <span class="s1">bound_param_test</span><span class="s4">.</span><span class="s1">__doc__ </span><span class="s4">= </span><span class="s5">'%s(%s)' </span><span class="s4">% (</span>
+          <span class="s1">bound_param_test</span><span class="s4">.</span><span class="s1">__name__</span><span class="s4">, </span><span class="s1">_format_parameter_list</span><span class="s4">(</span><span class="s1">testcase_params</span><span class="s4">))</span>
+      <span class="s3">if </span><span class="s1">test_method</span><span class="s4">.</span><span class="s1">__doc__</span><span class="s4">:</span>
+        <span class="s1">bound_param_test</span><span class="s4">.</span><span class="s1">__doc__ </span><span class="s4">+= </span><span class="s5">'</span><span class="s3">\n</span><span class="s5">%s' </span><span class="s4">% (</span><span class="s1">test_method</span><span class="s4">.</span><span class="s1">__doc__</span><span class="s4">,)</span>
+      <span class="s3">if </span><span class="s1">inspect</span><span class="s4">.</span><span class="s1">iscoroutinefunction</span><span class="s4">(</span><span class="s1">test_method</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s1">_async_wrapped</span><span class="s4">(</span><span class="s1">bound_param_test</span><span class="s4">)</span>
+      <span class="s3">return </span><span class="s1">bound_param_test</span>
+
+    <span class="s3">return </span><span class="s4">(</span><span class="s1">make_bound_param_test</span><span class="s4">(</span><span class="s1">c</span><span class="s4">) </span><span class="s3">for </span><span class="s1">c </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">testcases</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_modify_class</span><span class="s4">(</span><span class="s1">class_object</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">, </span><span class="s1">naming_type</span><span class="s4">):</span>
+  <span class="s3">assert not </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">class_object</span><span class="s4">, </span><span class="s5">'_test_params_reprs'</span><span class="s4">, </span><span class="s3">None</span><span class="s4">), (</span>
+      <span class="s5">'Cannot add parameters to %s. Either it already has parameterized '</span>
+      <span class="s5">'methods, or its super class is also a parameterized class.' </span><span class="s4">% (</span>
+          <span class="s1">class_object</span><span class="s4">,))</span>
+  <span class="s0"># NOTE: _test_params_repr is private to parameterized.TestCase and it's</span>
+  <span class="s0"># metaclass; do not use it outside of those classes.</span>
+  <span class="s1">class_object</span><span class="s4">.</span><span class="s1">_test_params_reprs </span><span class="s4">= </span><span class="s1">test_params_reprs </span><span class="s4">= {}</span>
+  <span class="s3">for </span><span class="s1">name</span><span class="s4">, </span><span class="s1">obj </span><span class="s3">in </span><span class="s1">class_object</span><span class="s4">.</span><span class="s1">__dict__</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">().</span><span class="s1">items</span><span class="s4">():</span>
+    <span class="s3">if </span><span class="s4">(</span><span class="s1">name</span><span class="s4">.</span><span class="s1">startswith</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">TestLoader</span><span class="s4">.</span><span class="s1">testMethodPrefix</span><span class="s4">)</span>
+        <span class="s3">and </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">types</span><span class="s4">.</span><span class="s1">FunctionType</span><span class="s4">)):</span>
+      <span class="s1">delattr</span><span class="s4">(</span><span class="s1">class_object</span><span class="s4">, </span><span class="s1">name</span><span class="s4">)</span>
+      <span class="s1">methods </span><span class="s4">= {}</span>
+      <span class="s1">_update_class_dict_for_param_test_case</span><span class="s4">(</span>
+          <span class="s1">class_object</span><span class="s4">.</span><span class="s1">__name__</span><span class="s4">, </span><span class="s1">methods</span><span class="s4">, </span><span class="s1">test_params_reprs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">,</span>
+          <span class="s1">_ParameterizedTestIter</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">, </span><span class="s1">naming_type</span><span class="s4">, </span><span class="s1">name</span><span class="s4">))</span>
+      <span class="s3">for </span><span class="s1">meth_name</span><span class="s4">, </span><span class="s1">meth </span><span class="s3">in </span><span class="s1">methods</span><span class="s4">.</span><span class="s1">items</span><span class="s4">():</span>
+        <span class="s1">setattr</span><span class="s4">(</span><span class="s1">class_object</span><span class="s4">, </span><span class="s1">meth_name</span><span class="s4">, </span><span class="s1">meth</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_parameter_decorator</span><span class="s4">(</span><span class="s1">naming_type</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Implementation of the parameterization decorators. 
+ 
+  Args: 
+    naming_type: The naming type. 
+    testcases: Testcase parameters. 
+ 
+  Raises: 
+    NoTestsError: Raised when the decorator generates no tests. 
+ 
+  Returns: 
+    A function for modifying the decorated object. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">def </span><span class="s1">_apply</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">type</span><span class="s4">):</span>
+      <span class="s1">_modify_class</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">, </span><span class="s1">naming_type</span><span class="s4">)</span>
+      <span class="s3">return </span><span class="s1">obj</span>
+    <span class="s3">else</span><span class="s4">:</span>
+      <span class="s3">return </span><span class="s1">_ParameterizedTestIter</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">, </span><span class="s1">naming_type</span><span class="s4">)</span>
+
+  <span class="s3">if </span><span class="s4">(</span><span class="s1">len</span><span class="s4">(</span><span class="s1">testcases</span><span class="s4">) == </span><span class="s6">1 </span><span class="s3">and</span>
+      <span class="s3">not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcases</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s1">tuple</span><span class="s4">) </span><span class="s3">and</span>
+      <span class="s3">not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcases</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s1">abc</span><span class="s4">.</span><span class="s1">Mapping</span><span class="s4">)):</span>
+    <span class="s0"># Support using a single non-tuple parameter as a list of test cases.</span>
+    <span class="s0"># Note that the single non-tuple parameter can't be Mapping either, which</span>
+    <span class="s0"># means a single dict parameter case.</span>
+    <span class="s3">assert </span><span class="s1">_non_string_or_bytes_iterable</span><span class="s4">(</span><span class="s1">testcases</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]), (</span>
+        <span class="s5">'Single parameter argument must be a non-string non-Mapping iterable'</span><span class="s4">)</span>
+    <span class="s1">testcases </span><span class="s4">= </span><span class="s1">testcases</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+
+  <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">testcases</span><span class="s4">, </span><span class="s1">abc</span><span class="s4">.</span><span class="s1">Sequence</span><span class="s4">):</span>
+    <span class="s1">testcases </span><span class="s4">= </span><span class="s1">list</span><span class="s4">(</span><span class="s1">testcases</span><span class="s4">)</span>
+  <span class="s3">if not </span><span class="s1">testcases</span><span class="s4">:</span>
+    <span class="s3">raise </span><span class="s1">NoTestsError</span><span class="s4">(</span>
+        <span class="s5">'parameterized test decorators did not generate any tests. '</span>
+        <span class="s5">'Make sure you specify non-empty parameters, '</span>
+        <span class="s5">'and do not reuse generators more than once.'</span><span class="s4">)</span>
+
+  <span class="s3">return </span><span class="s1">_apply</span>
+
+
+<span class="s3">def </span><span class="s1">parameters</span><span class="s4">(*</span><span class="s1">testcases</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;A decorator for creating parameterized tests. 
+ 
+  See the module docstring for a usage example. 
+ 
+  Args: 
+    *testcases: Parameters for the decorated method, either a single 
+        iterable, or a list of tuples/dicts/objects (for tests with only one 
+        argument). 
+ 
+  Raises: 
+    NoTestsError: Raised when the decorator generates no tests. 
+ 
+  Returns: 
+     A test generator to be handled by TestGeneratorMetaclass. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">return </span><span class="s1">_parameter_decorator</span><span class="s4">(</span><span class="s1">_ARGUMENT_REPR</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">named_parameters</span><span class="s4">(*</span><span class="s1">testcases</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;A decorator for creating parameterized tests. 
+ 
+  See the module docstring for a usage example. For every parameter tuple 
+  passed, the first element of the tuple should be a string and will be appended 
+  to the name of the test method. Each parameter dict passed must have a value 
+  for the key &quot;testcase_name&quot;, the string representation of that value will be 
+  appended to the name of the test method. 
+ 
+  Args: 
+    *testcases: Parameters for the decorated method, either a single iterable, 
+        or a list of tuples or dicts. 
+ 
+  Raises: 
+    NoTestsError: Raised when the decorator generates no tests. 
+ 
+  Returns: 
+     A test generator to be handled by TestGeneratorMetaclass. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">return </span><span class="s1">_parameter_decorator</span><span class="s4">(</span><span class="s1">_NAMED</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">product</span><span class="s4">(*</span><span class="s1">kwargs_seqs</span><span class="s4">, **</span><span class="s1">testgrid</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;A decorator for running tests over cartesian product of parameters values. 
+ 
+  See the module docstring for a usage example. The test will be run for every 
+  possible combination of the parameters. 
+ 
+  Args: 
+    *kwargs_seqs: Each positional parameter is a sequence of keyword arg dicts; 
+      every test case generated will include exactly one kwargs dict from each 
+      positional parameter; these will then be merged to form an overall list 
+      of arguments for the test case. 
+    **testgrid: A mapping of parameter names and their possible values. Possible 
+      values should given as either a list or a tuple. 
+ 
+  Raises: 
+    NoTestsError: Raised when the decorator generates no tests. 
+ 
+  Returns: 
+     A test generator to be handled by TestGeneratorMetaclass. 
+  &quot;&quot;&quot;</span>
+
+  <span class="s3">for </span><span class="s1">name</span><span class="s4">, </span><span class="s1">values </span><span class="s3">in </span><span class="s1">testgrid</span><span class="s4">.</span><span class="s1">items</span><span class="s4">():</span>
+    <span class="s3">assert </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">values</span><span class="s4">, (</span><span class="s1">list</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">)), (</span>
+        <span class="s5">'Values of {} must be given as list or tuple, found {}'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span>
+            <span class="s1">name</span><span class="s4">, </span><span class="s1">type</span><span class="s4">(</span><span class="s1">values</span><span class="s4">)))</span>
+
+  <span class="s1">prior_arg_names </span><span class="s4">= </span><span class="s1">set</span><span class="s4">()</span>
+  <span class="s3">for </span><span class="s1">kwargs_seq </span><span class="s3">in </span><span class="s1">kwargs_seqs</span><span class="s4">:</span>
+    <span class="s3">assert </span><span class="s4">((</span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">kwargs_seq</span><span class="s4">, (</span><span class="s1">list</span><span class="s4">, </span><span class="s1">tuple</span><span class="s4">))) </span><span class="s3">and</span>
+            <span class="s1">all</span><span class="s4">(</span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">kwargs</span><span class="s4">, </span><span class="s1">dict</span><span class="s4">) </span><span class="s3">for </span><span class="s1">kwargs </span><span class="s3">in </span><span class="s1">kwargs_seq</span><span class="s4">)), (</span>
+                <span class="s5">'Positional parameters must be a sequence of keyword arg'</span>
+                <span class="s5">'dicts, found {}'</span>
+                <span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">kwargs_seq</span><span class="s4">))</span>
+    <span class="s3">if </span><span class="s1">kwargs_seq</span><span class="s4">:</span>
+      <span class="s1">arg_names </span><span class="s4">= </span><span class="s1">set</span><span class="s4">(</span><span class="s1">kwargs_seq</span><span class="s4">[</span><span class="s6">0</span><span class="s4">])</span>
+      <span class="s3">assert </span><span class="s1">all</span><span class="s4">(</span><span class="s1">set</span><span class="s4">(</span><span class="s1">kwargs</span><span class="s4">) == </span><span class="s1">arg_names </span><span class="s3">for </span><span class="s1">kwargs </span><span class="s3">in </span><span class="s1">kwargs_seq</span><span class="s4">), (</span>
+          <span class="s5">'Keyword argument dicts within a single parameter must all have the '</span>
+          <span class="s5">'same keys, found {}'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">kwargs_seq</span><span class="s4">))</span>
+      <span class="s3">assert not </span><span class="s4">(</span><span class="s1">arg_names </span><span class="s4">&amp; </span><span class="s1">prior_arg_names</span><span class="s4">), (</span>
+          <span class="s5">'Keyword argument dict sequences must all have distinct argument '</span>
+          <span class="s5">'names, found duplicate(s) {}'</span>
+          <span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">sorted</span><span class="s4">(</span><span class="s1">arg_names </span><span class="s4">&amp; </span><span class="s1">prior_arg_names</span><span class="s4">)))</span>
+      <span class="s1">prior_arg_names </span><span class="s4">|= </span><span class="s1">arg_names</span>
+
+  <span class="s3">assert not </span><span class="s4">(</span><span class="s1">prior_arg_names </span><span class="s4">&amp; </span><span class="s1">set</span><span class="s4">(</span><span class="s1">testgrid</span><span class="s4">)), (</span>
+      <span class="s5">'Arguments supplied in kwargs dicts in positional parameters must not '</span>
+      <span class="s5">'overlap with arguments supplied as named parameters; found duplicate '</span>
+      <span class="s5">'argument(s) {}'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">sorted</span><span class="s4">(</span><span class="s1">prior_arg_names </span><span class="s4">&amp; </span><span class="s1">set</span><span class="s4">(</span><span class="s1">testgrid</span><span class="s4">))))</span>
+
+  <span class="s0"># Convert testgrid into a sequence of sequences of kwargs dicts and combine</span>
+  <span class="s0"># with the positional parameters.</span>
+  <span class="s0"># So foo=[1,2], bar=[3,4] --&gt; [[{foo: 1}, {foo: 2}], [{bar: 3, bar: 4}]]</span>
+  <span class="s1">testgrid </span><span class="s4">= (</span><span class="s1">tuple</span><span class="s4">({</span><span class="s1">k</span><span class="s4">: </span><span class="s1">v</span><span class="s4">} </span><span class="s3">for </span><span class="s1">v </span><span class="s3">in </span><span class="s1">vs</span><span class="s4">) </span><span class="s3">for </span><span class="s1">k</span><span class="s4">, </span><span class="s1">vs </span><span class="s3">in </span><span class="s1">testgrid</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+  <span class="s1">testgrid </span><span class="s4">= </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">kwargs_seqs</span><span class="s4">) + </span><span class="s1">tuple</span><span class="s4">(</span><span class="s1">testgrid</span><span class="s4">)</span>
+
+  <span class="s0"># Create all possible combinations of parameters as a cartesian product</span>
+  <span class="s0"># of parameter values.</span>
+  <span class="s1">testcases </span><span class="s4">= [</span>
+      <span class="s1">dict</span><span class="s4">(</span><span class="s1">itertools</span><span class="s4">.</span><span class="s1">chain</span><span class="s4">.</span><span class="s1">from_iterable</span><span class="s4">(</span><span class="s1">case</span><span class="s4">.</span><span class="s1">items</span><span class="s4">()</span>
+                                         <span class="s3">for </span><span class="s1">case </span><span class="s3">in </span><span class="s1">cases</span><span class="s4">))</span>
+      <span class="s3">for </span><span class="s1">cases </span><span class="s3">in </span><span class="s1">itertools</span><span class="s4">.</span><span class="s1">product</span><span class="s4">(*</span><span class="s1">testgrid</span><span class="s4">)</span>
+  <span class="s4">]</span>
+  <span class="s3">return </span><span class="s1">_parameter_decorator</span><span class="s4">(</span><span class="s1">_ARGUMENT_REPR</span><span class="s4">, </span><span class="s1">testcases</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">TestGeneratorMetaclass</span><span class="s4">(</span><span class="s1">type</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Metaclass for adding tests generated by parameterized decorators.&quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">class_name</span><span class="s4">, </span><span class="s1">bases</span><span class="s4">, </span><span class="s1">dct</span><span class="s4">):</span>
+    <span class="s0"># NOTE: _test_params_repr is private to parameterized.TestCase and it's</span>
+    <span class="s0"># metaclass; do not use it outside of those classes.</span>
+    <span class="s1">test_params_reprs </span><span class="s4">= </span><span class="s1">dct</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s5">'_test_params_reprs'</span><span class="s4">, {})</span>
+    <span class="s3">for </span><span class="s1">name</span><span class="s4">, </span><span class="s1">obj </span><span class="s3">in </span><span class="s1">dct</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">().</span><span class="s1">items</span><span class="s4">():</span>
+      <span class="s3">if </span><span class="s4">(</span><span class="s1">name</span><span class="s4">.</span><span class="s1">startswith</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">TestLoader</span><span class="s4">.</span><span class="s1">testMethodPrefix</span><span class="s4">) </span><span class="s3">and</span>
+          <span class="s1">_non_string_or_bytes_iterable</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">)):</span>
+        <span class="s0"># NOTE: `obj` might not be a _ParameterizedTestIter in two cases:</span>
+        <span class="s0"># 1. a class-level iterable named test* that isn't a test, such as</span>
+        <span class="s0">#    a list of something. Such attributes get deleted from the class.</span>
+        <span class="s0">#</span>
+        <span class="s0"># 2. If a decorator is applied to the parameterized test, e.g.</span>
+        <span class="s0">#    @morestuff</span>
+        <span class="s0">#    @parameterized.parameters(...)</span>
+        <span class="s0">#    def test_foo(...): ...</span>
+        <span class="s0">#</span>
+        <span class="s0">#   This is OK so long as the underlying parameterized function state</span>
+        <span class="s0">#   is forwarded (e.g. using functool.wraps() and **without**</span>
+        <span class="s0">#   accessing explicitly accessing the internal attributes.</span>
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">_ParameterizedTestIter</span><span class="s4">):</span>
+          <span class="s0"># Update the original test method name so it's more accurate.</span>
+          <span class="s0"># The mismatch might happen when another decorator is used inside</span>
+          <span class="s0"># the parameterized decrators, and the inner decorator doesn't</span>
+          <span class="s0"># preserve its __name__.</span>
+          <span class="s1">obj</span><span class="s4">.</span><span class="s1">_original_name </span><span class="s4">= </span><span class="s1">name</span>
+        <span class="s1">iterator </span><span class="s4">= </span><span class="s1">iter</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">)</span>
+        <span class="s1">dct</span><span class="s4">.</span><span class="s1">pop</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+        <span class="s1">_update_class_dict_for_param_test_case</span><span class="s4">(</span>
+            <span class="s1">class_name</span><span class="s4">, </span><span class="s1">dct</span><span class="s4">, </span><span class="s1">test_params_reprs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">iterator</span><span class="s4">)</span>
+    <span class="s0"># If the base class is a subclass of parameterized.TestCase, inherit its</span>
+    <span class="s0"># _test_params_reprs too.</span>
+    <span class="s3">for </span><span class="s1">base </span><span class="s3">in </span><span class="s1">bases</span><span class="s4">:</span>
+      <span class="s0"># Check if the base has _test_params_reprs first, then check if it's a</span>
+      <span class="s0"># subclass of parameterized.TestCase. Otherwise when this is called for</span>
+      <span class="s0"># the parameterized.TestCase definition itself, this raises because</span>
+      <span class="s0"># itself is not defined yet. This works as long as absltest.TestCase does</span>
+      <span class="s0"># not define _test_params_reprs.</span>
+      <span class="s1">base_test_params_reprs </span><span class="s4">= </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">base</span><span class="s4">, </span><span class="s5">'_test_params_reprs'</span><span class="s4">, </span><span class="s3">None</span><span class="s4">)</span>
+      <span class="s3">if </span><span class="s1">base_test_params_reprs </span><span class="s3">and </span><span class="s1">issubclass</span><span class="s4">(</span><span class="s1">base</span><span class="s4">, </span><span class="s1">TestCase</span><span class="s4">):</span>
+        <span class="s3">for </span><span class="s1">test_method</span><span class="s4">, </span><span class="s1">test_method_id </span><span class="s3">in </span><span class="s1">base_test_params_reprs</span><span class="s4">.</span><span class="s1">items</span><span class="s4">():</span>
+          <span class="s0"># test_method may both exists in base and this class.</span>
+          <span class="s0"># This class's method overrides base class's.</span>
+          <span class="s0"># That's why it should only inherit it if it does not exist.</span>
+          <span class="s1">test_params_reprs</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s1">test_method</span><span class="s4">, </span><span class="s1">test_method_id</span><span class="s4">)</span>
+
+    <span class="s3">return </span><span class="s1">type</span><span class="s4">.</span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">cls</span><span class="s4">, </span><span class="s1">class_name</span><span class="s4">, </span><span class="s1">bases</span><span class="s4">, </span><span class="s1">dct</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_update_class_dict_for_param_test_case</span><span class="s4">(</span>
+    <span class="s1">test_class_name</span><span class="s4">, </span><span class="s1">dct</span><span class="s4">, </span><span class="s1">test_params_reprs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">iterator</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Adds individual test cases to a dictionary. 
+ 
+  Args: 
+    test_class_name: The name of the class tests are added to. 
+    dct: The target dictionary. 
+    test_params_reprs: The dictionary for mapping names to test IDs. 
+    name: The original name of the test case. 
+    iterator: The iterator generating the individual test cases. 
+ 
+  Raises: 
+    DuplicateTestNameError: Raised when a test name occurs multiple times. 
+    RuntimeError: If non-parameterized functions are generated. 
+  &quot;&quot;&quot;</span>
+  <span class="s3">for </span><span class="s1">idx</span><span class="s4">, </span><span class="s1">func </span><span class="s3">in </span><span class="s1">enumerate</span><span class="s4">(</span><span class="s1">iterator</span><span class="s4">):</span>
+    <span class="s3">assert </span><span class="s1">callable</span><span class="s4">(</span><span class="s1">func</span><span class="s4">), </span><span class="s5">'Test generators must yield callables, got %r' </span><span class="s4">% (</span>
+        <span class="s1">func</span><span class="s4">,)</span>
+    <span class="s3">if not </span><span class="s4">(</span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">func</span><span class="s4">, </span><span class="s5">'__x_use_name__'</span><span class="s4">, </span><span class="s3">None</span><span class="s4">) </span><span class="s3">or</span>
+            <span class="s1">getattr</span><span class="s4">(</span><span class="s1">func</span><span class="s4">, </span><span class="s5">'__x_params_repr__'</span><span class="s4">, </span><span class="s3">None</span><span class="s4">)):</span>
+      <span class="s3">raise </span><span class="s1">RuntimeError</span><span class="s4">(</span>
+          <span class="s5">'{}.{} generated a test function without using the parameterized '</span>
+          <span class="s5">'decorators. Only tests generated using the decorators are '</span>
+          <span class="s5">'supported.'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">test_class_name</span><span class="s4">, </span><span class="s1">name</span><span class="s4">))</span>
+
+    <span class="s3">if </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">func</span><span class="s4">, </span><span class="s5">'__x_use_name__'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">):</span>
+      <span class="s1">original_name </span><span class="s4">= </span><span class="s1">func</span><span class="s4">.</span><span class="s1">__name__</span>
+      <span class="s1">new_name </span><span class="s4">= </span><span class="s1">original_name</span>
+    <span class="s3">else</span><span class="s4">:</span>
+      <span class="s1">original_name </span><span class="s4">= </span><span class="s1">name</span>
+      <span class="s1">new_name </span><span class="s4">= </span><span class="s5">'%s%d' </span><span class="s4">% (</span><span class="s1">original_name</span><span class="s4">, </span><span class="s1">idx</span><span class="s4">)</span>
+
+    <span class="s3">if </span><span class="s1">new_name </span><span class="s3">in </span><span class="s1">dct</span><span class="s4">:</span>
+      <span class="s3">raise </span><span class="s1">DuplicateTestNameError</span><span class="s4">(</span><span class="s1">test_class_name</span><span class="s4">, </span><span class="s1">new_name</span><span class="s4">, </span><span class="s1">original_name</span><span class="s4">)</span>
+
+    <span class="s1">dct</span><span class="s4">[</span><span class="s1">new_name</span><span class="s4">] = </span><span class="s1">func</span>
+    <span class="s1">test_params_reprs</span><span class="s4">[</span><span class="s1">new_name</span><span class="s4">] = </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">func</span><span class="s4">, </span><span class="s5">'__x_params_repr__'</span><span class="s4">, </span><span class="s5">''</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">TestCase</span><span class="s4">(</span><span class="s1">absltest</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">TestGeneratorMetaclass</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Base class for test cases using the parameters decorator.&quot;&quot;&quot;</span>
+
+  <span class="s0"># visibility: private; do not call outside this class.</span>
+  <span class="s3">def </span><span class="s1">_get_params_repr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_test_params_reprs</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_testMethodName</span><span class="s4">, </span><span class="s5">''</span><span class="s4">)</span>
+
+  <span class="s3">def </span><span class="s1">__str__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">params_repr </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_get_params_repr</span><span class="s4">()</span>
+    <span class="s3">if </span><span class="s1">params_repr</span><span class="s4">:</span>
+      <span class="s1">params_repr </span><span class="s4">= </span><span class="s5">' ' </span><span class="s4">+ </span><span class="s1">params_repr</span>
+    <span class="s3">return </span><span class="s5">'{}{} ({})'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_testMethodName</span><span class="s4">, </span><span class="s1">params_repr</span><span class="s4">,</span>
+        <span class="s1">unittest</span><span class="s4">.</span><span class="s1">util</span><span class="s4">.</span><span class="s1">strclass</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">id</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Returns the descriptive ID of the test. 
+ 
+    This is used internally by the unittesting framework to get a name 
+    for the test to be used in reports. 
+ 
+    Returns: 
+      The test id. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">base </span><span class="s4">= </span><span class="s1">super</span><span class="s4">(</span><span class="s1">TestCase</span><span class="s4">, </span><span class="s1">self</span><span class="s4">).</span><span class="s1">id</span><span class="s4">()</span>
+    <span class="s1">params_repr </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_get_params_repr</span><span class="s4">()</span>
+    <span class="s3">if </span><span class="s1">params_repr</span><span class="s4">:</span>
+      <span class="s0"># We include the params in the id so that, when reported in the</span>
+      <span class="s0"># test.xml file, the value is more informative than just &quot;test_foo0&quot;.</span>
+      <span class="s0"># Use a space to separate them so that it's copy/paste friendly and</span>
+      <span class="s0"># easy to identify the actual test id.</span>
+      <span class="s3">return </span><span class="s5">'{} {}'</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">base</span><span class="s4">, </span><span class="s1">params_repr</span><span class="s4">)</span>
+    <span class="s3">else</span><span class="s4">:</span>
+      <span class="s3">return </span><span class="s1">base</span>
+
+
+<span class="s0"># This function is kept CamelCase because it's used as a class's base class.</span>
+<span class="s3">def </span><span class="s1">CoopTestCase</span><span class="s4">(</span><span class="s1">other_base_class</span><span class="s4">):  </span><span class="s0"># pylint: disable=invalid-name</span>
+  <span class="s2">&quot;&quot;&quot;Returns a new base class with a cooperative metaclass base. 
+ 
+  This enables the TestCase to be used in combination 
+  with other base classes that have custom metaclasses, such as 
+  ``mox.MoxTestBase``. 
+ 
+  Only works with metaclasses that do not override ``type.__new__``. 
+ 
+  Example:: 
+ 
+      from absl.testing import parameterized 
+ 
+      class ExampleTest(parameterized.CoopTestCase(OtherTestCase)): 
+        ... 
+ 
+  Args: 
+    other_base_class: (class) A test case base class. 
+ 
+  Returns: 
+    A new class object. 
+  &quot;&quot;&quot;</span>
+  <span class="s0"># If the other base class has a metaclass of 'type' then trying to combine</span>
+  <span class="s0"># the metaclasses will result in an MRO error. So simply combine them and</span>
+  <span class="s0"># return.</span>
+  <span class="s3">if </span><span class="s1">type</span><span class="s4">(</span><span class="s1">other_base_class</span><span class="s4">) == </span><span class="s1">type</span><span class="s4">:  </span><span class="s0"># pylint: disable=unidiomatic-typecheck</span>
+    <span class="s1">warnings</span><span class="s4">.</span><span class="s1">warn</span><span class="s4">(</span>
+        <span class="s5">'CoopTestCase is only necessary when combining with a class that uses'</span>
+        <span class="s5">' a metaclass. Use multiple inheritance like this instead: class'</span>
+        <span class="s5">f' ExampleTest(paramaterized.TestCase, </span><span class="s3">{</span><span class="s1">other_base_class</span><span class="s4">.</span><span class="s1">__name__</span><span class="s3">}</span><span class="s5">):'</span><span class="s4">,</span>
+        <span class="s1">stacklevel</span><span class="s4">=</span><span class="s6">2</span><span class="s4">,</span>
+    <span class="s4">)</span>
+
+    <span class="s3">class </span><span class="s1">CoopTestCaseBase</span><span class="s4">(</span><span class="s1">other_base_class</span><span class="s4">, </span><span class="s1">TestCase</span><span class="s4">):</span>
+      <span class="s3">pass</span>
+
+    <span class="s3">return </span><span class="s1">CoopTestCaseBase</span>
+  <span class="s3">else</span><span class="s4">:</span>
+
+    <span class="s3">class </span><span class="s1">CoopMetaclass</span><span class="s4">(</span><span class="s1">type</span><span class="s4">(</span><span class="s1">other_base_class</span><span class="s4">), </span><span class="s1">TestGeneratorMetaclass</span><span class="s4">):  </span><span class="s0"># pylint: disable=unused-variable</span>
+      <span class="s3">pass</span>
+
+    <span class="s3">class </span><span class="s1">CoopTestCaseBase</span><span class="s4">(</span><span class="s1">other_base_class</span><span class="s4">, </span><span class="s1">TestCase</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">CoopMetaclass</span><span class="s4">):</span>
+      <span class="s3">pass</span>
+
+    <span class="s3">return </span><span class="s1">CoopTestCaseBase</span>
+</pre>
+</body>
+</html>

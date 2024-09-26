@@ -1,0 +1,196 @@
+<html>
+<head>
+<title>xmlid.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+xmlid.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0">cdef object _find_id_attributes</span>
+
+<span class="s0">def XMLID(text, parser=None, *, base_url=None):</span>
+    <span class="s0">&quot;&quot;&quot;XMLID(text, parser=None, base_url=None)</span>
+
+    <span class="s0">Parse the text and return a tuple (root node, ID dictionary).  The root</span>
+    <span class="s0">node is the same as returned by the XML() function.  The dictionary</span>
+    <span class="s0">contains string-element pairs.  The dictionary keys are the values of 'id'</span>
+    <span class="s0">attributes.  The elements referenced by the ID are stored as dictionary</span>
+    <span class="s0">values.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef dict dic</span>
+    <span class="s0">global _find_id_attributes</span>
+    <span class="s0">if _find_id_attributes is None:</span>
+        <span class="s0">_find_id_attributes = XPath('//*[string(@id)]')</span>
+
+    <span class="s0"># ElementTree compatible implementation: parse and look for 'id' attributes</span>
+    <span class="s0">root = XML(text, parser, base_url=base_url)</span>
+    <span class="s0">dic = {}</span>
+    <span class="s0">for elem in _find_id_attributes(root):</span>
+        <span class="s0">dic[elem.get('id')] = elem</span>
+    <span class="s0">return root, dic</span>
+
+<span class="s0">def XMLDTDID(text, parser=None, *, base_url=None):</span>
+    <span class="s0">&quot;&quot;&quot;XMLDTDID(text, parser=None, base_url=None)</span>
+
+    <span class="s0">Parse the text and return a tuple (root node, ID dictionary).  The root</span>
+    <span class="s0">node is the same as returned by the XML() function.  The dictionary</span>
+    <span class="s0">contains string-element pairs.  The dictionary keys are the values of ID</span>
+    <span class="s0">attributes as defined by the DTD.  The elements referenced by the ID are</span>
+    <span class="s0">stored as dictionary values.</span>
+
+    <span class="s0">Note that you must not modify the XML tree if you use the ID dictionary.</span>
+    <span class="s0">The results are undefined.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Element root</span>
+    <span class="s0">root = XML(text, parser, base_url=base_url)</span>
+    <span class="s0"># xml:id spec compatible implementation: use DTD ID attributes from libxml2</span>
+    <span class="s0">if root._doc._c_doc.ids is NULL:</span>
+        <span class="s0">return root, {}</span>
+    <span class="s0">else:</span>
+        <span class="s0">return root, _IDDict(root)</span>
+
+<span class="s0">def parseid(source, parser=None, *, base_url=None):</span>
+    <span class="s0">&quot;&quot;&quot;parseid(source, parser=None)</span>
+
+    <span class="s0">Parses the source into a tuple containing an ElementTree object and an</span>
+    <span class="s0">ID dictionary.  If no parser is provided as second argument, the default</span>
+    <span class="s0">parser is used.</span>
+
+    <span class="s0">Note that you must not modify the XML tree if you use the ID dictionary.</span>
+    <span class="s0">The results are undefined.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Document doc</span>
+    <span class="s0">doc = _parseDocument(source, parser, base_url)</span>
+    <span class="s0">return _elementTreeFactory(doc, None), _IDDict(doc)</span>
+
+<span class="s0">cdef class _IDDict:</span>
+    <span class="s0">&quot;&quot;&quot;IDDict(self, etree)</span>
+    <span class="s0">A dictionary-like proxy class that mapps ID attributes to elements.</span>
+
+    <span class="s0">The dictionary must be instantiated with the root element of a parsed XML</span>
+    <span class="s0">document, otherwise the behaviour is undefined.  Elements and XML trees</span>
+    <span class="s0">that were created or modified 'by hand' are not supported.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef _Document _doc</span>
+    <span class="s0">cdef object _keys</span>
+    <span class="s0">cdef object _items</span>
+    <span class="s0">def __cinit__(self, etree):</span>
+        <span class="s0">cdef _Document doc</span>
+        <span class="s0">doc = _documentOrRaise(etree)</span>
+        <span class="s0">if doc._c_doc.ids is NULL:</span>
+            <span class="s0">raise ValueError, &quot;No ID dictionary available.&quot;</span>
+        <span class="s0">self._doc = doc</span>
+        <span class="s0">self._keys  = None</span>
+        <span class="s0">self._items = None</span>
+
+    <span class="s0">def copy(self):</span>
+        <span class="s0">return _IDDict(self._doc)</span>
+
+    <span class="s0">def __getitem__(self, id_name):</span>
+        <span class="s0">cdef tree.xmlHashTable* c_ids</span>
+        <span class="s0">cdef tree.xmlID* c_id</span>
+        <span class="s0">cdef xmlAttr* c_attr</span>
+        <span class="s0">c_ids = self._doc._c_doc.ids</span>
+        <span class="s0">id_utf = _utf8(id_name)</span>
+        <span class="s0">c_id = &lt;tree.xmlID*&gt;tree.xmlHashLookup(c_ids, _xcstr(id_utf))</span>
+        <span class="s0">if c_id is NULL:</span>
+            <span class="s0">raise KeyError, &quot;key not found.&quot;</span>
+        <span class="s0">c_attr = c_id.attr</span>
+        <span class="s0">if c_attr is NULL or c_attr.parent is NULL:</span>
+            <span class="s0">raise KeyError, &quot;ID attribute not found.&quot;</span>
+        <span class="s0">return _elementFactory(self._doc, c_attr.parent)</span>
+
+    <span class="s0">def get(self, id_name):</span>
+        <span class="s0">return self[id_name]</span>
+
+    <span class="s0">def __contains__(self, id_name):</span>
+        <span class="s0">cdef tree.xmlID* c_id</span>
+        <span class="s0">id_utf = _utf8(id_name)</span>
+        <span class="s0">c_id = &lt;tree.xmlID*&gt;tree.xmlHashLookup(</span>
+            <span class="s0">self._doc._c_doc.ids, _xcstr(id_utf))</span>
+        <span class="s0">return c_id is not NULL</span>
+
+    <span class="s0">def has_key(self, id_name):</span>
+        <span class="s0">return id_name in self</span>
+
+    <span class="s0">def __repr__(self):</span>
+        <span class="s0">return repr(dict(self))</span>
+
+    <span class="s0">def keys(self):</span>
+        <span class="s0">if self._keys is None:</span>
+            <span class="s0">self._keys = self._build_keys()</span>
+        <span class="s0">return self._keys[:]</span>
+
+    <span class="s0">def __iter__(self):</span>
+        <span class="s0">if self._keys is None:</span>
+            <span class="s0">self._keys = self._build_keys()</span>
+        <span class="s0">return iter(self._keys)</span>
+
+    <span class="s0">def iterkeys(self):</span>
+        <span class="s0">return self</span>
+
+    <span class="s0">def __len__(self):</span>
+        <span class="s0">if self._keys is None:</span>
+            <span class="s0">self._keys = self._build_keys()</span>
+        <span class="s0">return len(self._keys)</span>
+
+    <span class="s0">def items(self):</span>
+        <span class="s0">if self._items is None:</span>
+            <span class="s0">self._items = self._build_items()</span>
+        <span class="s0">return self._items[:]</span>
+
+    <span class="s0">def iteritems(self):</span>
+        <span class="s0">if self._items is None:</span>
+            <span class="s0">self._items = self._build_items()</span>
+        <span class="s0">return iter(self._items)</span>
+
+    <span class="s0">def values(self):</span>
+        <span class="s0">cdef list values = []</span>
+        <span class="s0">if self._items is None:</span>
+            <span class="s0">self._items = self._build_items()</span>
+        <span class="s0">for item in self._items:</span>
+            <span class="s0">value = python.PyTuple_GET_ITEM(item, 1)</span>
+            <span class="s0">python.Py_INCREF(value)</span>
+            <span class="s0">values.append(value)</span>
+        <span class="s0">return values</span>
+
+    <span class="s0">def itervalues(self):</span>
+        <span class="s0">return iter(self.values())</span>
+
+    <span class="s0">cdef object _build_keys(self):</span>
+        <span class="s0">keys = []</span>
+        <span class="s0">tree.xmlHashScan(&lt;tree.xmlHashTable*&gt;self._doc._c_doc.ids,</span>
+                         <span class="s0">&lt;tree.xmlHashScanner&gt;_collectIdHashKeys, &lt;python.PyObject*&gt;keys)</span>
+        <span class="s0">return keys</span>
+
+    <span class="s0">cdef object _build_items(self):</span>
+        <span class="s0">items = []</span>
+        <span class="s0">context = (items, self._doc)</span>
+        <span class="s0">tree.xmlHashScan(&lt;tree.xmlHashTable*&gt;self._doc._c_doc.ids,</span>
+                         <span class="s0">&lt;tree.xmlHashScanner&gt;_collectIdHashItemList, &lt;python.PyObject*&gt;context)</span>
+        <span class="s0">return items</span>
+
+<span class="s0">cdef void _collectIdHashItemList(void* payload, void* context, xmlChar* name) noexcept:</span>
+    <span class="s0"># collect elements from ID attribute hash table</span>
+    <span class="s0">cdef list lst</span>
+    <span class="s0">c_id = &lt;tree.xmlID*&gt;payload</span>
+    <span class="s0">if c_id is NULL or c_id.attr is NULL or c_id.attr.parent is NULL:</span>
+        <span class="s0">return</span>
+    <span class="s0">lst, doc = &lt;tuple&gt;context</span>
+    <span class="s0">element = _elementFactory(doc, c_id.attr.parent)</span>
+    <span class="s0">lst.append( (funicode(name), element) )</span>
+
+<span class="s0">cdef void _collectIdHashKeys(void* payload, void* collect_list, xmlChar* name) noexcept:</span>
+    <span class="s0">c_id = &lt;tree.xmlID*&gt;payload</span>
+    <span class="s0">if c_id is NULL or c_id.attr is NULL or c_id.attr.parent is NULL:</span>
+        <span class="s0">return</span>
+    <span class="s0">(&lt;list&gt;collect_list).append(funicode(name))</span>
+</pre>
+</body>
+</html>

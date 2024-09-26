@@ -1,0 +1,611 @@
+<html>
+<head>
+<title>_simple_stubs.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_simple_stubs.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2020 The gRPC authors.</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+<span class="s2">&quot;&quot;&quot;Functions that obviate explicit stubs and explicit channels.&quot;&quot;&quot;</span>
+
+<span class="s3">import </span><span class="s1">collections</span>
+<span class="s3">import </span><span class="s1">datetime</span>
+<span class="s3">import </span><span class="s1">logging</span>
+<span class="s3">import </span><span class="s1">os</span>
+<span class="s3">import </span><span class="s1">threading</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s4">(</span>
+    <span class="s1">Any</span><span class="s4">,</span>
+    <span class="s1">AnyStr</span><span class="s4">,</span>
+    <span class="s1">Callable</span><span class="s4">,</span>
+    <span class="s1">Dict</span><span class="s4">,</span>
+    <span class="s1">Iterator</span><span class="s4">,</span>
+    <span class="s1">Optional</span><span class="s4">,</span>
+    <span class="s1">Sequence</span><span class="s4">,</span>
+    <span class="s1">Tuple</span><span class="s4">,</span>
+    <span class="s1">TypeVar</span><span class="s4">,</span>
+    <span class="s1">Union</span><span class="s4">,</span>
+<span class="s4">)</span>
+
+<span class="s3">import </span><span class="s1">grpc</span>
+<span class="s3">from </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">experimental </span><span class="s3">import </span><span class="s1">experimental_api</span>
+
+<span class="s1">RequestType </span><span class="s4">= </span><span class="s1">TypeVar</span><span class="s4">(</span><span class="s5">&quot;RequestType&quot;</span><span class="s4">)</span>
+<span class="s1">ResponseType </span><span class="s4">= </span><span class="s1">TypeVar</span><span class="s4">(</span><span class="s5">&quot;ResponseType&quot;</span><span class="s4">)</span>
+
+<span class="s1">OptionsType </span><span class="s4">= </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">str</span><span class="s4">]]</span>
+<span class="s1">CacheKey </span><span class="s4">= </span><span class="s1">Tuple</span><span class="s4">[</span>
+    <span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">OptionsType</span><span class="s4">,</span>
+    <span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">],</span>
+    <span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">],</span>
+<span class="s4">]</span>
+
+<span class="s1">_LOGGER </span><span class="s4">= </span><span class="s1">logging</span><span class="s4">.</span><span class="s1">getLogger</span><span class="s4">(</span><span class="s1">__name__</span><span class="s4">)</span>
+
+<span class="s1">_EVICTION_PERIOD_KEY </span><span class="s4">= </span><span class="s5">&quot;GRPC_PYTHON_MANAGED_CHANNEL_EVICTION_SECONDS&quot;</span>
+<span class="s3">if </span><span class="s1">_EVICTION_PERIOD_KEY </span><span class="s3">in </span><span class="s1">os</span><span class="s4">.</span><span class="s1">environ</span><span class="s4">:</span>
+    <span class="s1">_EVICTION_PERIOD </span><span class="s4">= </span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">timedelta</span><span class="s4">(</span>
+        <span class="s1">seconds</span><span class="s4">=</span><span class="s1">float</span><span class="s4">(</span><span class="s1">os</span><span class="s4">.</span><span class="s1">environ</span><span class="s4">[</span><span class="s1">_EVICTION_PERIOD_KEY</span><span class="s4">])</span>
+    <span class="s4">)</span>
+    <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">debug</span><span class="s4">(</span>
+        <span class="s5">&quot;Setting managed channel eviction period to %s&quot;</span><span class="s4">, </span><span class="s1">_EVICTION_PERIOD</span>
+    <span class="s4">)</span>
+<span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">_EVICTION_PERIOD </span><span class="s4">= </span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">timedelta</span><span class="s4">(</span><span class="s1">minutes</span><span class="s4">=</span><span class="s6">10</span><span class="s4">)</span>
+
+<span class="s1">_MAXIMUM_CHANNELS_KEY </span><span class="s4">= </span><span class="s5">&quot;GRPC_PYTHON_MANAGED_CHANNEL_MAXIMUM&quot;</span>
+<span class="s3">if </span><span class="s1">_MAXIMUM_CHANNELS_KEY </span><span class="s3">in </span><span class="s1">os</span><span class="s4">.</span><span class="s1">environ</span><span class="s4">:</span>
+    <span class="s1">_MAXIMUM_CHANNELS </span><span class="s4">= </span><span class="s1">int</span><span class="s4">(</span><span class="s1">os</span><span class="s4">.</span><span class="s1">environ</span><span class="s4">[</span><span class="s1">_MAXIMUM_CHANNELS_KEY</span><span class="s4">])</span>
+    <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">debug</span><span class="s4">(</span><span class="s5">&quot;Setting maximum managed channels to %d&quot;</span><span class="s4">, </span><span class="s1">_MAXIMUM_CHANNELS</span><span class="s4">)</span>
+<span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">_MAXIMUM_CHANNELS </span><span class="s4">= </span><span class="s6">2</span><span class="s4">**</span><span class="s6">8</span>
+
+<span class="s1">_DEFAULT_TIMEOUT_KEY </span><span class="s4">= </span><span class="s5">&quot;GRPC_PYTHON_DEFAULT_TIMEOUT_SECONDS&quot;</span>
+<span class="s3">if </span><span class="s1">_DEFAULT_TIMEOUT_KEY </span><span class="s3">in </span><span class="s1">os</span><span class="s4">.</span><span class="s1">environ</span><span class="s4">:</span>
+    <span class="s1">_DEFAULT_TIMEOUT </span><span class="s4">= </span><span class="s1">float</span><span class="s4">(</span><span class="s1">os</span><span class="s4">.</span><span class="s1">environ</span><span class="s4">[</span><span class="s1">_DEFAULT_TIMEOUT_KEY</span><span class="s4">])</span>
+    <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">debug</span><span class="s4">(</span><span class="s5">&quot;Setting default timeout seconds to %f&quot;</span><span class="s4">, </span><span class="s1">_DEFAULT_TIMEOUT</span><span class="s4">)</span>
+<span class="s3">else</span><span class="s4">:</span>
+    <span class="s1">_DEFAULT_TIMEOUT </span><span class="s4">= </span><span class="s6">60.0</span>
+
+
+<span class="s3">def </span><span class="s1">_create_channel</span><span class="s4">(</span>
+    <span class="s1">target</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">options</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">str</span><span class="s4">]],</span>
+    <span class="s1">channel_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">],</span>
+    <span class="s1">compression</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">],</span>
+<span class="s4">) </span><span class="s1">-&gt; grpc</span><span class="s4">.</span><span class="s1">Channel</span><span class="s4">:</span>
+    <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">debug</span><span class="s4">(</span>
+        <span class="s5">f&quot;Creating secure channel with credentials '</span><span class="s3">{</span><span class="s1">channel_credentials</span><span class="s3">}</span><span class="s5">', &quot;</span>
+        <span class="s4">+ </span><span class="s5">f&quot;options '</span><span class="s3">{</span><span class="s1">options</span><span class="s3">}</span><span class="s5">' and compression '</span><span class="s3">{</span><span class="s1">compression</span><span class="s3">}</span><span class="s5">'&quot;</span>
+    <span class="s4">)</span>
+    <span class="s3">return </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">secure_channel</span><span class="s4">(</span>
+        <span class="s1">target</span><span class="s4">,</span>
+        <span class="s1">credentials</span><span class="s4">=</span><span class="s1">channel_credentials</span><span class="s4">,</span>
+        <span class="s1">options</span><span class="s4">=</span><span class="s1">options</span><span class="s4">,</span>
+        <span class="s1">compression</span><span class="s4">=</span><span class="s1">compression</span><span class="s4">,</span>
+    <span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">ChannelCache</span><span class="s4">:</span>
+    <span class="s0"># NOTE(rbellevi): Untyped due to reference cycle.</span>
+    <span class="s1">_singleton </span><span class="s4">= </span><span class="s3">None</span>
+    <span class="s1">_lock</span><span class="s4">: </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">RLock </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">RLock</span><span class="s4">()</span>
+    <span class="s1">_condition</span><span class="s4">: </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Condition </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Condition</span><span class="s4">(</span><span class="s1">lock</span><span class="s4">=</span><span class="s1">_lock</span><span class="s4">)</span>
+    <span class="s1">_eviction_ready</span><span class="s4">: </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Event </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Event</span><span class="s4">()</span>
+
+    <span class="s1">_mapping</span><span class="s4">: </span><span class="s1">Dict</span><span class="s4">[</span><span class="s1">CacheKey</span><span class="s4">, </span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Channel</span><span class="s4">, </span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">datetime</span><span class="s4">]]</span>
+    <span class="s1">_eviction_thread</span><span class="s4">: </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Thread</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping </span><span class="s4">= </span><span class="s1">collections</span><span class="s4">.</span><span class="s1">OrderedDict</span><span class="s4">()</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_eviction_thread </span><span class="s4">= </span><span class="s1">threading</span><span class="s4">.</span><span class="s1">Thread</span><span class="s4">(</span>
+            <span class="s1">target</span><span class="s4">=</span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_perform_evictions</span><span class="s4">, </span><span class="s1">daemon</span><span class="s4">=</span><span class="s3">True</span>
+        <span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_eviction_thread</span><span class="s4">.</span><span class="s1">start</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">staticmethod</span>
+    <span class="s3">def </span><span class="s1">get</span><span class="s4">():</span>
+        <span class="s3">with </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_lock</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton </span><span class="s4">= </span><span class="s1">ChannelCache</span><span class="s4">()</span>
+        <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_eviction_ready</span><span class="s4">.</span><span class="s1">wait</span><span class="s4">()</span>
+        <span class="s3">return </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span>
+
+    <span class="s3">def </span><span class="s1">_evict_locked</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">key</span><span class="s4">: </span><span class="s1">CacheKey</span><span class="s4">):</span>
+        <span class="s1">channel</span><span class="s4">, </span><span class="s1">_ </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">.</span><span class="s1">pop</span><span class="s4">(</span><span class="s1">key</span><span class="s4">)</span>
+        <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">debug</span><span class="s4">(</span>
+            <span class="s5">&quot;Evicting channel %s with configuration %s.&quot;</span><span class="s4">, </span><span class="s1">channel</span><span class="s4">, </span><span class="s1">key</span>
+        <span class="s4">)</span>
+        <span class="s1">channel</span><span class="s4">.</span><span class="s1">close</span><span class="s4">()</span>
+        <span class="s3">del </span><span class="s1">channel</span>
+
+    <span class="s4">@</span><span class="s1">staticmethod</span>
+    <span class="s3">def </span><span class="s1">_perform_evictions</span><span class="s4">():</span>
+        <span class="s3">while True</span><span class="s4">:</span>
+            <span class="s3">with </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_lock</span><span class="s4">:</span>
+                <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_eviction_ready</span><span class="s4">.</span><span class="s1">set</span><span class="s4">()</span>
+                <span class="s3">if not </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">:</span>
+                    <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">wait</span><span class="s4">()</span>
+                <span class="s3">elif </span><span class="s1">len</span><span class="s4">(</span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">) &gt; </span><span class="s1">_MAXIMUM_CHANNELS</span><span class="s4">:</span>
+                    <span class="s1">key </span><span class="s4">= </span><span class="s1">next</span><span class="s4">(</span><span class="s1">iter</span><span class="s4">(</span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">.</span><span class="s1">keys</span><span class="s4">()))</span>
+                    <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span><span class="s4">.</span><span class="s1">_evict_locked</span><span class="s4">(</span><span class="s1">key</span><span class="s4">)</span>
+                    <span class="s0"># And immediately reevaluate.</span>
+                <span class="s3">else</span><span class="s4">:</span>
+                    <span class="s1">key</span><span class="s4">, (</span><span class="s1">_</span><span class="s4">, </span><span class="s1">eviction_time</span><span class="s4">) = </span><span class="s1">next</span><span class="s4">(</span>
+                        <span class="s1">iter</span><span class="s4">(</span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">.</span><span class="s1">items</span><span class="s4">())</span>
+                    <span class="s4">)</span>
+                    <span class="s1">now </span><span class="s4">= </span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">now</span><span class="s4">()</span>
+                    <span class="s3">if </span><span class="s1">eviction_time </span><span class="s4">&lt;= </span><span class="s1">now</span><span class="s4">:</span>
+                        <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_singleton</span><span class="s4">.</span><span class="s1">_evict_locked</span><span class="s4">(</span><span class="s1">key</span><span class="s4">)</span>
+                        <span class="s3">continue</span>
+                    <span class="s3">else</span><span class="s4">:</span>
+                        <span class="s1">time_to_eviction </span><span class="s4">= (</span><span class="s1">eviction_time </span><span class="s4">- </span><span class="s1">now</span><span class="s4">).</span><span class="s1">total_seconds</span><span class="s4">()</span>
+                        <span class="s0"># NOTE: We aim to *eventually* coalesce to a state in</span>
+                        <span class="s0"># which no overdue channels are in the cache and the</span>
+                        <span class="s0"># length of the cache is longer than _MAXIMUM_CHANNELS.</span>
+                        <span class="s0"># We tolerate momentary states in which these two</span>
+                        <span class="s0"># criteria are not met.</span>
+                        <span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">wait</span><span class="s4">(</span><span class="s1">timeout</span><span class="s4">=</span><span class="s1">time_to_eviction</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">get_channel</span><span class="s4">(</span>
+        <span class="s1">self</span><span class="s4">,</span>
+        <span class="s1">target</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+        <span class="s1">options</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">str</span><span class="s4">]],</span>
+        <span class="s1">channel_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">],</span>
+        <span class="s1">insecure</span><span class="s4">: </span><span class="s1">bool</span><span class="s4">,</span>
+        <span class="s1">compression</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">],</span>
+        <span class="s1">method</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+        <span class="s1">_registered_method</span><span class="s4">: </span><span class="s1">bool</span><span class="s4">,</span>
+    <span class="s4">) </span><span class="s1">-&gt; Tuple</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Channel</span><span class="s4">, </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">int</span><span class="s4">]]:</span>
+        <span class="s2">&quot;&quot;&quot;Get a channel from cache or creates a new channel. 
+ 
+        This method also takes care of register method for channel, 
+          which means we'll register a new call handle if we're calling a 
+          non-registered method for an existing channel. 
+ 
+        Returns: 
+            A tuple with two items. The first item is the channel, second item is 
+              the call handle if the method is registered, None if it's not registered. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">insecure </span><span class="s3">and </span><span class="s1">channel_credentials</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span>
+                <span class="s5">&quot;The insecure option is mutually exclusive with &quot;</span>
+                <span class="s4">+ </span><span class="s5">&quot;the channel_credentials option. Please use one &quot;</span>
+                <span class="s4">+ </span><span class="s5">&quot;or the other.&quot;</span>
+            <span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">insecure</span><span class="s4">:</span>
+            <span class="s1">channel_credentials </span><span class="s4">= (</span>
+                <span class="s1">grpc</span><span class="s4">.</span><span class="s1">experimental</span><span class="s4">.</span><span class="s1">insecure_channel_credentials</span><span class="s4">()</span>
+            <span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">channel_credentials </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">_LOGGER</span><span class="s4">.</span><span class="s1">debug</span><span class="s4">(</span><span class="s5">&quot;Defaulting to SSL channel credentials.&quot;</span><span class="s4">)</span>
+            <span class="s1">channel_credentials </span><span class="s4">= </span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ssl_channel_credentials</span><span class="s4">()</span>
+        <span class="s1">key </span><span class="s4">= (</span><span class="s1">target</span><span class="s4">, </span><span class="s1">options</span><span class="s4">, </span><span class="s1">channel_credentials</span><span class="s4">, </span><span class="s1">compression</span><span class="s4">)</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lock</span><span class="s4">:</span>
+            <span class="s1">channel_data </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">key</span><span class="s4">, </span><span class="s3">None</span><span class="s4">)</span>
+            <span class="s1">call_handle </span><span class="s4">= </span><span class="s3">None</span>
+            <span class="s3">if </span><span class="s1">channel_data </span><span class="s3">is not None</span><span class="s4">:</span>
+                <span class="s1">channel </span><span class="s4">= </span><span class="s1">channel_data</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+                <span class="s0"># Register a new call handle if we're calling a registered method for an</span>
+                <span class="s0"># existing channel and this method is not registered.</span>
+                <span class="s3">if </span><span class="s1">_registered_method</span><span class="s4">:</span>
+                    <span class="s1">call_handle </span><span class="s4">= </span><span class="s1">channel</span><span class="s4">.</span><span class="s1">_get_registered_call_handle</span><span class="s4">(</span><span class="s1">method</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">.</span><span class="s1">pop</span><span class="s4">(</span><span class="s1">key</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = (</span>
+                    <span class="s1">channel</span><span class="s4">,</span>
+                    <span class="s1">datetime</span><span class="s4">.</span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">now</span><span class="s4">() + </span><span class="s1">_EVICTION_PERIOD</span><span class="s4">,</span>
+                <span class="s4">)</span>
+                <span class="s3">return </span><span class="s1">channel</span><span class="s4">, </span><span class="s1">call_handle</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">channel </span><span class="s4">= </span><span class="s1">_create_channel</span><span class="s4">(</span>
+                    <span class="s1">target</span><span class="s4">, </span><span class="s1">options</span><span class="s4">, </span><span class="s1">channel_credentials</span><span class="s4">, </span><span class="s1">compression</span>
+                <span class="s4">)</span>
+                <span class="s3">if </span><span class="s1">_registered_method</span><span class="s4">:</span>
+                    <span class="s1">call_handle </span><span class="s4">= </span><span class="s1">channel</span><span class="s4">.</span><span class="s1">_get_registered_call_handle</span><span class="s4">(</span><span class="s1">method</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">[</span><span class="s1">key</span><span class="s4">] = (</span>
+                    <span class="s1">channel</span><span class="s4">,</span>
+                    <span class="s1">datetime</span><span class="s4">.</span><span class="s1">datetime</span><span class="s4">.</span><span class="s1">now</span><span class="s4">() + </span><span class="s1">_EVICTION_PERIOD</span><span class="s4">,</span>
+                <span class="s4">)</span>
+                <span class="s3">if </span><span class="s4">(</span>
+                    <span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">) == </span><span class="s6">1</span>
+                    <span class="s3">or </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">) &gt;= </span><span class="s1">_MAXIMUM_CHANNELS</span>
+                <span class="s4">):</span>
+                    <span class="s1">self</span><span class="s4">.</span><span class="s1">_condition</span><span class="s4">.</span><span class="s1">notify</span><span class="s4">()</span>
+                <span class="s3">return </span><span class="s1">channel</span><span class="s4">, </span><span class="s1">call_handle</span>
+
+    <span class="s3">def </span><span class="s1">_test_only_channel_count</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; int</span><span class="s4">:</span>
+        <span class="s3">with </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lock</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_mapping</span><span class="s4">)</span>
+
+
+<span class="s4">@</span><span class="s1">experimental_api</span>
+<span class="s0"># pylint: disable=too-many-locals</span>
+<span class="s3">def </span><span class="s1">unary_unary</span><span class="s4">(</span>
+    <span class="s1">request</span><span class="s4">: </span><span class="s1">RequestType</span><span class="s4">,</span>
+    <span class="s1">target</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">method</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">request_serializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">Any</span><span class="s4">], </span><span class="s1">bytes</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">response_deserializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">bytes</span><span class="s4">], </span><span class="s1">Any</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">options</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">AnyStr</span><span class="s4">, </span><span class="s1">AnyStr</span><span class="s4">]] = (),</span>
+    <span class="s1">channel_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">insecure</span><span class="s4">: </span><span class="s1">bool </span><span class="s4">= </span><span class="s3">False</span><span class="s4">,</span>
+    <span class="s1">call_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">CallCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">compression</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">wait_for_ready</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s1">_DEFAULT_TIMEOUT</span><span class="s4">,</span>
+    <span class="s1">metadata</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">Union</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">bytes</span><span class="s4">]]]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">_registered_method</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">False</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; ResponseType</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Invokes a unary-unary RPC without an explicitly specified channel. 
+ 
+    THIS IS AN EXPERIMENTAL API. 
+ 
+    This is backed by a per-process cache of channels. Channels are evicted 
+    from the cache after a fixed period by a background. Channels will also be 
+    evicted if more than a configured maximum accumulate. 
+ 
+    The default eviction period is 10 minutes. One may set the environment 
+    variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_EVICTION_SECONDS&quot; to configure this. 
+ 
+    The default maximum number of channels is 256. One may set the 
+    environment variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_MAXIMUM&quot; to configure 
+    this. 
+ 
+    Args: 
+      request: An iterator that yields request values for the RPC. 
+      target: The server address. 
+      method: The name of the RPC method. 
+      request_serializer: Optional :term:`serializer` for serializing the request 
+        message. Request goes unserialized in case None is passed. 
+      response_deserializer: Optional :term:`deserializer` for deserializing the response 
+        message. Response goes undeserialized in case None is passed. 
+      options: An optional list of key-value pairs (:term:`channel_arguments` in gRPC Core 
+        runtime) to configure the channel. 
+      channel_credentials: A credential applied to the whole channel, e.g. the 
+        return value of grpc.ssl_channel_credentials() or 
+        grpc.insecure_channel_credentials(). 
+      insecure: If True, specifies channel_credentials as 
+        :term:`grpc.insecure_channel_credentials()`. This option is mutually 
+        exclusive with the `channel_credentials` option. 
+      call_credentials: A call credential applied to each call individually, 
+        e.g. the output of grpc.metadata_call_credentials() or 
+        grpc.access_token_call_credentials(). 
+      compression: An optional value indicating the compression method to be 
+        used over the lifetime of the channel, e.g. grpc.Compression.Gzip. 
+      wait_for_ready: An optional flag indicating whether the RPC should fail 
+        immediately if the connection is not ready at the time the RPC is 
+        invoked, or if it should wait until the connection to the server 
+        becomes ready. When using this option, the user will likely also want 
+        to set a timeout. Defaults to True. 
+      timeout: An optional duration of time in seconds to allow for the RPC, 
+        after which an exception will be raised. If timeout is unspecified, 
+        defaults to a timeout controlled by the 
+        GRPC_PYTHON_DEFAULT_TIMEOUT_SECONDS environment variable. If that is 
+        unset, defaults to 60 seconds. Supply a value of None to indicate that 
+        no timeout should be enforced. 
+      metadata: Optional metadata to send to the server. 
+ 
+    Returns: 
+      The response to the RPC. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel</span><span class="s4">, </span><span class="s1">method_handle </span><span class="s4">= </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">get</span><span class="s4">().</span><span class="s1">get_channel</span><span class="s4">(</span>
+        <span class="s1">target</span><span class="s4">,</span>
+        <span class="s1">options</span><span class="s4">,</span>
+        <span class="s1">channel_credentials</span><span class="s4">,</span>
+        <span class="s1">insecure</span><span class="s4">,</span>
+        <span class="s1">compression</span><span class="s4">,</span>
+        <span class="s1">method</span><span class="s4">,</span>
+        <span class="s1">_registered_method</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s1">multicallable </span><span class="s4">= </span><span class="s1">channel</span><span class="s4">.</span><span class="s1">unary_unary</span><span class="s4">(</span>
+        <span class="s1">method</span><span class="s4">, </span><span class="s1">request_serializer</span><span class="s4">, </span><span class="s1">response_deserializer</span><span class="s4">, </span><span class="s1">method_handle</span>
+    <span class="s4">)</span>
+    <span class="s1">wait_for_ready </span><span class="s4">= </span><span class="s1">wait_for_ready </span><span class="s3">if </span><span class="s1">wait_for_ready </span><span class="s3">is not None else True</span>
+    <span class="s3">return </span><span class="s1">multicallable</span><span class="s4">(</span>
+        <span class="s1">request</span><span class="s4">,</span>
+        <span class="s1">metadata</span><span class="s4">=</span><span class="s1">metadata</span><span class="s4">,</span>
+        <span class="s1">wait_for_ready</span><span class="s4">=</span><span class="s1">wait_for_ready</span><span class="s4">,</span>
+        <span class="s1">credentials</span><span class="s4">=</span><span class="s1">call_credentials</span><span class="s4">,</span>
+        <span class="s1">timeout</span><span class="s4">=</span><span class="s1">timeout</span><span class="s4">,</span>
+    <span class="s4">)</span>
+
+
+<span class="s4">@</span><span class="s1">experimental_api</span>
+<span class="s0"># pylint: disable=too-many-locals</span>
+<span class="s3">def </span><span class="s1">unary_stream</span><span class="s4">(</span>
+    <span class="s1">request</span><span class="s4">: </span><span class="s1">RequestType</span><span class="s4">,</span>
+    <span class="s1">target</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">method</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">request_serializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">Any</span><span class="s4">], </span><span class="s1">bytes</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">response_deserializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">bytes</span><span class="s4">], </span><span class="s1">Any</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">options</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">AnyStr</span><span class="s4">, </span><span class="s1">AnyStr</span><span class="s4">]] = (),</span>
+    <span class="s1">channel_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">insecure</span><span class="s4">: </span><span class="s1">bool </span><span class="s4">= </span><span class="s3">False</span><span class="s4">,</span>
+    <span class="s1">call_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">CallCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">compression</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">wait_for_ready</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s1">_DEFAULT_TIMEOUT</span><span class="s4">,</span>
+    <span class="s1">metadata</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">Union</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">bytes</span><span class="s4">]]]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">_registered_method</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">False</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; Iterator</span><span class="s4">[</span><span class="s1">ResponseType</span><span class="s4">]:</span>
+    <span class="s2">&quot;&quot;&quot;Invokes a unary-stream RPC without an explicitly specified channel. 
+ 
+    THIS IS AN EXPERIMENTAL API. 
+ 
+    This is backed by a per-process cache of channels. Channels are evicted 
+    from the cache after a fixed period by a background. Channels will also be 
+    evicted if more than a configured maximum accumulate. 
+ 
+    The default eviction period is 10 minutes. One may set the environment 
+    variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_EVICTION_SECONDS&quot; to configure this. 
+ 
+    The default maximum number of channels is 256. One may set the 
+    environment variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_MAXIMUM&quot; to configure 
+    this. 
+ 
+    Args: 
+      request: An iterator that yields request values for the RPC. 
+      target: The server address. 
+      method: The name of the RPC method. 
+      request_serializer: Optional :term:`serializer` for serializing the request 
+        message. Request goes unserialized in case None is passed. 
+      response_deserializer: Optional :term:`deserializer` for deserializing the response 
+        message. Response goes undeserialized in case None is passed. 
+      options: An optional list of key-value pairs (:term:`channel_arguments` in gRPC Core 
+        runtime) to configure the channel. 
+      channel_credentials: A credential applied to the whole channel, e.g. the 
+        return value of grpc.ssl_channel_credentials(). 
+      insecure: If True, specifies channel_credentials as 
+        :term:`grpc.insecure_channel_credentials()`. This option is mutually 
+        exclusive with the `channel_credentials` option. 
+      call_credentials: A call credential applied to each call individually, 
+        e.g. the output of grpc.metadata_call_credentials() or 
+        grpc.access_token_call_credentials(). 
+      compression: An optional value indicating the compression method to be 
+        used over the lifetime of the channel, e.g. grpc.Compression.Gzip. 
+      wait_for_ready: An optional flag indicating whether the RPC should fail 
+        immediately if the connection is not ready at the time the RPC is 
+        invoked, or if it should wait until the connection to the server 
+        becomes ready. When using this option, the user will likely also want 
+        to set a timeout. Defaults to True. 
+      timeout: An optional duration of time in seconds to allow for the RPC, 
+        after which an exception will be raised. If timeout is unspecified, 
+        defaults to a timeout controlled by the 
+        GRPC_PYTHON_DEFAULT_TIMEOUT_SECONDS environment variable. If that is 
+        unset, defaults to 60 seconds. Supply a value of None to indicate that 
+        no timeout should be enforced. 
+      metadata: Optional metadata to send to the server. 
+ 
+    Returns: 
+      An iterator of responses. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel</span><span class="s4">, </span><span class="s1">method_handle </span><span class="s4">= </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">get</span><span class="s4">().</span><span class="s1">get_channel</span><span class="s4">(</span>
+        <span class="s1">target</span><span class="s4">,</span>
+        <span class="s1">options</span><span class="s4">,</span>
+        <span class="s1">channel_credentials</span><span class="s4">,</span>
+        <span class="s1">insecure</span><span class="s4">,</span>
+        <span class="s1">compression</span><span class="s4">,</span>
+        <span class="s1">method</span><span class="s4">,</span>
+        <span class="s1">_registered_method</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s1">multicallable </span><span class="s4">= </span><span class="s1">channel</span><span class="s4">.</span><span class="s1">unary_stream</span><span class="s4">(</span>
+        <span class="s1">method</span><span class="s4">, </span><span class="s1">request_serializer</span><span class="s4">, </span><span class="s1">response_deserializer</span><span class="s4">, </span><span class="s1">method_handle</span>
+    <span class="s4">)</span>
+    <span class="s1">wait_for_ready </span><span class="s4">= </span><span class="s1">wait_for_ready </span><span class="s3">if </span><span class="s1">wait_for_ready </span><span class="s3">is not None else True</span>
+    <span class="s3">return </span><span class="s1">multicallable</span><span class="s4">(</span>
+        <span class="s1">request</span><span class="s4">,</span>
+        <span class="s1">metadata</span><span class="s4">=</span><span class="s1">metadata</span><span class="s4">,</span>
+        <span class="s1">wait_for_ready</span><span class="s4">=</span><span class="s1">wait_for_ready</span><span class="s4">,</span>
+        <span class="s1">credentials</span><span class="s4">=</span><span class="s1">call_credentials</span><span class="s4">,</span>
+        <span class="s1">timeout</span><span class="s4">=</span><span class="s1">timeout</span><span class="s4">,</span>
+    <span class="s4">)</span>
+
+
+<span class="s4">@</span><span class="s1">experimental_api</span>
+<span class="s0"># pylint: disable=too-many-locals</span>
+<span class="s3">def </span><span class="s1">stream_unary</span><span class="s4">(</span>
+    <span class="s1">request_iterator</span><span class="s4">: </span><span class="s1">Iterator</span><span class="s4">[</span><span class="s1">RequestType</span><span class="s4">],</span>
+    <span class="s1">target</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">method</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">request_serializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">Any</span><span class="s4">], </span><span class="s1">bytes</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">response_deserializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">bytes</span><span class="s4">], </span><span class="s1">Any</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">options</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">AnyStr</span><span class="s4">, </span><span class="s1">AnyStr</span><span class="s4">]] = (),</span>
+    <span class="s1">channel_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">insecure</span><span class="s4">: </span><span class="s1">bool </span><span class="s4">= </span><span class="s3">False</span><span class="s4">,</span>
+    <span class="s1">call_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">CallCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">compression</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">wait_for_ready</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s1">_DEFAULT_TIMEOUT</span><span class="s4">,</span>
+    <span class="s1">metadata</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">Union</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">bytes</span><span class="s4">]]]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">_registered_method</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">False</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; ResponseType</span><span class="s4">:</span>
+    <span class="s2">&quot;&quot;&quot;Invokes a stream-unary RPC without an explicitly specified channel. 
+ 
+    THIS IS AN EXPERIMENTAL API. 
+ 
+    This is backed by a per-process cache of channels. Channels are evicted 
+    from the cache after a fixed period by a background. Channels will also be 
+    evicted if more than a configured maximum accumulate. 
+ 
+    The default eviction period is 10 minutes. One may set the environment 
+    variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_EVICTION_SECONDS&quot; to configure this. 
+ 
+    The default maximum number of channels is 256. One may set the 
+    environment variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_MAXIMUM&quot; to configure 
+    this. 
+ 
+    Args: 
+      request_iterator: An iterator that yields request values for the RPC. 
+      target: The server address. 
+      method: The name of the RPC method. 
+      request_serializer: Optional :term:`serializer` for serializing the request 
+        message. Request goes unserialized in case None is passed. 
+      response_deserializer: Optional :term:`deserializer` for deserializing the response 
+        message. Response goes undeserialized in case None is passed. 
+      options: An optional list of key-value pairs (:term:`channel_arguments` in gRPC Core 
+        runtime) to configure the channel. 
+      channel_credentials: A credential applied to the whole channel, e.g. the 
+        return value of grpc.ssl_channel_credentials(). 
+      call_credentials: A call credential applied to each call individually, 
+        e.g. the output of grpc.metadata_call_credentials() or 
+        grpc.access_token_call_credentials(). 
+      insecure: If True, specifies channel_credentials as 
+        :term:`grpc.insecure_channel_credentials()`. This option is mutually 
+        exclusive with the `channel_credentials` option. 
+      compression: An optional value indicating the compression method to be 
+        used over the lifetime of the channel, e.g. grpc.Compression.Gzip. 
+      wait_for_ready: An optional flag indicating whether the RPC should fail 
+        immediately if the connection is not ready at the time the RPC is 
+        invoked, or if it should wait until the connection to the server 
+        becomes ready. When using this option, the user will likely also want 
+        to set a timeout. Defaults to True. 
+      timeout: An optional duration of time in seconds to allow for the RPC, 
+        after which an exception will be raised. If timeout is unspecified, 
+        defaults to a timeout controlled by the 
+        GRPC_PYTHON_DEFAULT_TIMEOUT_SECONDS environment variable. If that is 
+        unset, defaults to 60 seconds. Supply a value of None to indicate that 
+        no timeout should be enforced. 
+      metadata: Optional metadata to send to the server. 
+ 
+    Returns: 
+      The response to the RPC. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel</span><span class="s4">, </span><span class="s1">method_handle </span><span class="s4">= </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">get</span><span class="s4">().</span><span class="s1">get_channel</span><span class="s4">(</span>
+        <span class="s1">target</span><span class="s4">,</span>
+        <span class="s1">options</span><span class="s4">,</span>
+        <span class="s1">channel_credentials</span><span class="s4">,</span>
+        <span class="s1">insecure</span><span class="s4">,</span>
+        <span class="s1">compression</span><span class="s4">,</span>
+        <span class="s1">method</span><span class="s4">,</span>
+        <span class="s1">_registered_method</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s1">multicallable </span><span class="s4">= </span><span class="s1">channel</span><span class="s4">.</span><span class="s1">stream_unary</span><span class="s4">(</span>
+        <span class="s1">method</span><span class="s4">, </span><span class="s1">request_serializer</span><span class="s4">, </span><span class="s1">response_deserializer</span><span class="s4">, </span><span class="s1">method_handle</span>
+    <span class="s4">)</span>
+    <span class="s1">wait_for_ready </span><span class="s4">= </span><span class="s1">wait_for_ready </span><span class="s3">if </span><span class="s1">wait_for_ready </span><span class="s3">is not None else True</span>
+    <span class="s3">return </span><span class="s1">multicallable</span><span class="s4">(</span>
+        <span class="s1">request_iterator</span><span class="s4">,</span>
+        <span class="s1">metadata</span><span class="s4">=</span><span class="s1">metadata</span><span class="s4">,</span>
+        <span class="s1">wait_for_ready</span><span class="s4">=</span><span class="s1">wait_for_ready</span><span class="s4">,</span>
+        <span class="s1">credentials</span><span class="s4">=</span><span class="s1">call_credentials</span><span class="s4">,</span>
+        <span class="s1">timeout</span><span class="s4">=</span><span class="s1">timeout</span><span class="s4">,</span>
+    <span class="s4">)</span>
+
+
+<span class="s4">@</span><span class="s1">experimental_api</span>
+<span class="s0"># pylint: disable=too-many-locals</span>
+<span class="s3">def </span><span class="s1">stream_stream</span><span class="s4">(</span>
+    <span class="s1">request_iterator</span><span class="s4">: </span><span class="s1">Iterator</span><span class="s4">[</span><span class="s1">RequestType</span><span class="s4">],</span>
+    <span class="s1">target</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">method</span><span class="s4">: </span><span class="s1">str</span><span class="s4">,</span>
+    <span class="s1">request_serializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">Any</span><span class="s4">], </span><span class="s1">bytes</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">response_deserializer</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Callable</span><span class="s4">[[</span><span class="s1">bytes</span><span class="s4">], </span><span class="s1">Any</span><span class="s4">]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">options</span><span class="s4">: </span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">AnyStr</span><span class="s4">, </span><span class="s1">AnyStr</span><span class="s4">]] = (),</span>
+    <span class="s1">channel_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">ChannelCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">insecure</span><span class="s4">: </span><span class="s1">bool </span><span class="s4">= </span><span class="s3">False</span><span class="s4">,</span>
+    <span class="s1">call_credentials</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">CallCredentials</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">compression</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">grpc</span><span class="s4">.</span><span class="s1">Compression</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">wait_for_ready</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">timeout</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">] = </span><span class="s1">_DEFAULT_TIMEOUT</span><span class="s4">,</span>
+    <span class="s1">metadata</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">Sequence</span><span class="s4">[</span><span class="s1">Tuple</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">Union</span><span class="s4">[</span><span class="s1">str</span><span class="s4">, </span><span class="s1">bytes</span><span class="s4">]]]] = </span><span class="s3">None</span><span class="s4">,</span>
+    <span class="s1">_registered_method</span><span class="s4">: </span><span class="s1">Optional</span><span class="s4">[</span><span class="s1">bool</span><span class="s4">] = </span><span class="s3">False</span><span class="s4">,</span>
+<span class="s4">) </span><span class="s1">-&gt; Iterator</span><span class="s4">[</span><span class="s1">ResponseType</span><span class="s4">]:</span>
+    <span class="s2">&quot;&quot;&quot;Invokes a stream-stream RPC without an explicitly specified channel. 
+ 
+    THIS IS AN EXPERIMENTAL API. 
+ 
+    This is backed by a per-process cache of channels. Channels are evicted 
+    from the cache after a fixed period by a background. Channels will also be 
+    evicted if more than a configured maximum accumulate. 
+ 
+    The default eviction period is 10 minutes. One may set the environment 
+    variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_EVICTION_SECONDS&quot; to configure this. 
+ 
+    The default maximum number of channels is 256. One may set the 
+    environment variable &quot;GRPC_PYTHON_MANAGED_CHANNEL_MAXIMUM&quot; to configure 
+    this. 
+ 
+    Args: 
+      request_iterator: An iterator that yields request values for the RPC. 
+      target: The server address. 
+      method: The name of the RPC method. 
+      request_serializer: Optional :term:`serializer` for serializing the request 
+        message. Request goes unserialized in case None is passed. 
+      response_deserializer: Optional :term:`deserializer` for deserializing the response 
+        message. Response goes undeserialized in case None is passed. 
+      options: An optional list of key-value pairs (:term:`channel_arguments` in gRPC Core 
+        runtime) to configure the channel. 
+      channel_credentials: A credential applied to the whole channel, e.g. the 
+        return value of grpc.ssl_channel_credentials(). 
+      call_credentials: A call credential applied to each call individually, 
+        e.g. the output of grpc.metadata_call_credentials() or 
+        grpc.access_token_call_credentials(). 
+      insecure: If True, specifies channel_credentials as 
+        :term:`grpc.insecure_channel_credentials()`. This option is mutually 
+        exclusive with the `channel_credentials` option. 
+      compression: An optional value indicating the compression method to be 
+        used over the lifetime of the channel, e.g. grpc.Compression.Gzip. 
+      wait_for_ready: An optional flag indicating whether the RPC should fail 
+        immediately if the connection is not ready at the time the RPC is 
+        invoked, or if it should wait until the connection to the server 
+        becomes ready. When using this option, the user will likely also want 
+        to set a timeout. Defaults to True. 
+      timeout: An optional duration of time in seconds to allow for the RPC, 
+        after which an exception will be raised. If timeout is unspecified, 
+        defaults to a timeout controlled by the 
+        GRPC_PYTHON_DEFAULT_TIMEOUT_SECONDS environment variable. If that is 
+        unset, defaults to 60 seconds. Supply a value of None to indicate that 
+        no timeout should be enforced. 
+      metadata: Optional metadata to send to the server. 
+ 
+    Returns: 
+      An iterator of responses. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel</span><span class="s4">, </span><span class="s1">method_handle </span><span class="s4">= </span><span class="s1">ChannelCache</span><span class="s4">.</span><span class="s1">get</span><span class="s4">().</span><span class="s1">get_channel</span><span class="s4">(</span>
+        <span class="s1">target</span><span class="s4">,</span>
+        <span class="s1">options</span><span class="s4">,</span>
+        <span class="s1">channel_credentials</span><span class="s4">,</span>
+        <span class="s1">insecure</span><span class="s4">,</span>
+        <span class="s1">compression</span><span class="s4">,</span>
+        <span class="s1">method</span><span class="s4">,</span>
+        <span class="s1">_registered_method</span><span class="s4">,</span>
+    <span class="s4">)</span>
+    <span class="s1">multicallable </span><span class="s4">= </span><span class="s1">channel</span><span class="s4">.</span><span class="s1">stream_stream</span><span class="s4">(</span>
+        <span class="s1">method</span><span class="s4">, </span><span class="s1">request_serializer</span><span class="s4">, </span><span class="s1">response_deserializer</span><span class="s4">, </span><span class="s1">method_handle</span>
+    <span class="s4">)</span>
+    <span class="s1">wait_for_ready </span><span class="s4">= </span><span class="s1">wait_for_ready </span><span class="s3">if </span><span class="s1">wait_for_ready </span><span class="s3">is not None else True</span>
+    <span class="s3">return </span><span class="s1">multicallable</span><span class="s4">(</span>
+        <span class="s1">request_iterator</span><span class="s4">,</span>
+        <span class="s1">metadata</span><span class="s4">=</span><span class="s1">metadata</span><span class="s4">,</span>
+        <span class="s1">wait_for_ready</span><span class="s4">=</span><span class="s1">wait_for_ready</span><span class="s4">,</span>
+        <span class="s1">credentials</span><span class="s4">=</span><span class="s1">call_credentials</span><span class="s4">,</span>
+        <span class="s1">timeout</span><span class="s4">=</span><span class="s1">timeout</span><span class="s4">,</span>
+    <span class="s4">)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,719 @@
+<html>
+<head>
+<title>conv_lstm.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+conv_lstm.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">activations</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">constraints</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">initializers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">regularizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s0">import </span><span class="s1">InputSpec</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">rnn</span><span class="s2">.</span><span class="s1">dropout_rnn_cell </span><span class="s0">import </span><span class="s1">DropoutRNNCell</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">rnn</span><span class="s2">.</span><span class="s1">rnn </span><span class="s0">import </span><span class="s1">RNN</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">ops </span><span class="s0">import </span><span class="s1">operation_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">argument_validation</span>
+
+
+<span class="s0">class </span><span class="s1">ConvLSTMCell</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">, </span><span class="s1">DropoutRNNCell</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Cell class for the ConvLSTM layer. 
+ 
+    Args: 
+        rank: Integer, rank of the convolution, e.g. &quot;2&quot; for 2D convolutions. 
+        filters: Integer, the dimensionality of the output space 
+            (i.e. the number of output filters in the convolution). 
+        kernel_size: An integer or tuple/list of n integers, specifying the 
+            dimensions of the convolution window. 
+        strides: An integer or tuple/list of n integers, specifying the strides 
+            of the convolution. Specifying any stride value != 1 
+            is incompatible with specifying any `dilation_rate` value != 1. 
+        padding: One of `&quot;valid&quot;` or `&quot;same&quot;` (case-insensitive). 
+            `&quot;valid&quot;` means no padding. `&quot;same&quot;` results in padding evenly 
+            to the left/right or up/down of the input such that output 
+            has the same height/width dimension as the input. 
+        data_format: A string, one of `channels_last` (default) or 
+            `channels_first`. When unspecified, uses 
+            `image_data_format` value found in your Keras config file at 
+            `~/.keras/keras.json` (if exists) else 'channels_last'. 
+            Defaults to `'channels_last'`. 
+        dilation_rate: An integer or tuple/list of n integers, specifying the 
+            dilation rate to use for dilated convolution. 
+            Currently, specifying any `dilation_rate` value != 1 is 
+            incompatible with specifying any `strides` value != 1. 
+        activation: Activation function. If `None`, no activation is applied. 
+        recurrent_activation: Activation function to use for the recurrent step. 
+        use_bias: Boolean, (default `True`), whether the layer 
+            should use a bias vector. 
+        kernel_initializer: Initializer for the `kernel` weights matrix, 
+            used for the linear transformation of the inputs. Default: 
+            `&quot;glorot_uniform&quot;`. 
+        recurrent_initializer: Initializer for the `recurrent_kernel` 
+            weights matrix, used for the linear transformation of the recurrent 
+            state. Default: `&quot;orthogonal&quot;`. 
+        bias_initializer: Initializer for the bias vector. Default: `&quot;zeros&quot;`. 
+        unit_forget_bias: Boolean (default `True`). If `True`, 
+            add 1 to the bias of the forget gate at initialization. 
+            Setting it to `True` will also force `bias_initializer=&quot;zeros&quot;`. 
+            This is recommended in [Jozefowicz et al.]( 
+            https://github.com/mlresearch/v37/blob/gh-pages/jozefowicz15.pdf) 
+        kernel_regularizer: Regularizer function applied to the `kernel` weights 
+            matrix. Default: `None`. 
+        recurrent_regularizer: Regularizer function applied to the 
+            `recurrent_kernel` weights matrix. Default: `None`. 
+        bias_regularizer: Regularizer function applied to the bias vector. 
+            Default: `None`. 
+        activity_regularizer: Regularizer function applied to the output of the 
+            layer (its &quot;activation&quot;). Default: `None`. 
+        kernel_constraint: Constraint function applied to the `kernel` weights 
+            matrix. Default: `None`. 
+        recurrent_constraint: Constraint function applied to the 
+            `recurrent_kernel` weights matrix. Default: `None`. 
+        bias_constraint: Constraint function applied to the bias vector. 
+            Default: `None`. 
+        dropout: Float between 0 and 1. Fraction of the units to drop for the 
+            linear transformation of the inputs. Default: 0. 
+        recurrent_dropout: Float between 0 and 1. Fraction of the units to drop 
+            for the linear transformation of the recurrent state. Default: 0. 
+        seed: Random seed for dropout. 
+ 
+    Call arguments: 
+        inputs: A (2+ `rank`)D tensor. 
+        states:  List of state tensors corresponding to the previous timestep. 
+        training: Python boolean indicating whether the layer should behave in 
+            training mode or in inference mode. Only relevant when `dropout` or 
+            `recurrent_dropout` is used. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">rank</span><span class="s2">,</span>
+        <span class="s1">filters</span><span class="s2">,</span>
+        <span class="s1">kernel_size</span><span class="s2">,</span>
+        <span class="s1">strides</span><span class="s2">=</span><span class="s4">1</span><span class="s2">,</span>
+        <span class="s1">padding</span><span class="s2">=</span><span class="s5">&quot;valid&quot;</span><span class="s2">,</span>
+        <span class="s1">data_format</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s4">1</span><span class="s2">,</span>
+        <span class="s1">activation</span><span class="s2">=</span><span class="s5">&quot;tanh&quot;</span><span class="s2">,</span>
+        <span class="s1">recurrent_activation</span><span class="s2">=</span><span class="s5">&quot;sigmoid&quot;</span><span class="s2">,</span>
+        <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s5">&quot;glorot_uniform&quot;</span><span class="s2">,</span>
+        <span class="s1">recurrent_initializer</span><span class="s2">=</span><span class="s5">&quot;orthogonal&quot;</span><span class="s2">,</span>
+        <span class="s1">bias_initializer</span><span class="s2">=</span><span class="s5">&quot;zeros&quot;</span><span class="s2">,</span>
+        <span class="s1">unit_forget_bias</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">kernel_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">recurrent_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">kernel_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">recurrent_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dropout</span><span class="s2">=</span><span class="s4">0.0</span><span class="s2">,</span>
+        <span class="s1">recurrent_dropout</span><span class="s2">=</span><span class="s4">0.0</span><span class="s2">,</span>
+        <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(**</span><span class="s1">kwargs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">seed </span><span class="s2">= </span><span class="s1">seed</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">seed_generator </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">SeedGenerator</span><span class="s2">(</span><span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">= </span><span class="s1">rank</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">&gt; </span><span class="s4">3</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">f&quot;Rank </span><span class="s0">{</span><span class="s1">rank</span><span class="s0">} </span><span class="s5">convolutions are not currently &quot;</span>
+                <span class="s5">f&quot;implemented. Received: rank=</span><span class="s0">{</span><span class="s1">rank</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">filters </span><span class="s2">= </span><span class="s1">filters</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_size </span><span class="s2">= </span><span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">standardize_tuple</span><span class="s2">(</span>
+            <span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank</span><span class="s2">, </span><span class="s5">&quot;kernel_size&quot;</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">strides </span><span class="s2">= </span><span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">standardize_tuple</span><span class="s2">(</span>
+            <span class="s1">strides</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank</span><span class="s2">, </span><span class="s5">&quot;strides&quot;</span><span class="s2">, </span><span class="s1">allow_zero</span><span class="s2">=</span><span class="s0">True</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">padding </span><span class="s2">= </span><span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">standardize_padding</span><span class="s2">(</span><span class="s1">padding</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">data_format </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_data_format</span><span class="s2">(</span><span class="s1">data_format</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dilation_rate </span><span class="s2">= </span><span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">standardize_tuple</span><span class="s2">(</span>
+            <span class="s1">dilation_rate</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank</span><span class="s2">, </span><span class="s5">&quot;dilation_rate&quot;</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">activation </span><span class="s2">= </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">activation</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_activation </span><span class="s2">= </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">recurrent_activation</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">use_bias </span><span class="s2">= </span><span class="s1">use_bias</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">kernel_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">recurrent_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer </span><span class="s2">= </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">bias_initializer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">unit_forget_bias </span><span class="s2">= </span><span class="s1">unit_forget_bias</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">kernel_regularizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">recurrent_regularizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer </span><span class="s2">= </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">bias_regularizer</span><span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">kernel_constraint</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">recurrent_constraint</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint </span><span class="s2">= </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">bias_constraint</span><span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dropout </span><span class="s2">= </span><span class="s1">min</span><span class="s2">(</span><span class="s4">1.0</span><span class="s2">, </span><span class="s1">max</span><span class="s2">(</span><span class="s4">0.0</span><span class="s2">, </span><span class="s1">dropout</span><span class="s2">))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_dropout </span><span class="s2">= </span><span class="s1">min</span><span class="s2">(</span><span class="s4">1.0</span><span class="s2">, </span><span class="s1">max</span><span class="s2">(</span><span class="s4">0.0</span><span class="s2">, </span><span class="s1">recurrent_dropout</span><span class="s2">))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">dropout_mask_count </span><span class="s2">= </span><span class="s4">4</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s2">= </span><span class="s1">InputSpec</span><span class="s2">(</span><span class="s1">ndim</span><span class="s2">=</span><span class="s1">rank </span><span class="s2">+ </span><span class="s4">2</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">state_size </span><span class="s2">= -</span><span class="s4">1  </span><span class="s6"># Custom, defined in methods</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs_shape</span><span class="s2">, </span><span class="s1">states_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format </span><span class="s2">== </span><span class="s5">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s1">channel_axis </span><span class="s2">= </span><span class="s4">1</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">spatial_dims </span><span class="s2">= </span><span class="s1">inputs_shape</span><span class="s2">[</span><span class="s4">2</span><span class="s2">:]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">channel_axis </span><span class="s2">= -</span><span class="s4">1</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">spatial_dims </span><span class="s2">= </span><span class="s1">inputs_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:-</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s0">if None in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">spatial_dims</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;ConvLSTM layers only support static &quot;</span>
+                <span class="s5">&quot;input shapes for the spatial dimension. &quot;</span>
+                <span class="s5">f&quot;Received invalid input shape: input_shape=</span><span class="s0">{</span><span class="s1">inputs_shape</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">inputs_shape</span><span class="s2">[</span><span class="s1">channel_axis</span><span class="s2">] </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;The channel dimension of the inputs (last axis) should be &quot;</span>
+                <span class="s5">&quot;defined. Found None. Full input shape received: &quot;</span>
+                <span class="s5">f&quot;input_shape=</span><span class="s0">{</span><span class="s1">inputs_shape</span><span class="s0">}</span><span class="s5">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s2">= </span><span class="s1">InputSpec</span><span class="s2">(</span>
+            <span class="s1">ndim</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">+ </span><span class="s4">3</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">=(</span><span class="s0">None</span><span class="s2">,) + </span><span class="s1">inputs_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">:]</span>
+        <span class="s2">)</span>
+
+        <span class="s1">input_dim </span><span class="s2">= </span><span class="s1">inputs_shape</span><span class="s2">[</span><span class="s1">channel_axis</span><span class="s2">]</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_dim </span><span class="s2">= </span><span class="s1">input_dim</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_size </span><span class="s2">+ (</span><span class="s1">input_dim</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters </span><span class="s2">* </span><span class="s4">4</span><span class="s2">)</span>
+        <span class="s1">recurrent_kernel_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_size </span><span class="s2">+ (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">filters </span><span class="s2">* </span><span class="s4">4</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;kernel&quot;</span><span class="s2">,</span>
+            <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span><span class="s2">,</span>
+            <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_kernel </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+            <span class="s1">shape</span><span class="s2">=</span><span class="s1">recurrent_kernel_shape</span><span class="s2">,</span>
+            <span class="s1">initializer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_initializer</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;recurrent_kernel&quot;</span><span class="s2">,</span>
+            <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_regularizer</span><span class="s2">,</span>
+            <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_constraint</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">use_bias</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">unit_forget_bias</span><span class="s2">:</span>
+
+                <span class="s0">def </span><span class="s1">bias_initializer</span><span class="s2">(</span><span class="s1">_</span><span class="s2">, *</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+                    <span class="s0">return </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">(</span>
+                        <span class="s2">[</span>
+                            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span><span class="s2">(</span>
+                                <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,), *</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span>
+                            <span class="s2">),</span>
+                            <span class="s1">initializers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s5">&quot;ones&quot;</span><span class="s2">)(</span>
+                                <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,), *</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span>
+                            <span class="s2">),</span>
+                            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span><span class="s2">(</span>
+                                <span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters </span><span class="s2">* </span><span class="s4">2</span><span class="s2">,), *</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span>
+                            <span class="s2">),</span>
+                        <span class="s2">]</span>
+                    <span class="s2">)</span>
+
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">bias_initializer </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">add_weight</span><span class="s2">(</span>
+                <span class="s1">shape</span><span class="s2">=(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters </span><span class="s2">* </span><span class="s4">4</span><span class="s2">,),</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;bias&quot;</span><span class="s2">,</span>
+                <span class="s1">initializer</span><span class="s2">=</span><span class="s1">bias_initializer</span><span class="s2">,</span>
+                <span class="s1">regularizer</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer</span><span class="s2">,</span>
+                <span class="s1">constraint</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">bias </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">states</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+        <span class="s1">h_tm1 </span><span class="s2">= </span><span class="s1">states</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]  </span><span class="s6"># previous memory state</span>
+        <span class="s1">c_tm1 </span><span class="s2">= </span><span class="s1">states</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]  </span><span class="s6"># previous carry state</span>
+
+        <span class="s0">if </span><span class="s1">training </span><span class="s0">and </span><span class="s4">0.0 </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dropout </span><span class="s2">&lt; </span><span class="s4">1.0</span><span class="s2">:</span>
+            <span class="s1">dp_mask </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">get_dropout_mask</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+            <span class="s1">inputs_i </span><span class="s2">= </span><span class="s1">inputs </span><span class="s2">* </span><span class="s1">dp_mask</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+            <span class="s1">inputs_f </span><span class="s2">= </span><span class="s1">inputs </span><span class="s2">* </span><span class="s1">dp_mask</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">inputs_c </span><span class="s2">= </span><span class="s1">inputs </span><span class="s2">* </span><span class="s1">dp_mask</span><span class="s2">[</span><span class="s4">2</span><span class="s2">]</span>
+            <span class="s1">inputs_o </span><span class="s2">= </span><span class="s1">inputs </span><span class="s2">* </span><span class="s1">dp_mask</span><span class="s2">[</span><span class="s4">3</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">inputs_i </span><span class="s2">= </span><span class="s1">inputs</span>
+            <span class="s1">inputs_f </span><span class="s2">= </span><span class="s1">inputs</span>
+            <span class="s1">inputs_c </span><span class="s2">= </span><span class="s1">inputs</span>
+            <span class="s1">inputs_o </span><span class="s2">= </span><span class="s1">inputs</span>
+
+        <span class="s0">if </span><span class="s1">training </span><span class="s0">and </span><span class="s4">0.0 </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_dropout </span><span class="s2">&lt; </span><span class="s4">1.0</span><span class="s2">:</span>
+            <span class="s1">rec_dp_mask </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">get_recurrent_dropout_mask</span><span class="s2">(</span><span class="s1">h_tm1</span><span class="s2">)</span>
+            <span class="s1">h_tm1_i </span><span class="s2">= </span><span class="s1">h_tm1 </span><span class="s2">* </span><span class="s1">rec_dp_mask</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+            <span class="s1">h_tm1_f </span><span class="s2">= </span><span class="s1">h_tm1 </span><span class="s2">* </span><span class="s1">rec_dp_mask</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+            <span class="s1">h_tm1_c </span><span class="s2">= </span><span class="s1">h_tm1 </span><span class="s2">* </span><span class="s1">rec_dp_mask</span><span class="s2">[</span><span class="s4">2</span><span class="s2">]</span>
+            <span class="s1">h_tm1_o </span><span class="s2">= </span><span class="s1">h_tm1 </span><span class="s2">* </span><span class="s1">rec_dp_mask</span><span class="s2">[</span><span class="s4">3</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">h_tm1_i </span><span class="s2">= </span><span class="s1">h_tm1</span>
+            <span class="s1">h_tm1_f </span><span class="s2">= </span><span class="s1">h_tm1</span>
+            <span class="s1">h_tm1_c </span><span class="s2">= </span><span class="s1">h_tm1</span>
+            <span class="s1">h_tm1_o </span><span class="s2">= </span><span class="s1">h_tm1</span>
+
+        <span class="s2">(</span><span class="s1">kernel_i</span><span class="s2">, </span><span class="s1">kernel_f</span><span class="s2">, </span><span class="s1">kernel_c</span><span class="s2">, </span><span class="s1">kernel_o</span><span class="s2">) = </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel</span><span class="s2">, </span><span class="s4">4</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">+ </span><span class="s4">1</span>
+        <span class="s2">)</span>
+        <span class="s2">(</span>
+            <span class="s1">recurrent_kernel_i</span><span class="s2">,</span>
+            <span class="s1">recurrent_kernel_f</span><span class="s2">,</span>
+            <span class="s1">recurrent_kernel_c</span><span class="s2">,</span>
+            <span class="s1">recurrent_kernel_o</span><span class="s2">,</span>
+        <span class="s2">) = </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_kernel</span><span class="s2">, </span><span class="s4">4</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">use_bias</span><span class="s2">:</span>
+            <span class="s1">bias_i</span><span class="s2">, </span><span class="s1">bias_f</span><span class="s2">, </span><span class="s1">bias_c</span><span class="s2">, </span><span class="s1">bias_o </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias</span><span class="s2">, </span><span class="s4">4</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">bias_i</span><span class="s2">, </span><span class="s1">bias_f</span><span class="s2">, </span><span class="s1">bias_c</span><span class="s2">, </span><span class="s1">bias_o </span><span class="s2">= </span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span>
+
+        <span class="s1">x_i </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_conv</span><span class="s2">(</span><span class="s1">inputs_i</span><span class="s2">, </span><span class="s1">kernel_i</span><span class="s2">, </span><span class="s1">bias_i</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">)</span>
+        <span class="s1">x_f </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_conv</span><span class="s2">(</span><span class="s1">inputs_f</span><span class="s2">, </span><span class="s1">kernel_f</span><span class="s2">, </span><span class="s1">bias_f</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">)</span>
+        <span class="s1">x_c </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_conv</span><span class="s2">(</span><span class="s1">inputs_c</span><span class="s2">, </span><span class="s1">kernel_c</span><span class="s2">, </span><span class="s1">bias_c</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">)</span>
+        <span class="s1">x_o </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_conv</span><span class="s2">(</span><span class="s1">inputs_o</span><span class="s2">, </span><span class="s1">kernel_o</span><span class="s2">, </span><span class="s1">bias_o</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">)</span>
+
+        <span class="s1">h_i </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_conv</span><span class="s2">(</span><span class="s1">h_tm1_i</span><span class="s2">, </span><span class="s1">recurrent_kernel_i</span><span class="s2">)</span>
+        <span class="s1">h_f </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_conv</span><span class="s2">(</span><span class="s1">h_tm1_f</span><span class="s2">, </span><span class="s1">recurrent_kernel_f</span><span class="s2">)</span>
+        <span class="s1">h_c </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_conv</span><span class="s2">(</span><span class="s1">h_tm1_c</span><span class="s2">, </span><span class="s1">recurrent_kernel_c</span><span class="s2">)</span>
+        <span class="s1">h_o </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_conv</span><span class="s2">(</span><span class="s1">h_tm1_o</span><span class="s2">, </span><span class="s1">recurrent_kernel_o</span><span class="s2">)</span>
+
+        <span class="s1">i </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_activation</span><span class="s2">(</span><span class="s1">x_i </span><span class="s2">+ </span><span class="s1">h_i</span><span class="s2">)</span>
+        <span class="s1">f </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_activation</span><span class="s2">(</span><span class="s1">x_f </span><span class="s2">+ </span><span class="s1">h_f</span><span class="s2">)</span>
+        <span class="s1">c </span><span class="s2">= </span><span class="s1">f </span><span class="s2">* </span><span class="s1">c_tm1 </span><span class="s2">+ </span><span class="s1">i </span><span class="s2">* </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">(</span><span class="s1">x_c </span><span class="s2">+ </span><span class="s1">h_c</span><span class="s2">)</span>
+        <span class="s1">o </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_activation</span><span class="s2">(</span><span class="s1">x_o </span><span class="s2">+ </span><span class="s1">h_o</span><span class="s2">)</span>
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">o </span><span class="s2">* </span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">(</span><span class="s1">c</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">h</span><span class="s2">, [</span><span class="s1">h</span><span class="s2">, </span><span class="s1">c</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs_shape</span><span class="s2">, </span><span class="s1">states_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">conv_output_shape </span><span class="s2">= </span><span class="s1">operation_utils</span><span class="s2">.</span><span class="s1">compute_conv_output_shape</span><span class="s2">(</span>
+            <span class="s1">inputs_shape</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_size</span><span class="s2">,</span>
+            <span class="s1">strides</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">strides</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s1">data_format</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format</span><span class="s2">,</span>
+            <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dilation_rate</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">conv_output_shape</span><span class="s2">, [</span><span class="s1">conv_output_shape</span><span class="s2">, </span><span class="s1">conv_output_shape</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">get_initial_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format </span><span class="s2">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s2">:</span>
+            <span class="s1">input_shape </span><span class="s2">= (</span><span class="s1">batch_size</span><span class="s2">,) + </span><span class="s1">self</span><span class="s2">.</span><span class="s1">spatial_dims </span><span class="s2">+ (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_dim</span><span class="s2">,)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">input_shape </span><span class="s2">= (</span><span class="s1">batch_size</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_dim</span><span class="s2">) + </span><span class="s1">self</span><span class="s2">.</span><span class="s1">spatial_dims</span>
+        <span class="s1">state_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s2">[</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">state_shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span><span class="s2">),</span>
+            <span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(</span><span class="s1">state_shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span><span class="s2">),</span>
+        <span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">input_conv</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">w</span><span class="s2">, </span><span class="s1">b</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">=</span><span class="s5">&quot;valid&quot;</span><span class="s2">):</span>
+        <span class="s1">conv_out </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">conv</span><span class="s2">(</span>
+            <span class="s1">x</span><span class="s2">,</span>
+            <span class="s1">w</span><span class="s2">,</span>
+            <span class="s1">strides</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">strides</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s1">data_format</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format</span><span class="s2">,</span>
+            <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">dilation_rate</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">b </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format </span><span class="s2">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s2">:</span>
+                <span class="s1">bias_shape </span><span class="s2">= (</span><span class="s4">1</span><span class="s2">,) * (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">+ </span><span class="s4">1</span><span class="s2">) + (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">bias_shape </span><span class="s2">= (</span><span class="s4">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">) + (</span><span class="s4">1</span><span class="s2">,) * </span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank</span>
+            <span class="s1">bias </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">b</span><span class="s2">, </span><span class="s1">bias_shape</span><span class="s2">)</span>
+            <span class="s1">conv_out </span><span class="s2">+= </span><span class="s1">bias</span>
+        <span class="s0">return </span><span class="s1">conv_out</span>
+
+    <span class="s0">def </span><span class="s1">recurrent_conv</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">w</span><span class="s2">):</span>
+        <span class="s1">strides </span><span class="s2">= </span><span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">standardize_tuple</span><span class="s2">(</span>
+            <span class="s4">1</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">rank</span><span class="s2">, </span><span class="s5">&quot;strides&quot;</span><span class="s2">, </span><span class="s1">allow_zero</span><span class="s2">=</span><span class="s0">True</span>
+        <span class="s2">)</span>
+        <span class="s1">conv_out </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">conv</span><span class="s2">(</span>
+            <span class="s1">x</span><span class="s2">, </span><span class="s1">w</span><span class="s2">, </span><span class="s1">strides</span><span class="s2">=</span><span class="s1">strides</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">=</span><span class="s5">&quot;same&quot;</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">conv_out</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;filters&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,</span>
+            <span class="s5">&quot;kernel_size&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_size</span><span class="s2">,</span>
+            <span class="s5">&quot;strides&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">strides</span><span class="s2">,</span>
+            <span class="s5">&quot;padding&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s5">&quot;data_format&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format</span><span class="s2">,</span>
+            <span class="s5">&quot;dilation_rate&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dilation_rate</span><span class="s2">,</span>
+            <span class="s5">&quot;activation&quot;</span><span class="s2">: </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">),</span>
+            <span class="s5">&quot;recurrent_activation&quot;</span><span class="s2">: </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_activation</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;use_bias&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">use_bias</span><span class="s2">,</span>
+            <span class="s5">&quot;kernel_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;recurrent_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_initializer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;bias_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span><span class="s2">),</span>
+            <span class="s5">&quot;unit_forget_bias&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">unit_forget_bias</span><span class="s2">,</span>
+            <span class="s5">&quot;kernel_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;recurrent_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;bias_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer</span><span class="s2">),</span>
+            <span class="s5">&quot;kernel_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint</span><span class="s2">),</span>
+            <span class="s5">&quot;recurrent_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_constraint</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;bias_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint</span><span class="s2">),</span>
+            <span class="s5">&quot;dropout&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dropout</span><span class="s2">,</span>
+            <span class="s5">&quot;recurrent_dropout&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_dropout</span><span class="s2">,</span>
+            <span class="s5">&quot;seed&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">seed</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+
+<span class="s0">class </span><span class="s1">ConvLSTM</span><span class="s2">(</span><span class="s1">RNN</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Abstract N-D Convolutional LSTM layer (used as implementation base). 
+ 
+    Similar to an LSTM layer, but the input transformations 
+    and recurrent transformations are both convolutional. 
+ 
+    Args: 
+        rank: Integer, rank of the convolution, e.g. &quot;2&quot; for 2D convolutions. 
+        filters: Integer, the dimensionality of the output space 
+            (i.e. the number of output filters in the convolution). 
+        kernel_size: An integer or tuple/list of n integers, specifying the 
+            dimensions of the convolution window. 
+        strides: An integer or tuple/list of n integers, 
+            specifying the strides of the convolution. 
+            Specifying any stride value != 1 is incompatible with specifying 
+            any `dilation_rate` value != 1. 
+        padding: One of `&quot;valid&quot;` or `&quot;same&quot;` (case-insensitive). 
+            `&quot;valid&quot;` means no padding. `&quot;same&quot;` results in padding evenly to 
+            the left/right or up/down of the input such that output has the same 
+            height/width dimension as the input. 
+        data_format: A string, 
+            one of `channels_last` (default) or `channels_first`. 
+            The ordering of the dimensions in the inputs. 
+            `channels_last` corresponds to inputs with shape 
+            `(batch, time, ..., channels)` 
+            while `channels_first` corresponds to 
+            inputs with shape `(batch, time, channels, ...)`. 
+            When unspecified, uses 
+            `image_data_format` value found in your Keras config file at 
+            `~/.keras/keras.json` (if exists) else 'channels_last'. 
+            Defaults to `'channels_last'`. 
+        dilation_rate: An integer or tuple/list of n integers, specifying 
+            the dilation rate to use for dilated convolution. 
+            Currently, specifying any `dilation_rate` value != 1 is 
+            incompatible with specifying any `strides` value != 1. 
+        activation: Activation function to use. 
+            By default hyperbolic tangent activation function is applied 
+            (`tanh(x)`). 
+        recurrent_activation: Activation function to use 
+            for the recurrent step. 
+        use_bias: Boolean, whether the layer uses a bias vector. 
+        kernel_initializer: Initializer for the `kernel` weights matrix, 
+            used for the linear transformation of the inputs. 
+        recurrent_initializer: Initializer for the `recurrent_kernel` 
+            weights matrix, 
+            used for the linear transformation of the recurrent state. 
+        bias_initializer: Initializer for the bias vector. 
+        unit_forget_bias: Boolean. 
+            If True, add 1 to the bias of the forget gate at initialization. 
+            Use in combination with `bias_initializer=&quot;zeros&quot;`. 
+            This is recommended in [Jozefowicz et al., 2015]( 
+            http://www.jmlr.org/proceedings/papers/v37/jozefowicz15.pdf) 
+        kernel_regularizer: Regularizer function applied to 
+            the `kernel` weights matrix. 
+        recurrent_regularizer: Regularizer function applied to 
+            the `recurrent_kernel` weights matrix. 
+        bias_regularizer: Regularizer function applied to the bias vector. 
+        activity_regularizer: Regularizer function applied to. 
+        kernel_constraint: Constraint function applied to 
+            the `kernel` weights matrix. 
+        recurrent_constraint: Constraint function applied to 
+            the `recurrent_kernel` weights matrix. 
+        bias_constraint: Constraint function applied to the bias vector. 
+        dropout: Float between 0 and 1. 
+            Fraction of the units to drop for 
+            the linear transformation of the inputs. 
+        recurrent_dropout: Float between 0 and 1. 
+            Fraction of the units to drop for 
+            the linear transformation of the recurrent state. 
+        seed: Random seed for dropout. 
+        return_sequences: Boolean. Whether to return the last output 
+            in the output sequence, or the full sequence. (default False) 
+        return_state: Boolean Whether to return the last state 
+            in addition to the output. (default False) 
+        go_backwards: Boolean (default False). 
+            If True, process the input sequence backwards. 
+        stateful: Boolean (default False). If True, the last state 
+            for each sample at index i in a batch will be used as initial 
+            state for the sample of index i in the following batch. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">rank</span><span class="s2">,</span>
+        <span class="s1">filters</span><span class="s2">,</span>
+        <span class="s1">kernel_size</span><span class="s2">,</span>
+        <span class="s1">strides</span><span class="s2">=</span><span class="s4">1</span><span class="s2">,</span>
+        <span class="s1">padding</span><span class="s2">=</span><span class="s5">&quot;valid&quot;</span><span class="s2">,</span>
+        <span class="s1">data_format</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s4">1</span><span class="s2">,</span>
+        <span class="s1">activation</span><span class="s2">=</span><span class="s5">&quot;tanh&quot;</span><span class="s2">,</span>
+        <span class="s1">recurrent_activation</span><span class="s2">=</span><span class="s5">&quot;sigmoid&quot;</span><span class="s2">,</span>
+        <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s5">&quot;glorot_uniform&quot;</span><span class="s2">,</span>
+        <span class="s1">recurrent_initializer</span><span class="s2">=</span><span class="s5">&quot;orthogonal&quot;</span><span class="s2">,</span>
+        <span class="s1">bias_initializer</span><span class="s2">=</span><span class="s5">&quot;zeros&quot;</span><span class="s2">,</span>
+        <span class="s1">unit_forget_bias</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">kernel_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">recurrent_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_regularizer</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">kernel_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">recurrent_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">bias_constraint</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">dropout</span><span class="s2">=</span><span class="s4">0.0</span><span class="s2">,</span>
+        <span class="s1">recurrent_dropout</span><span class="s2">=</span><span class="s4">0.0</span><span class="s2">,</span>
+        <span class="s1">seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">return_sequences</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">return_state</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">go_backwards</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">stateful</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">cell </span><span class="s2">= </span><span class="s1">ConvLSTMCell</span><span class="s2">(</span>
+            <span class="s1">rank</span><span class="s2">=</span><span class="s1">rank</span><span class="s2">,</span>
+            <span class="s1">filters</span><span class="s2">=</span><span class="s1">filters</span><span class="s2">,</span>
+            <span class="s1">kernel_size</span><span class="s2">=</span><span class="s1">kernel_size</span><span class="s2">,</span>
+            <span class="s1">strides</span><span class="s2">=</span><span class="s1">strides</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s1">data_format</span><span class="s2">=</span><span class="s1">data_format</span><span class="s2">,</span>
+            <span class="s1">dilation_rate</span><span class="s2">=</span><span class="s1">dilation_rate</span><span class="s2">,</span>
+            <span class="s1">activation</span><span class="s2">=</span><span class="s1">activation</span><span class="s2">,</span>
+            <span class="s1">recurrent_activation</span><span class="s2">=</span><span class="s1">recurrent_activation</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s1">use_bias</span><span class="s2">,</span>
+            <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s1">kernel_initializer</span><span class="s2">,</span>
+            <span class="s1">recurrent_initializer</span><span class="s2">=</span><span class="s1">recurrent_initializer</span><span class="s2">,</span>
+            <span class="s1">bias_initializer</span><span class="s2">=</span><span class="s1">bias_initializer</span><span class="s2">,</span>
+            <span class="s1">unit_forget_bias</span><span class="s2">=</span><span class="s1">unit_forget_bias</span><span class="s2">,</span>
+            <span class="s1">kernel_regularizer</span><span class="s2">=</span><span class="s1">kernel_regularizer</span><span class="s2">,</span>
+            <span class="s1">recurrent_regularizer</span><span class="s2">=</span><span class="s1">recurrent_regularizer</span><span class="s2">,</span>
+            <span class="s1">bias_regularizer</span><span class="s2">=</span><span class="s1">bias_regularizer</span><span class="s2">,</span>
+            <span class="s1">kernel_constraint</span><span class="s2">=</span><span class="s1">kernel_constraint</span><span class="s2">,</span>
+            <span class="s1">recurrent_constraint</span><span class="s2">=</span><span class="s1">recurrent_constraint</span><span class="s2">,</span>
+            <span class="s1">bias_constraint</span><span class="s2">=</span><span class="s1">bias_constraint</span><span class="s2">,</span>
+            <span class="s1">dropout</span><span class="s2">=</span><span class="s1">dropout</span><span class="s2">,</span>
+            <span class="s1">recurrent_dropout</span><span class="s2">=</span><span class="s1">recurrent_dropout</span><span class="s2">,</span>
+            <span class="s1">seed</span><span class="s2">=</span><span class="s1">seed</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;conv_lstm_cell&quot;</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s5">&quot;dtype&quot;</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span>
+            <span class="s1">cell</span><span class="s2">,</span>
+            <span class="s1">return_sequences</span><span class="s2">=</span><span class="s1">return_sequences</span><span class="s2">,</span>
+            <span class="s1">return_state</span><span class="s2">=</span><span class="s1">return_state</span><span class="s2">,</span>
+            <span class="s1">go_backwards</span><span class="s2">=</span><span class="s1">go_backwards</span><span class="s2">,</span>
+            <span class="s1">stateful</span><span class="s2">=</span><span class="s1">stateful</span><span class="s2">,</span>
+            <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_spec </span><span class="s2">= </span><span class="s1">InputSpec</span><span class="s2">(</span><span class="s1">ndim</span><span class="s2">=</span><span class="s1">rank </span><span class="s2">+ </span><span class="s4">3</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">sequences</span><span class="s2">, </span><span class="s1">initial_state</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">super</span><span class="s2">().</span><span class="s1">call</span><span class="s2">(</span>
+            <span class="s1">sequences</span><span class="s2">, </span><span class="s1">initial_state</span><span class="s2">=</span><span class="s1">initial_state</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s1">mask</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s1">training</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">sequences_shape</span><span class="s2">, </span><span class="s1">initial_state_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">batch_size </span><span class="s2">= </span><span class="s1">sequences_shape</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s1">steps </span><span class="s2">= </span><span class="s1">sequences_shape</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]</span>
+        <span class="s1">step_shape </span><span class="s2">= (</span><span class="s1">batch_size</span><span class="s2">,) + </span><span class="s1">sequences_shape</span><span class="s2">[</span><span class="s4">2</span><span class="s2">:]</span>
+        <span class="s1">state_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">step_shape</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">][</span><span class="s4">1</span><span class="s2">:]</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">return_sequences</span><span class="s2">:</span>
+            <span class="s1">output_shape </span><span class="s2">= (</span>
+                <span class="s1">batch_size</span><span class="s2">,</span>
+                <span class="s1">steps</span><span class="s2">,</span>
+            <span class="s2">) + </span><span class="s1">state_shape</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">output_shape </span><span class="s2">= (</span><span class="s1">batch_size</span><span class="s2">,) + </span><span class="s1">state_shape</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">return_state</span><span class="s2">:</span>
+            <span class="s1">batched_state_shape </span><span class="s2">= (</span><span class="s1">batch_size</span><span class="s2">,) + </span><span class="s1">state_shape</span>
+            <span class="s0">return </span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">batched_state_shape</span><span class="s2">, </span><span class="s1">batched_state_shape</span>
+        <span class="s0">return </span><span class="s1">output_shape</span>
+
+    <span class="s0">def </span><span class="s1">compute_mask</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">_</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">):</span>
+        <span class="s1">mask </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">mask</span><span class="s2">)[</span><span class="s4">0</span><span class="s2">]</span>
+        <span class="s1">output_mask </span><span class="s2">= </span><span class="s1">mask </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">return_sequences </span><span class="s0">else None</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">return_state</span><span class="s2">:</span>
+            <span class="s1">state_mask </span><span class="s2">= [</span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">]</span>
+            <span class="s0">return </span><span class="s2">[</span><span class="s1">output_mask</span><span class="s2">] + </span><span class="s1">state_mask</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">output_mask</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">filters</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">filters</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">kernel_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">kernel_size</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">strides</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">strides</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">padding</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">padding</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">data_format</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">data_format</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">dilation_rate</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">dilation_rate</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">activation</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">activation</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">recurrent_activation</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">recurrent_activation</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">use_bias</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">use_bias</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">kernel_initializer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">kernel_initializer</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">recurrent_initializer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">recurrent_initializer</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">bias_initializer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">bias_initializer</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">unit_forget_bias</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">unit_forget_bias</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">kernel_regularizer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">kernel_regularizer</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">recurrent_regularizer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">recurrent_regularizer</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">bias_regularizer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">bias_regularizer</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">kernel_constraint</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">kernel_constraint</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">recurrent_constraint</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">recurrent_constraint</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">bias_constraint</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">bias_constraint</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">dropout</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">dropout</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">recurrent_dropout</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">recurrent_dropout</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s5">&quot;filters&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">filters</span><span class="s2">,</span>
+            <span class="s5">&quot;kernel_size&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_size</span><span class="s2">,</span>
+            <span class="s5">&quot;strides&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">strides</span><span class="s2">,</span>
+            <span class="s5">&quot;padding&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">padding</span><span class="s2">,</span>
+            <span class="s5">&quot;data_format&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">data_format</span><span class="s2">,</span>
+            <span class="s5">&quot;dilation_rate&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dilation_rate</span><span class="s2">,</span>
+            <span class="s5">&quot;activation&quot;</span><span class="s2">: </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">activation</span><span class="s2">),</span>
+            <span class="s5">&quot;recurrent_activation&quot;</span><span class="s2">: </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_activation</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;use_bias&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">use_bias</span><span class="s2">,</span>
+            <span class="s5">&quot;kernel_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_initializer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;recurrent_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_initializer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;bias_initializer&quot;</span><span class="s2">: </span><span class="s1">initializers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_initializer</span><span class="s2">),</span>
+            <span class="s5">&quot;unit_forget_bias&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">unit_forget_bias</span><span class="s2">,</span>
+            <span class="s5">&quot;kernel_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;recurrent_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;bias_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_regularizer</span><span class="s2">),</span>
+            <span class="s5">&quot;activity_regularizer&quot;</span><span class="s2">: </span><span class="s1">regularizers</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">activity_regularizer</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;kernel_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">kernel_constraint</span><span class="s2">),</span>
+            <span class="s5">&quot;recurrent_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_constraint</span>
+            <span class="s2">),</span>
+            <span class="s5">&quot;bias_constraint&quot;</span><span class="s2">: </span><span class="s1">constraints</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bias_constraint</span><span class="s2">),</span>
+            <span class="s5">&quot;dropout&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dropout</span><span class="s2">,</span>
+            <span class="s5">&quot;recurrent_dropout&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">recurrent_dropout</span><span class="s2">,</span>
+            <span class="s5">&quot;seed&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">cell</span><span class="s2">.</span><span class="s1">seed</span><span class="s2">,</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">del </span><span class="s1">base_config</span><span class="s2">[</span><span class="s5">&quot;cell&quot;</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

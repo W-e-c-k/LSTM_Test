@@ -1,0 +1,652 @@
+<html>
+<head>
+<title>py_dataset_adapter.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+py_dataset_adapter.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">itertools</span>
+<span class="s0">import </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">dummy</span>
+<span class="s0">import </span><span class="s1">queue</span>
+<span class="s0">import </span><span class="s1">random</span>
+<span class="s0">import </span><span class="s1">threading</span>
+<span class="s0">import </span><span class="s1">time</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+<span class="s0">import </span><span class="s1">weakref</span>
+<span class="s0">from </span><span class="s1">contextlib </span><span class="s0">import </span><span class="s1">closing</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters </span><span class="s0">import </span><span class="s1">data_adapter_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters</span><span class="s2">.</span><span class="s1">data_adapter </span><span class="s0">import </span><span class="s1">DataAdapter</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">([</span><span class="s3">&quot;keras.utils.PyDataset&quot;</span><span class="s2">, </span><span class="s3">&quot;keras.utils.Sequence&quot;</span><span class="s2">])</span>
+<span class="s0">class </span><span class="s1">PyDataset</span><span class="s2">:</span>
+    <span class="s4">&quot;&quot;&quot;Base class for defining a parallel dataset using Python code. 
+ 
+    Every `PyDataset` must implement the `__getitem__()` and the `__len__()` 
+    methods. If you want to modify your dataset between epochs, 
+    you may additionally implement `on_epoch_end()`, 
+    or `on_epoch_begin` to be called at the start of each epoch. 
+    The `__getitem__()` method should return a complete batch 
+    (not a single sample), and the `__len__` method should return 
+    the number of batches in the dataset (rather than the number of samples). 
+ 
+    Args: 
+        workers: Number of workers to use in multithreading or 
+            multiprocessing. 
+        use_multiprocessing: Whether to use Python multiprocessing for 
+            parallelism. Setting this to `True` means that your 
+            dataset will be replicated in multiple forked processes. 
+            This is necessary to gain compute-level (rather than I/O level) 
+            benefits from parallelism. However it can only be set to 
+            `True` if your dataset can be safely pickled. 
+        max_queue_size: Maximum number of batches to keep in the queue 
+            when iterating over the dataset in a multithreaded or 
+            multipricessed setting. 
+            Reduce this value to reduce the CPU memory consumption of 
+            your dataset. Defaults to 10. 
+ 
+    Notes: 
+ 
+    - `PyDataset` is a safer way to do multiprocessing. 
+        This structure guarantees that the model will only train 
+        once on each sample per epoch, which is not the case 
+        with Python generators. 
+    - The arguments `workers`, `use_multiprocessing`, and `max_queue_size` 
+        exist to configure how `fit()` uses parallelism to iterate 
+        over the dataset. They are not being used by the `PyDataset` class 
+        directly. When you are manually iterating over a `PyDataset`, 
+        no parallelism is applied. 
+ 
+    Example: 
+ 
+    ```python 
+    from skimage.io import imread 
+    from skimage.transform import resize 
+    import numpy as np 
+    import math 
+ 
+    # Here, `x_set` is list of path to the images 
+    # and `y_set` are the associated classes. 
+ 
+    class CIFAR10PyDataset(keras.utils.PyDataset): 
+ 
+        def __init__(self, x_set, y_set, batch_size, **kwargs): 
+            super().__init__(**kwargs) 
+            self.x, self.y = x_set, y_set 
+            self.batch_size = batch_size 
+ 
+        def __len__(self): 
+            # Return number of batches. 
+            return math.ceil(len(self.x) / self.batch_size) 
+ 
+        def __getitem__(self, idx): 
+            # Return x, y for batch idx. 
+            low = idx * self.batch_size 
+            # Cap upper bound at array length; the last batch may be smaller 
+            # if the total number of items is not a multiple of batch size. 
+            high = min(low + self.batch_size, len(self.x)) 
+            batch_x = self.x[low:high] 
+            batch_y = self.y[low:high] 
+ 
+            return np.array([ 
+                resize(imread(file_name), (200, 200)) 
+                   for file_name in batch_x]), np.array(batch_y) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">workers</span><span class="s2">=</span><span class="s5">1</span><span class="s2">, </span><span class="s1">use_multiprocessing</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, </span><span class="s1">max_queue_size</span><span class="s2">=</span><span class="s5">10</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_workers </span><span class="s2">= </span><span class="s1">workers</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_use_multiprocessing </span><span class="s2">= </span><span class="s1">use_multiprocessing</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_max_queue_size </span><span class="s2">= </span><span class="s1">max_queue_size</span>
+
+    <span class="s0">def </span><span class="s1">_warn_if_super_not_called</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">warn </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">if not </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s3">&quot;_workers&quot;</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_workers </span><span class="s2">= </span><span class="s5">1</span>
+            <span class="s1">warn </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s0">if not </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s3">&quot;_use_multiprocessing&quot;</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_use_multiprocessing </span><span class="s2">= </span><span class="s0">False</span>
+            <span class="s1">warn </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s0">if not </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s3">&quot;_max_queue_size&quot;</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_max_queue_size </span><span class="s2">= </span><span class="s5">10</span>
+            <span class="s1">warn </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s0">if </span><span class="s1">warn</span><span class="s2">:</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s3">&quot;Your `PyDataset` class should call &quot;</span>
+                <span class="s3">&quot;`super().__init__(**kwargs)` in its constructor. &quot;</span>
+                <span class="s3">&quot;`**kwargs` can include `workers`, &quot;</span>
+                <span class="s3">&quot;`use_multiprocessing`, `max_queue_size`. Do not pass &quot;</span>
+                <span class="s3">&quot;these arguments to `fit()`, as they will be ignored.&quot;</span><span class="s2">,</span>
+                <span class="s1">stacklevel</span><span class="s2">=</span><span class="s5">2</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">workers</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_warn_if_super_not_called</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_workers</span>
+
+    <span class="s2">@</span><span class="s1">workers</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">workers</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">value</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_workers </span><span class="s2">= </span><span class="s1">value</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">use_multiprocessing</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_warn_if_super_not_called</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_use_multiprocessing</span>
+
+    <span class="s2">@</span><span class="s1">use_multiprocessing</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">use_multiprocessing</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">value</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_use_multiprocessing </span><span class="s2">= </span><span class="s1">value</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">max_queue_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_warn_if_super_not_called</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_max_queue_size</span>
+
+    <span class="s2">@</span><span class="s1">max_queue_size</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">max_queue_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">value</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_max_queue_size </span><span class="s2">= </span><span class="s1">value</span>
+
+    <span class="s0">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">index</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Gets batch at position `index`. 
+ 
+        Args: 
+            index: position of the batch in the PyDataset. 
+ 
+        Returns: 
+            A batch 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">num_batches</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Number of batches in the PyDataset. 
+ 
+        Returns: 
+            The number of batches in the PyDataset or `None` to indicate that 
+            the dataset is infinite. 
+        &quot;&quot;&quot;</span>
+        <span class="s6"># For backwards compatibility, support `__len__`.</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s3">&quot;__len__&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">)</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span><span class="s2">(</span>
+            <span class="s3">&quot;You need to implement the `num_batches` property:</span><span class="s0">\n\n</span><span class="s3">&quot;</span>
+            <span class="s3">&quot;@property</span><span class="s0">\n</span><span class="s3">def num_batches(self):</span><span class="s0">\n  </span><span class="s3">return ...&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Method called at the beginning of every epoch.&quot;&quot;&quot;</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Method called at the end of every epoch.&quot;&quot;&quot;</span>
+        <span class="s0">pass</span>
+
+
+<span class="s0">class </span><span class="s1">PyDatasetAdapter</span><span class="s2">(</span><span class="s1">DataAdapter</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Adapter for `keras.utils.PyDataset` instances.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">,</span>
+        <span class="s1">class_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset </span><span class="s2">= </span><span class="s1">x</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">class_weight </span><span class="s2">= </span><span class="s1">class_weight</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">shuffle </span><span class="s2">= </span><span class="s1">shuffle</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_output_signature </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">_standardize_batch</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">batch</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+            <span class="s1">batch </span><span class="s2">= (</span><span class="s1">batch</span><span class="s2">,)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+            <span class="s1">batch </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">) </span><span class="s0">or </span><span class="s1">len</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">) </span><span class="s0">not in </span><span class="s2">{</span><span class="s5">1</span><span class="s2">, </span><span class="s5">2</span><span class="s2">, </span><span class="s5">3</span><span class="s2">}:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;PyDataset.__getitem__() must return a tuple or a dict. &quot;</span>
+                <span class="s3">&quot;If a tuple, it must be ordered either &quot;</span>
+                <span class="s3">&quot;(input,) or (inputs, targets) or &quot;</span>
+                <span class="s3">&quot;(inputs, targets, sample_weights). &quot;</span>
+                <span class="s3">f&quot;Received: </span><span class="s0">{</span><span class="s1">str</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)[:</span><span class="s5">100</span><span class="s2">]</span><span class="s0">}</span><span class="s3">... of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">) == </span><span class="s5">3</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;You cannot specify `class_weight` &quot;</span>
+                    <span class="s3">&quot;and `sample_weight` at the same time.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">) == </span><span class="s5">2</span><span class="s2">:</span>
+                <span class="s1">sw </span><span class="s2">= </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">class_weight_to_sample_weights</span><span class="s2">(</span>
+                    <span class="s1">batch</span><span class="s2">[</span><span class="s5">1</span><span class="s2">], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">class_weight</span>
+                <span class="s2">)</span>
+                <span class="s1">batch </span><span class="s2">= </span><span class="s1">batch </span><span class="s2">+ (</span><span class="s1">sw</span><span class="s2">,)</span>
+        <span class="s0">return </span><span class="s1">batch</span>
+
+    <span class="s0">def </span><span class="s1">_make_multiprocessed_generator_fn</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">workers </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">workers</span>
+        <span class="s1">use_multiprocessing </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">use_multiprocessing</span>
+        <span class="s0">if </span><span class="s1">workers </span><span class="s2">&gt; </span><span class="s5">1 </span><span class="s0">or </span><span class="s2">(</span><span class="s1">workers </span><span class="s2">&gt; </span><span class="s5">0 </span><span class="s0">and </span><span class="s1">use_multiprocessing</span><span class="s2">):</span>
+
+            <span class="s0">def </span><span class="s1">generator_fn</span><span class="s2">():</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer </span><span class="s2">= </span><span class="s1">OrderedEnqueuer</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">,</span>
+                    <span class="s1">use_multiprocessing</span><span class="s2">=</span><span class="s1">use_multiprocessing</span><span class="s2">,</span>
+                    <span class="s1">shuffle</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">,</span>
+                <span class="s2">)</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer</span><span class="s2">.</span><span class="s1">start</span><span class="s2">(</span>
+                    <span class="s1">workers</span><span class="s2">=</span><span class="s1">workers</span><span class="s2">,</span>
+                    <span class="s1">max_queue_size</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">max_queue_size</span><span class="s2">,</span>
+                <span class="s2">)</span>
+                <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer</span><span class="s2">.</span><span class="s1">get</span><span class="s2">()</span>
+
+        <span class="s0">else</span><span class="s2">:</span>
+
+            <span class="s0">def </span><span class="s1">generator_fn</span><span class="s2">():</span>
+                <span class="s1">num_batches </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">num_batches</span>
+                <span class="s1">indices </span><span class="s2">= (</span>
+                    <span class="s1">range</span><span class="s2">(</span><span class="s1">num_batches</span><span class="s2">)</span>
+                    <span class="s0">if </span><span class="s1">num_batches </span><span class="s0">is not None</span>
+                    <span class="s0">else </span><span class="s1">itertools</span><span class="s2">.</span><span class="s1">count</span><span class="s2">()</span>
+                <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">shuffle </span><span class="s0">and </span><span class="s1">num_batches </span><span class="s0">is not None</span><span class="s2">:</span>
+                    <span class="s6"># Match the shuffle convention in OrderedEnqueuer.</span>
+                    <span class="s1">indices </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)</span>
+                    <span class="s1">random</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)</span>
+
+                <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">indices</span><span class="s2">:</span>
+                    <span class="s0">yield </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">[</span><span class="s1">i</span><span class="s2">]</span>
+
+        <span class="s0">return </span><span class="s1">generator_fn</span>
+
+    <span class="s0">def </span><span class="s1">_get_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">num_batches </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">num_batches</span>
+        <span class="s1">gen_fn </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_make_multiprocessed_generator_fn</span><span class="s2">()</span>
+        <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">batch </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">gen_fn</span><span class="s2">()):</span>
+            <span class="s1">batch </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize_batch</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)</span>
+            <span class="s0">yield </span><span class="s1">batch</span>
+            <span class="s0">if </span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer</span>
+                <span class="s0">and </span><span class="s1">num_batches </span><span class="s0">is not None</span>
+                <span class="s0">and </span><span class="s1">i </span><span class="s2">&gt;= </span><span class="s1">num_batches </span><span class="s2">- </span><span class="s5">1</span>
+            <span class="s2">):</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer</span><span class="s2">.</span><span class="s1">stop</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">get_numpy_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">get_numpy_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_iterator</span><span class="s2">())</span>
+
+    <span class="s0">def </span><span class="s1">get_jax_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">get_jax_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_iterator</span><span class="s2">())</span>
+
+    <span class="s0">def </span><span class="s1">get_tf_dataset</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+        <span class="s1">num_batches </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">num_batches</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_signature </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">num_samples </span><span class="s2">= </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">NUM_BATCHES_FOR_TENSOR_SPEC</span>
+            <span class="s0">if </span><span class="s1">num_batches </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">num_samples </span><span class="s2">= </span><span class="s1">min</span><span class="s2">(</span><span class="s1">num_samples</span><span class="s2">, </span><span class="s1">num_batches</span><span class="s2">)</span>
+            <span class="s1">batches </span><span class="s2">= [</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize_batch</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+                <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_samples</span><span class="s2">)</span>
+            <span class="s2">]</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_output_signature </span><span class="s2">= </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">get_tensor_spec</span><span class="s2">(</span><span class="s1">batches</span><span class="s2">)</span>
+
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_generator</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_get_iterator</span><span class="s2">,</span>
+            <span class="s1">output_signature</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_signature</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">shuffle </span><span class="s0">and </span><span class="s1">num_batches </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s5">8</span><span class="s2">)</span>
+        <span class="s1">ds </span><span class="s2">= </span><span class="s1">ds</span><span class="s2">.</span><span class="s1">prefetch</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">ds</span>
+
+    <span class="s0">def </span><span class="s1">get_torch_dataloader</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">get_torch_dataloader</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_iterator</span><span class="s2">())</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">on_epoch_begin</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">enqueuer</span><span class="s2">.</span><span class="s1">stop</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">on_epoch_end</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">num_batches</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">num_batches</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">batch_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return None</span>
+
+
+<span class="s6"># Global variables to be shared across processes</span>
+<span class="s1">_SHARED_SEQUENCES </span><span class="s2">= {}</span>
+<span class="s6"># We use a Value to provide unique id to different processes.</span>
+<span class="s1">_SEQUENCE_COUNTER </span><span class="s2">= </span><span class="s0">None</span>
+
+
+<span class="s6"># Because multiprocessing pools are inherently unsafe, starting from a clean</span>
+<span class="s6"># state can be essential to avoiding deadlocks. In order to accomplish this, we</span>
+<span class="s6"># need to be able to check on the status of Pools that we create.</span>
+<span class="s1">_DATA_POOLS </span><span class="s2">= </span><span class="s1">weakref</span><span class="s2">.</span><span class="s1">WeakSet</span><span class="s2">()</span>
+<span class="s1">_WORKER_ID_QUEUE </span><span class="s2">= </span><span class="s0">None  </span><span class="s6"># Only created if needed.</span>
+<span class="s1">_FORCE_THREADPOOL </span><span class="s2">= </span><span class="s0">False</span>
+
+
+<span class="s0">def </span><span class="s1">get_pool_class</span><span class="s2">(</span><span class="s1">use_multiprocessing</span><span class="s2">):</span>
+    <span class="s0">global </span><span class="s1">_FORCE_THREADPOOL</span>
+    <span class="s0">if not </span><span class="s1">use_multiprocessing </span><span class="s0">or </span><span class="s1">_FORCE_THREADPOOL</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">dummy</span><span class="s2">.</span><span class="s1">Pool  </span><span class="s6"># ThreadPool</span>
+    <span class="s0">return </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">Pool</span>
+
+
+<span class="s0">def </span><span class="s1">get_worker_id_queue</span><span class="s2">():</span>
+    <span class="s4">&quot;&quot;&quot;Lazily create the queue to track worker ids.&quot;&quot;&quot;</span>
+    <span class="s0">global </span><span class="s1">_WORKER_ID_QUEUE</span>
+    <span class="s0">if </span><span class="s1">_WORKER_ID_QUEUE </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">_WORKER_ID_QUEUE </span><span class="s2">= </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">Queue</span><span class="s2">()</span>
+    <span class="s0">return </span><span class="s1">_WORKER_ID_QUEUE</span>
+
+
+<span class="s0">def </span><span class="s1">get_index</span><span class="s2">(</span><span class="s1">uid</span><span class="s2">, </span><span class="s1">i</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Get the value from the PyDataset `uid` at index `i`. 
+ 
+    To allow multiple PyDatasets to be used at the same time, we use `uid` to 
+    get a specific one. A single PyDataset would cause the validation to 
+    overwrite the training PyDataset. 
+ 
+    Args: 
+        uid: int, PyDataset identifier 
+        i: index 
+ 
+    Returns: 
+        The value at index `i`. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">_SHARED_SEQUENCES</span><span class="s2">[</span><span class="s1">uid</span><span class="s2">][</span><span class="s1">i</span><span class="s2">]</span>
+
+
+<span class="s0">class </span><span class="s1">PyDatasetEnqueuer</span><span class="s2">:</span>
+    <span class="s4">&quot;&quot;&quot;Base class to enqueue inputs. 
+ 
+    The task of an Enqueuer is to use parallelism to speed up preprocessing. 
+    This is done with processes or threads. 
+ 
+    Example: 
+ 
+    ```python 
+        enqueuer = PyDatasetEnqueuer(...) 
+        enqueuer.start() 
+        datas = enqueuer.get() 
+        for data in datas: 
+            # Use the inputs; training, evaluating, predicting. 
+            # ... stop sometime. 
+        enqueuer.stop() 
+    ``` 
+ 
+    The `enqueuer.get()` should be an infinite stream of data. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">py_dataset</span><span class="s2">, </span><span class="s1">use_multiprocessing</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset </span><span class="s2">= </span><span class="s1">py_dataset</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">use_multiprocessing </span><span class="s2">= </span><span class="s1">use_multiprocessing</span>
+
+        <span class="s0">global </span><span class="s1">_SEQUENCE_COUNTER</span>
+        <span class="s0">if </span><span class="s1">_SEQUENCE_COUNTER </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">try</span><span class="s2">:</span>
+                <span class="s1">_SEQUENCE_COUNTER </span><span class="s2">= </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">Value</span><span class="s2">(</span><span class="s3">&quot;i&quot;</span><span class="s2">, </span><span class="s5">0</span><span class="s2">)</span>
+            <span class="s0">except </span><span class="s1">OSError</span><span class="s2">:</span>
+                <span class="s6"># In this case the OS does not allow us to use</span>
+                <span class="s6"># multiprocessing. We resort to an int</span>
+                <span class="s6"># for enqueuer indexing.</span>
+                <span class="s1">_SEQUENCE_COUNTER </span><span class="s2">= </span><span class="s5">0</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">_SEQUENCE_COUNTER</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">uid </span><span class="s2">= </span><span class="s1">_SEQUENCE_COUNTER</span>
+            <span class="s1">_SEQUENCE_COUNTER </span><span class="s2">+= </span><span class="s5">1</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s6"># Doing Multiprocessing.Value += x is not process-safe.</span>
+            <span class="s0">with </span><span class="s1">_SEQUENCE_COUNTER</span><span class="s2">.</span><span class="s1">get_lock</span><span class="s2">():</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">uid </span><span class="s2">= </span><span class="s1">_SEQUENCE_COUNTER</span><span class="s2">.</span><span class="s1">value</span>
+                <span class="s1">_SEQUENCE_COUNTER</span><span class="s2">.</span><span class="s1">value </span><span class="s2">+= </span><span class="s5">1</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">workers </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">executor_fn </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">queue </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">run_thread </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">is_running</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal </span><span class="s0">is not None and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal</span><span class="s2">.</span><span class="s1">is_set</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">start</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">workers</span><span class="s2">=</span><span class="s5">1</span><span class="s2">, </span><span class="s1">max_queue_size</span><span class="s2">=</span><span class="s5">10</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Starts the handler's workers. 
+ 
+        Args: 
+            workers: Number of workers. 
+            max_queue_size: queue size 
+                (when full, workers could block on `put()`) 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">use_multiprocessing</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">executor_fn </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_executor_init</span><span class="s2">(</span><span class="s1">workers</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s6"># We do not need the init since it's threads.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">executor_fn </span><span class="s2">= </span><span class="s0">lambda </span><span class="s1">_</span><span class="s2">: </span><span class="s1">get_pool_class</span><span class="s2">(</span><span class="s0">False</span><span class="s2">)(</span><span class="s1">workers</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">workers </span><span class="s2">= </span><span class="s1">workers</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">queue </span><span class="s2">= </span><span class="s1">queue</span><span class="s2">.</span><span class="s1">Queue</span><span class="s2">(</span><span class="s1">max_queue_size</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal </span><span class="s2">= </span><span class="s1">threading</span><span class="s2">.</span><span class="s1">Event</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">run_thread </span><span class="s2">= </span><span class="s1">threading</span><span class="s2">.</span><span class="s1">Thread</span><span class="s2">(</span><span class="s1">target</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_run</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">run_thread</span><span class="s2">.</span><span class="s1">daemon </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">run_thread</span><span class="s2">.</span><span class="s1">start</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_send_py_dataset</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Sends current Iterable to all workers.&quot;&quot;&quot;</span>
+        <span class="s6"># For new processes that may spawn</span>
+        <span class="s1">_SHARED_SEQUENCES</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">uid</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span>
+
+    <span class="s0">def </span><span class="s1">stop</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Stops running threads and wait for them to exit, if necessary. 
+ 
+        Should be called by the same thread which called `start()`. 
+ 
+        Args: 
+            timeout: maximum time to wait on `thread.join()` 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">is_running</span><span class="s2">():</span>
+            <span class="s0">return</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal</span><span class="s2">.</span><span class="s1">set</span><span class="s2">()</span>
+        <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">mutex</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">clear</span><span class="s2">()</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">unfinished_tasks </span><span class="s2">= </span><span class="s5">0</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">not_full</span><span class="s2">.</span><span class="s1">notify</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">run_thread</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">timeout</span><span class="s2">)</span>
+        <span class="s1">_SHARED_SEQUENCES</span><span class="s2">[</span><span class="s1">self</span><span class="s2">.</span><span class="s1">uid</span><span class="s2">] = </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">__del__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">is_running</span><span class="s2">():</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">stop</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_run</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Submits request to the executor and queue the `Future` objects.&quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">_get_executor_init</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">workers</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Gets the Pool initializer for multiprocessing. 
+ 
+        Args: 
+            workers: Number of workers. 
+ 
+        Returns: 
+            Function, a Function to initialize the pool 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">get</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Creates a generator to extract data from the queue. 
+ 
+        Skip the data if it is `None`. 
+ 
+        Returns: 
+            Generator yielding tuples `(inputs, targets)` 
+                or `(inputs, targets, sample_weights)`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+
+<span class="s0">class </span><span class="s1">OrderedEnqueuer</span><span class="s2">(</span><span class="s1">PyDatasetEnqueuer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Builds a Enqueuer from a PyDataset. 
+ 
+    Args: 
+        py_dataset: A `keras.utils.PyDataset` object. 
+        use_multiprocessing: use multiprocessing if True, otherwise threading 
+        shuffle: whether to shuffle the data at the beginning of each epoch 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">py_dataset</span><span class="s2">, </span><span class="s1">use_multiprocessing</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, </span><span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">py_dataset</span><span class="s2">, </span><span class="s1">use_multiprocessing</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">shuffle </span><span class="s2">= </span><span class="s1">shuffle</span>
+
+    <span class="s0">def </span><span class="s1">_get_executor_init</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">workers</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Gets the Pool initializer for multiprocessing. 
+ 
+        Args: 
+            workers: Number of workers. 
+ 
+        Returns: 
+            Function, a Function to initialize the pool 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">def </span><span class="s1">pool_fn</span><span class="s2">(</span><span class="s1">seqs</span><span class="s2">):</span>
+            <span class="s1">pool </span><span class="s2">= </span><span class="s1">get_pool_class</span><span class="s2">(</span><span class="s0">True</span><span class="s2">)(</span>
+                <span class="s1">workers</span><span class="s2">,</span>
+                <span class="s1">initializer</span><span class="s2">=</span><span class="s1">init_pool_generator</span><span class="s2">,</span>
+                <span class="s1">initargs</span><span class="s2">=(</span><span class="s1">seqs</span><span class="s2">, </span><span class="s0">None</span><span class="s2">, </span><span class="s1">get_worker_id_queue</span><span class="s2">()),</span>
+            <span class="s2">)</span>
+            <span class="s1">_DATA_POOLS</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">pool</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">pool</span>
+
+        <span class="s0">return </span><span class="s1">pool_fn</span>
+
+    <span class="s0">def </span><span class="s1">_wait_queue</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Wait for the queue to be empty.&quot;&quot;&quot;</span>
+        <span class="s0">while True</span><span class="s2">:</span>
+            <span class="s1">time</span><span class="s2">.</span><span class="s1">sleep</span><span class="s2">(</span><span class="s5">0.1</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">unfinished_tasks </span><span class="s2">== </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal</span><span class="s2">.</span><span class="s1">is_set</span><span class="s2">():</span>
+                <span class="s0">return</span>
+
+    <span class="s0">def </span><span class="s1">_run</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Submits request to the executor and queue the `Future` objects.&quot;&quot;&quot;</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">num_batches </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">num_batches</span>
+            <span class="s1">indices </span><span class="s2">= (</span>
+                <span class="s1">range</span><span class="s2">(</span><span class="s1">num_batches</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">num_batches </span><span class="s0">is not None</span>
+                <span class="s0">else </span><span class="s1">itertools</span><span class="s2">.</span><span class="s1">count</span><span class="s2">()</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">shuffle </span><span class="s0">and </span><span class="s1">num_batches </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">indices </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)</span>
+                <span class="s1">random</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_send_py_dataset</span><span class="s2">()  </span><span class="s6"># Share the initial py_dataset</span>
+            <span class="s0">while True</span><span class="s2">:</span>
+                <span class="s0">with </span><span class="s1">closing</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">executor_fn</span><span class="s2">(</span><span class="s1">_SHARED_SEQUENCES</span><span class="s2">)) </span><span class="s0">as </span><span class="s1">executor</span><span class="s2">:</span>
+                    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">indices</span><span class="s2">:</span>
+                        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal</span><span class="s2">.</span><span class="s1">is_set</span><span class="s2">():</span>
+                            <span class="s0">return</span>
+
+                        <span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">put</span><span class="s2">(</span>
+                            <span class="s1">executor</span><span class="s2">.</span><span class="s1">apply_async</span><span class="s2">(</span><span class="s1">get_index</span><span class="s2">, (</span><span class="s1">self</span><span class="s2">.</span><span class="s1">uid</span><span class="s2">, </span><span class="s1">i</span><span class="s2">)),</span>
+                            <span class="s1">block</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+                        <span class="s2">)</span>
+
+                    <span class="s6"># Done with the current epoch, waiting for the final batches</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">_wait_queue</span><span class="s2">()</span>
+
+                    <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">stop_signal</span><span class="s2">.</span><span class="s1">is_set</span><span class="s2">():</span>
+                        <span class="s6"># We're done</span>
+                        <span class="s0">return</span>
+
+                <span class="s6"># Call the internal on epoch end and epoch begin.</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">on_epoch_end</span><span class="s2">()</span>
+                <span class="s6"># The first on_epoch_begin call was already made,</span>
+                <span class="s6"># prior to the start of the Enqueuer.</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">py_dataset</span><span class="s2">.</span><span class="s1">on_epoch_begin</span><span class="s2">()</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_send_py_dataset</span><span class="s2">()  </span><span class="s6"># Update the pool</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">put</span><span class="s2">(</span><span class="s1">e</span><span class="s2">)  </span><span class="s6"># Report exception</span>
+
+    <span class="s0">def </span><span class="s1">get</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Creates a generator to extract data from the queue. 
+ 
+        Skip the data if it is `None`. 
+ 
+        Yields: 
+            The next element in the queue, i.e. a tuple 
+            `(inputs, targets)` or 
+            `(inputs, targets, sample_weights)`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">while </span><span class="s1">self</span><span class="s2">.</span><span class="s1">is_running</span><span class="s2">():</span>
+            <span class="s0">try</span><span class="s2">:</span>
+                <span class="s1">value </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">block</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">=</span><span class="s5">5</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">Exception</span><span class="s2">):</span>
+                    <span class="s0">raise </span><span class="s1">value  </span><span class="s6"># Propagate exception from other thread</span>
+                <span class="s1">inputs </span><span class="s2">= </span><span class="s1">value</span><span class="s2">.</span><span class="s1">get</span><span class="s2">()</span>
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">is_running</span><span class="s2">():</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">queue</span><span class="s2">.</span><span class="s1">task_done</span><span class="s2">()</span>
+                <span class="s0">if </span><span class="s1">inputs </span><span class="s0">is not None</span><span class="s2">:</span>
+                    <span class="s0">yield </span><span class="s1">inputs</span>
+            <span class="s0">except </span><span class="s1">queue</span><span class="s2">.</span><span class="s1">Empty</span><span class="s2">:</span>
+                <span class="s0">pass</span>
+            <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">stop</span><span class="s2">()</span>
+                <span class="s0">raise </span><span class="s1">e</span>
+
+
+<span class="s0">def </span><span class="s1">init_pool_generator</span><span class="s2">(</span><span class="s1">gens</span><span class="s2">, </span><span class="s1">random_seed</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">id_queue</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Initializer function for pool workers. 
+ 
+    Args: 
+        gens: State which should be made available to worker processes. 
+        random_seed: An optional value with which to seed child processes. 
+        id_queue: A multiprocessing Queue of worker ids. 
+            This is used to indicate that a worker process 
+            was created by Keras. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">global </span><span class="s1">_SHARED_SEQUENCES</span>
+    <span class="s1">_SHARED_SEQUENCES </span><span class="s2">= </span><span class="s1">gens</span>
+
+    <span class="s1">worker_proc </span><span class="s2">= </span><span class="s1">multiprocessing</span><span class="s2">.</span><span class="s1">current_process</span><span class="s2">()</span>
+
+    <span class="s6"># name isn't used for anything, but setting a more descriptive name is</span>
+    <span class="s6"># helpful when diagnosing orphaned processes.</span>
+    <span class="s1">worker_proc</span><span class="s2">.</span><span class="s1">name </span><span class="s2">= </span><span class="s3">f&quot;Keras_worker_</span><span class="s0">{</span><span class="s1">worker_proc</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">&quot;</span>
+
+    <span class="s0">if </span><span class="s1">random_seed </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">seed</span><span class="s2">(</span><span class="s1">random_seed </span><span class="s2">+ </span><span class="s1">worker_proc</span><span class="s2">.</span><span class="s1">ident</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">id_queue </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s6"># If a worker dies during init, the pool will just create a replacement.</span>
+        <span class="s1">id_queue</span><span class="s2">.</span><span class="s1">put</span><span class="s2">(</span><span class="s1">worker_proc</span><span class="s2">.</span><span class="s1">ident</span><span class="s2">, </span><span class="s1">block</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">timeout</span><span class="s2">=</span><span class="s5">0.1</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

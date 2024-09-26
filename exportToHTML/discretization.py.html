@@ -1,0 +1,360 @@
+<html>
+<head>
+<title>discretization.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+discretization.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">preprocessing</span><span class="s2">.</span><span class="s1">tf_data_layer </span><span class="s0">import </span><span class="s1">TFDataLayer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">argument_validation</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">numerical_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.layers.Discretization&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">Discretization</span><span class="s2">(</span><span class="s1">TFDataLayer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;A preprocessing layer which buckets continuous features by ranges. 
+ 
+    This layer will place each element of its input data into one of several 
+    contiguous ranges and output an integer index indicating which range each 
+    element was placed in. 
+ 
+    **Note:** This layer is safe to use inside a `tf.data` pipeline 
+    (independently of which backend you're using). 
+ 
+    Input shape: 
+        Any array of dimension 2 or higher. 
+ 
+    Output shape: 
+        Same as input shape. 
+ 
+    Arguments: 
+        bin_boundaries: A list of bin boundaries. 
+            The leftmost and rightmost bins 
+            will always extend to `-inf` and `inf`, 
+            so `bin_boundaries=[0., 1., 2.]` 
+            generates bins `(-inf, 0.)`, `[0., 1.)`, `[1., 2.)`, 
+            and `[2., +inf)`. 
+            If this option is set, `adapt()` should not be called. 
+        num_bins: The integer number of bins to compute. 
+            If this option is set, 
+            `adapt()` should be called to learn the bin boundaries. 
+        epsilon: Error tolerance, typically a small fraction 
+            close to zero (e.g. 0.01). Higher values of epsilon increase 
+            the quantile approximation, and hence result in more 
+            unequal buckets, but could improve performance 
+            and resource consumption. 
+        output_mode: Specification for the output of the layer. 
+            Values can be `&quot;int&quot;`, `&quot;one_hot&quot;`, `&quot;multi_hot&quot;`, or 
+            `&quot;count&quot;` configuring the layer as follows: 
+            - `&quot;int&quot;`: Return the discretized bin indices directly. 
+            - `&quot;one_hot&quot;`: Encodes each individual element in the 
+                input into an array the same size as `num_bins`, 
+                containing a 1 at the input's bin 
+                index. If the last dimension is size 1, will encode on that 
+                dimension.  If the last dimension is not size 1, 
+                will append a new dimension for the encoded output. 
+            - `&quot;multi_hot&quot;`: Encodes each sample in the input into a 
+                single array the same size as `num_bins`, 
+                containing a 1 for each bin index 
+                index present in the sample. 
+                Treats the last dimension as the sample 
+                dimension, if input shape is `(..., sample_length)`, 
+                output shape will be `(..., num_tokens)`. 
+            - `&quot;count&quot;`: As `&quot;multi_hot&quot;`, but the int array contains 
+                a count of the number of times the bin index appeared 
+                in the sample. 
+            Defaults to `&quot;int&quot;`. 
+        sparse: Boolean. Only applicable to `&quot;one_hot&quot;`, `&quot;multi_hot&quot;`, 
+            and `&quot;count&quot;` output modes. Only supported with TensorFlow 
+            backend. If `True`, returns a `SparseTensor` instead of 
+            a dense `Tensor`. Defaults to `False`. 
+ 
+    Examples: 
+ 
+    Discretize float values based on provided buckets. 
+    &gt;&gt;&gt; input = np.array([[-1.5, 1.0, 3.4, .5], [0.0, 3.0, 1.3, 0.0]]) 
+    &gt;&gt;&gt; layer = Discretization(bin_boundaries=[0., 1., 2.]) 
+    &gt;&gt;&gt; layer(input) 
+    array([[0, 2, 3, 1], 
+           [1, 3, 2, 1]]) 
+ 
+    Discretize float values based on a number of buckets to compute. 
+    &gt;&gt;&gt; input = np.array([[-1.5, 1.0, 3.4, .5], [0.0, 3.0, 1.3, 0.0]]) 
+    &gt;&gt;&gt; layer = Discretization(num_bins=4, epsilon=0.01) 
+    &gt;&gt;&gt; layer.adapt(input) 
+    &gt;&gt;&gt; layer(input) 
+    array([[0, 2, 3, 2], 
+           [1, 3, 3, 1]]) 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">bin_boundaries</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">num_bins</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">epsilon</span><span class="s2">=</span><span class="s5">0.01</span><span class="s2">,</span>
+        <span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;int&quot;</span><span class="s2">,</span>
+        <span class="s1">sparse</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">dtype</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">dtype </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">dtype </span><span class="s2">= </span><span class="s3">&quot;int64&quot; </span><span class="s0">if </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;int&quot; </span><span class="s0">else </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">sparse </span><span class="s0">and not </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">SUPPORTS_SPARSE_TENSORS</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;`sparse=True` cannot be used with backend </span><span class="s0">{</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">()</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">sparse </span><span class="s0">and </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`sparse=True` may only be used if `output_mode` is &quot;</span>
+                <span class="s3">&quot;`'one_hot'`, `'multi_hot'`, or `'count'`. &quot;</span>
+                <span class="s3">f&quot;Received: sparse=</span><span class="s0">{</span><span class="s1">sparse</span><span class="s0">} </span><span class="s3">and &quot;</span>
+                <span class="s3">f&quot;output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">validate_string_arg</span><span class="s2">(</span>
+            <span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s1">allowable_strings</span><span class="s2">=(</span>
+                <span class="s3">&quot;int&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;one_hot&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;multi_hot&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;count&quot;</span><span class="s2">,</span>
+            <span class="s2">),</span>
+            <span class="s1">caller_name</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">,</span>
+            <span class="s1">arg_name</span><span class="s2">=</span><span class="s3">&quot;output_mode&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">num_bins </span><span class="s0">is not None and </span><span class="s1">num_bins </span><span class="s2">&lt; </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`num_bins` must be greater than or equal to 0. &quot;</span>
+                <span class="s3">f&quot;Received: `num_bins=</span><span class="s0">{</span><span class="s1">num_bins</span><span class="s0">}</span><span class="s3">`&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">num_bins </span><span class="s0">is not None and </span><span class="s1">bin_boundaries </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">bin_boundaries</span><span class="s2">) != </span><span class="s1">num_bins </span><span class="s2">- </span><span class="s5">1</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;Both `num_bins` and `bin_boundaries` should not be &quot;</span>
+                    <span class="s3">f&quot;set. Received: `num_bins=</span><span class="s0">{</span><span class="s1">num_bins</span><span class="s0">}</span><span class="s3">` and &quot;</span>
+                    <span class="s3">f&quot;`bin_boundaries=</span><span class="s0">{</span><span class="s1">bin_boundaries</span><span class="s0">}</span><span class="s3">`&quot;</span>
+                <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">input_bin_boundaries </span><span class="s2">= </span><span class="s1">bin_boundaries</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bin_boundaries </span><span class="s2">= (</span>
+            <span class="s1">bin_boundaries </span><span class="s0">if </span><span class="s1">bin_boundaries </span><span class="s0">is not None else </span><span class="s2">[]</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">num_bins </span><span class="s2">= </span><span class="s1">num_bins</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon </span><span class="s2">= </span><span class="s1">epsilon</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode </span><span class="s2">= </span><span class="s1">output_mode</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">sparse </span><span class="s2">= </span><span class="s1">sparse</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bin_boundaries</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">([[], []], </span><span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">input_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">adapt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Computes bin boundaries from quantiles in a input dataset. 
+ 
+        Calling `adapt()` on a `Discretization` layer is an alternative to 
+        passing in a `bin_boundaries` argument during construction. A 
+        `Discretization` layer should always be either adapted over a dataset or 
+        passed `bin_boundaries`. 
+ 
+        During `adapt()`, the layer will estimate the quantile boundaries of the 
+        input dataset. The number of quantiles can be controlled via the 
+        `num_bins` argument, and the error tolerance for quantile boundaries can 
+        be controlled via the `epsilon` argument. 
+ 
+        Arguments: 
+            data: The data to train on. It can be passed either as a 
+                batched `tf.data.Dataset`, 
+                or as a NumPy array. 
+            steps: Integer or `None`. 
+                Total number of steps (batches of samples) to process. 
+                If `data` is a `tf.data.Dataset`, and `steps` is `None`, 
+                `adapt()` will run until the input dataset is exhausted. 
+                When passing an infinitely 
+                repeating dataset, you must specify the `steps` argument. This 
+                argument is not supported with array inputs or list inputs. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_bin_boundaries </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Cannot adapt a Discretization layer that has been initialized &quot;</span>
+                <span class="s3">&quot;with `bin_boundaries`, use `num_bins` instead.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">reset_state</span><span class="s2">()</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">steps </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">data </span><span class="s2">= </span><span class="s1">data</span><span class="s2">.</span><span class="s1">take</span><span class="s2">(</span><span class="s1">steps</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">batch </span><span class="s0">in </span><span class="s1">data</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">finalize_state</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+        <span class="s1">data </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">data</span><span class="s2">).</span><span class="s1">astype</span><span class="s2">(</span><span class="s3">&quot;float32&quot;</span><span class="s2">)</span>
+        <span class="s1">summary </span><span class="s2">= </span><span class="s1">summarize</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">summary </span><span class="s2">= </span><span class="s1">merge_summaries</span><span class="s2">(</span><span class="s1">summary</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">finalize_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_bin_boundaries </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">bin_boundaries </span><span class="s2">= </span><span class="s1">get_bin_boundaries</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_bins</span>
+        <span class="s2">).</span><span class="s1">tolist</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">input_bin_boundaries </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">summary </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">([[], []], </span><span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;float32&quot;</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_spec</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">KerasTensor</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">=</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">load_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">store</span><span class="s2">) == </span><span class="s5">1</span><span class="s2">:</span>
+            <span class="s6"># Legacy format case</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary </span><span class="s2">= </span><span class="s1">store</span><span class="s2">[</span><span class="s3">&quot;0&quot;</span><span class="s2">]</span>
+        <span class="s0">return</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s1">indices </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">numpy</span><span class="s2">.</span><span class="s1">digitize</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bin_boundaries</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">numerical_utils</span><span class="s2">.</span><span class="s1">encode_categorical_inputs</span><span class="s2">(</span>
+            <span class="s1">indices</span><span class="s2">,</span>
+            <span class="s1">output_mode</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s1">depth</span><span class="s2">=</span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">bin_boundaries</span><span class="s2">) + </span><span class="s5">1</span><span class="s2">,</span>
+            <span class="s1">dtype</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_dtype</span><span class="s2">,</span>
+            <span class="s1">sparse</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">,</span>
+            <span class="s1">backend_module</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s3">&quot;bin_boundaries&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">bin_boundaries</span><span class="s2">,</span>
+            <span class="s3">&quot;num_bins&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">num_bins</span><span class="s2">,</span>
+            <span class="s3">&quot;epsilon&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">epsilon</span><span class="s2">,</span>
+            <span class="s3">&quot;output_mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s3">&quot;sparse&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">,</span>
+            <span class="s3">&quot;name&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s2">,</span>
+            <span class="s3">&quot;dtype&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">,</span>
+        <span class="s2">}</span>
+
+
+<span class="s0">def </span><span class="s1">summarize</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, </span><span class="s1">epsilon</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Reduce a 1D sequence of values to a summary. 
+ 
+    This algorithm is based on numpy.quantiles but modified to allow for 
+    intermediate steps between multiple data sets. It first finds the target 
+    number of bins as the reciprocal of epsilon and then takes the individual 
+    values spaced at appropriate intervals to arrive at that target. 
+    The final step is to return the corresponding counts between those values 
+    If the target num_bins is larger than the size of values, the whole array is 
+    returned (with weights of 1). 
+ 
+    Args: 
+        values: 1D `np.ndarray` to be summarized. 
+        epsilon: A `'float32'` that determines the approximate desired 
+        precision. 
+ 
+    Returns: 
+        A 2D `np.ndarray` that is a summary of the inputs. First column is the 
+        interpolated partition values, the second is the weights (counts). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">values </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">values</span><span class="s2">, [-</span><span class="s5">1</span><span class="s2">])</span>
+    <span class="s1">values </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">sort</span><span class="s2">(</span><span class="s1">values</span><span class="s2">)</span>
+    <span class="s1">elements </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">size</span><span class="s2">(</span><span class="s1">values</span><span class="s2">)</span>
+    <span class="s1">num_buckets </span><span class="s2">= </span><span class="s5">1.0 </span><span class="s2">/ </span><span class="s1">epsilon</span>
+    <span class="s1">increment </span><span class="s2">= </span><span class="s1">elements </span><span class="s2">/ </span><span class="s1">num_buckets</span>
+    <span class="s1">start </span><span class="s2">= </span><span class="s1">increment</span>
+    <span class="s1">step </span><span class="s2">= </span><span class="s1">max</span><span class="s2">(</span><span class="s1">increment</span><span class="s2">, </span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s1">boundaries </span><span class="s2">= </span><span class="s1">values</span><span class="s2">[</span><span class="s1">int</span><span class="s2">(</span><span class="s1">start</span><span class="s2">) :: </span><span class="s1">int</span><span class="s2">(</span><span class="s1">step</span><span class="s2">)]</span>
+    <span class="s1">weights </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ones_like</span><span class="s2">(</span><span class="s1">boundaries</span><span class="s2">)</span>
+    <span class="s1">weights </span><span class="s2">= </span><span class="s1">weights </span><span class="s2">* </span><span class="s1">step</span>
+    <span class="s0">return </span><span class="s1">np</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">([</span><span class="s1">boundaries</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">])</span>
+
+
+<span class="s0">def </span><span class="s1">merge_summaries</span><span class="s2">(</span><span class="s1">prev_summary</span><span class="s2">, </span><span class="s1">next_summary</span><span class="s2">, </span><span class="s1">epsilon</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Weighted merge sort of summaries. 
+ 
+    Given two summaries of distinct data, this function merges (and compresses) 
+    them to stay within `epsilon` error tolerance. 
+ 
+    Args: 
+        prev_summary: 2D `np.ndarray` summary to be merged with `next_summary`. 
+        next_summary: 2D `np.ndarray` summary to be merged with `prev_summary`. 
+        epsilon: A float that determines the approximate desired precision. 
+ 
+    Returns: 
+        A 2-D `np.ndarray` that is a merged summary. First column is the 
+        interpolated partition values, the second is the weights (counts). 
+    &quot;&quot;&quot;</span>
+    <span class="s1">merged </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">((</span><span class="s1">prev_summary</span><span class="s2">, </span><span class="s1">next_summary</span><span class="s2">), </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s1">merged </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">take</span><span class="s2">(</span><span class="s1">merged</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">argsort</span><span class="s2">(</span><span class="s1">merged</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]), </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">compress_summary</span><span class="s2">(</span><span class="s1">merged</span><span class="s2">, </span><span class="s1">epsilon</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">get_bin_boundaries</span><span class="s2">(</span><span class="s1">summary</span><span class="s2">, </span><span class="s1">num_bins</span><span class="s2">):</span>
+    <span class="s0">return </span><span class="s1">compress_summary</span><span class="s2">(</span><span class="s1">summary</span><span class="s2">, </span><span class="s5">1.0 </span><span class="s2">/ </span><span class="s1">num_bins</span><span class="s2">)[</span><span class="s5">0</span><span class="s2">, :-</span><span class="s5">1</span><span class="s2">]</span>
+
+
+<span class="s0">def </span><span class="s1">compress_summary</span><span class="s2">(</span><span class="s1">summary</span><span class="s2">, </span><span class="s1">epsilon</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Compress a summary to within `epsilon` accuracy. 
+ 
+    The compression step is needed to keep the summary sizes small after 
+    merging, and also used to return the final target boundaries. It finds the 
+    new bins based on interpolating cumulative weight percentages from the large 
+    summary.  Taking the difference of the cumulative weights from the previous 
+    bin's cumulative weight will give the new weight for that bin. 
+ 
+    Args: 
+        summary: 2D `np.ndarray` summary to be compressed. 
+        epsilon: A `'float32'` that determines the approximate desired 
+        precision. 
+ 
+    Returns: 
+        A 2D `np.ndarray` that is a compressed summary. First column is the 
+        interpolated partition values, the second is the weights (counts). 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">summary</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] * </span><span class="s1">epsilon </span><span class="s2">&lt; </span><span class="s5">1</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">summary</span>
+
+    <span class="s1">percents </span><span class="s2">= </span><span class="s1">epsilon </span><span class="s2">+ </span><span class="s1">np</span><span class="s2">.</span><span class="s1">arange</span><span class="s2">(</span><span class="s5">0.0</span><span class="s2">, </span><span class="s5">1.0</span><span class="s2">, </span><span class="s1">epsilon</span><span class="s2">)</span>
+    <span class="s1">cum_weights </span><span class="s2">= </span><span class="s1">summary</span><span class="s2">[</span><span class="s5">1</span><span class="s2">].</span><span class="s1">cumsum</span><span class="s2">()</span>
+    <span class="s1">cum_weight_percents </span><span class="s2">= </span><span class="s1">cum_weights </span><span class="s2">/ </span><span class="s1">cum_weights</span><span class="s2">[-</span><span class="s5">1</span><span class="s2">]</span>
+    <span class="s1">new_bins </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">interp</span><span class="s2">(</span><span class="s1">percents</span><span class="s2">, </span><span class="s1">cum_weight_percents</span><span class="s2">, </span><span class="s1">summary</span><span class="s2">[</span><span class="s5">0</span><span class="s2">])</span>
+    <span class="s1">cum_weights </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">interp</span><span class="s2">(</span><span class="s1">percents</span><span class="s2">, </span><span class="s1">cum_weight_percents</span><span class="s2">, </span><span class="s1">cum_weights</span><span class="s2">)</span>
+    <span class="s1">new_weights </span><span class="s2">= </span><span class="s1">cum_weights </span><span class="s2">- </span><span class="s1">np</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">(</span>
+        <span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">([</span><span class="s5">0</span><span class="s2">]), </span><span class="s1">cum_weights</span><span class="s2">[:-</span><span class="s5">1</span><span class="s2">])</span>
+    <span class="s2">)</span>
+    <span class="s1">summary </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">((</span><span class="s1">new_bins</span><span class="s2">, </span><span class="s1">new_weights</span><span class="s2">))</span>
+    <span class="s0">return </span><span class="s1">summary</span><span class="s2">.</span><span class="s1">astype</span><span class="s2">(</span><span class="s3">&quot;float32&quot;</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

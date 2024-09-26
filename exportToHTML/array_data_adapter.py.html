@@ -1,0 +1,396 @@
+<html>
+<head>
+<title>array_data_adapter.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #5f826b; font-style: italic;}
+.s4 { color: #6aab73;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+array_data_adapter.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">math</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters </span><span class="s0">import </span><span class="s1">array_slicing</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters </span><span class="s0">import </span><span class="s1">data_adapter_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters</span><span class="s2">.</span><span class="s1">data_adapter </span><span class="s0">import </span><span class="s1">DataAdapter</span>
+
+
+<span class="s0">class </span><span class="s1">ArrayDataAdapter</span><span class="s2">(</span><span class="s1">DataAdapter</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Adapter for array-like objects, e.g. TF/JAX Tensors, NumPy arrays.&quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">class_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">can_convert_arrays</span><span class="s2">((</span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">)):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Expected all elements of `x` to be array-like. &quot;</span>
+                <span class="s4">f&quot;Received invalid types: x=</span><span class="s0">{</span><span class="s1">x</span><span class="s0">}</span><span class="s4">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">sample_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">class_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;You cannot `class_weight` and `sample_weight` &quot;</span>
+                    <span class="s4">&quot;at the same time.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">is_nested</span><span class="s2">(</span><span class="s1">y</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">)):</span>
+                    <span class="s0">try</span><span class="s2">:</span>
+                        <span class="s1">tree</span><span class="s2">.</span><span class="s1">assert_same_structure</span><span class="s2">(</span><span class="s1">y</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">)</span>
+                    <span class="s0">except </span><span class="s1">ValueError</span><span class="s2">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                            <span class="s4">&quot;You should provide one `sample_weight` array per &quot;</span>
+                            <span class="s4">&quot;output in `y`. The two structures did not match:</span><span class="s0">\n</span><span class="s4">&quot;</span>
+                            <span class="s4">f&quot;- y: </span><span class="s0">{</span><span class="s1">y</span><span class="s0">}\n</span><span class="s4">&quot;</span>
+                            <span class="s4">f&quot;- sample_weight: </span><span class="s0">{</span><span class="s1">sample_weight</span><span class="s0">}\n</span><span class="s4">&quot;</span>
+                        <span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">is_samplewise </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">1 </span><span class="s0">or </span><span class="s2">(</span>
+                        <span class="s1">len</span><span class="s2">(</span><span class="s1">sample_weight</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">2</span>
+                        <span class="s0">and </span><span class="s1">sample_weight</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] == </span><span class="s5">1</span>
+                    <span class="s2">)</span>
+                    <span class="s0">if not </span><span class="s1">is_samplewise</span><span class="s2">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                            <span class="s4">&quot;For a model with multiple outputs, when providing &quot;</span>
+                            <span class="s4">&quot;a single `sample_weight` array, it should only &quot;</span>
+                            <span class="s4">&quot;have one scalar score per sample &quot;</span>
+                            <span class="s4">&quot;(i.e. shape `(num_samples,)`). If you want to use &quot;</span>
+                            <span class="s4">&quot;non-scalar sample weights, pass a `sample_weight` &quot;</span>
+                            <span class="s4">&quot;argument with one array per model output.&quot;</span>
+                        <span class="s2">)</span>
+                    <span class="s6"># Replicate the same sample_weight array on all outputs.</span>
+                    <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+                        <span class="s0">lambda </span><span class="s1">_</span><span class="s2">: </span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">y</span>
+                    <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">class_weight </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">is_nested</span><span class="s2">(</span><span class="s1">y</span><span class="s2">):</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;`class_weight` is only supported for Models with a single &quot;</span>
+                    <span class="s4">&quot;output.&quot;</span>
+                <span class="s2">)</span>
+            <span class="s1">sample_weight </span><span class="s2">= </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">class_weight_to_sample_weights</span><span class="s2">(</span>
+                <span class="s1">y</span><span class="s2">, </span><span class="s1">class_weight</span>
+            <span class="s2">)</span>
+
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">pack_x_y_sample_weight</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">)</span>
+
+        <span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">check_data_cardinality</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+        <span class="s1">num_samples </span><span class="s2">= </span><span class="s1">set</span><span class="s2">(</span><span class="s1">i</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)).</span><span class="s1">pop</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples </span><span class="s2">= </span><span class="s1">num_samples</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_inputs </span><span class="s2">= </span><span class="s1">inputs</span>
+
+        <span class="s6"># If batch_size is not passed but steps is, calculate from the input</span>
+        <span class="s6"># data.  Defaults to `32` for backwards compatibility.</span>
+        <span class="s0">if not </span><span class="s1">batch_size</span><span class="s2">:</span>
+            <span class="s1">batch_size </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">math</span><span class="s2">.</span><span class="s1">ceil</span><span class="s2">(</span><span class="s1">num_samples </span><span class="s2">/ </span><span class="s1">steps</span><span class="s2">)) </span><span class="s0">if </span><span class="s1">steps </span><span class="s0">else </span><span class="s5">32</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_size </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">math</span><span class="s2">.</span><span class="s1">ceil</span><span class="s2">(</span><span class="s1">num_samples </span><span class="s2">/ </span><span class="s1">batch_size</span><span class="s2">))</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size </span><span class="s2">= </span><span class="s1">batch_size</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_partial_batch_size </span><span class="s2">= </span><span class="s1">num_samples </span><span class="s2">% </span><span class="s1">batch_size</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle </span><span class="s2">= </span><span class="s1">shuffle</span>
+
+    <span class="s0">def </span><span class="s1">get_numpy_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">convert_to_sliceable</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_inputs</span><span class="s2">, </span><span class="s1">target_backend</span><span class="s2">=</span><span class="s4">&quot;numpy&quot;</span>
+        <span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">slice_and_convert_to_numpy</span><span class="s2">(</span><span class="s1">sliceable</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">x</span>
+
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_iterator</span><span class="s2">(</span><span class="s1">slice_and_convert_to_numpy</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_tf_dataset</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+        <span class="s1">shuffle </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle</span>
+        <span class="s1">batch_size </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span>
+        <span class="s1">num_samples </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples</span>
+        <span class="s1">num_full_batches </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples </span><span class="s2">// </span><span class="s1">batch_size</span><span class="s2">)</span>
+
+        <span class="s6"># Vectorized version of shuffle.</span>
+        <span class="s6"># This is a performance improvement over using `from_tensor_slices`.</span>
+        <span class="s6"># The indices of the data are shuffled and batched, and these indices</span>
+        <span class="s6"># are then zipped with the data and used to extract a batch of the data</span>
+        <span class="s6"># at each step. The performance improvements here come from:</span>
+        <span class="s6"># 1. vectorized batch using gather</span>
+        <span class="s6"># 2. parallelized map</span>
+        <span class="s6"># 3. pipelined permutation generation</span>
+        <span class="s6"># 4. optimized permutation batching</span>
+        <span class="s6"># 5. disabled static optimizations</span>
+
+        <span class="s1">indices_dataset </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">range</span><span class="s2">(</span><span class="s5">1</span><span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">permutation</span><span class="s2">(</span><span class="s1">_</span><span class="s2">):</span>
+            <span class="s6"># It turns out to be more performant to make a new set of indices</span>
+            <span class="s6"># rather than reusing the same range Tensor. (presumably because of</span>
+            <span class="s6"># buffer forwarding.)</span>
+            <span class="s1">indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_samples</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">int64</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">shuffle </span><span class="s0">and </span><span class="s1">shuffle </span><span class="s2">!= </span><span class="s4">&quot;batch&quot;</span><span class="s2">:</span>
+                <span class="s1">indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">indices</span>
+
+        <span class="s6"># We prefetch a single element. Computing large permutations can take</span>
+        <span class="s6"># quite a while so we don't want to wait for prefetching over an epoch</span>
+        <span class="s6"># boundary to trigger the next permutation. On the other hand, too many</span>
+        <span class="s6"># simultaneous shuffles can contend on a hardware level and degrade all</span>
+        <span class="s6"># performance.</span>
+        <span class="s1">indices_dataset </span><span class="s2">= </span><span class="s1">indices_dataset</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span><span class="s1">permutation</span><span class="s2">).</span><span class="s1">prefetch</span><span class="s2">(</span><span class="s5">1</span><span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">slice_batch_indices</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">):</span>
+            <span class="s3">&quot;&quot;&quot;Convert a Tensor of indices into a dataset of batched indices. 
+ 
+            This step can be accomplished in several ways. The most natural is 
+            to slice the Tensor in a Dataset map. (With a condition on the upper 
+            index to handle the partial batch.) However it turns out that 
+            coercing the Tensor into a shape which is divisible by the batch 
+            size (and handling the last partial batch separately) allows for a 
+            much more favorable memory access pattern and improved performance. 
+ 
+            Args: 
+                indices: Tensor which determines the data order for an entire 
+                    epoch. 
+ 
+            Returns: 
+                A Dataset of batched indices. 
+            &quot;&quot;&quot;</span>
+            <span class="s1">num_in_full_batch </span><span class="s2">= </span><span class="s1">num_full_batches </span><span class="s2">* </span><span class="s1">batch_size</span>
+            <span class="s1">first_k_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">slice</span><span class="s2">(</span><span class="s1">indices</span><span class="s2">, [</span><span class="s5">0</span><span class="s2">], [</span><span class="s1">num_in_full_batch</span><span class="s2">])</span>
+            <span class="s1">first_k_indices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span>
+                <span class="s1">first_k_indices</span><span class="s2">, [</span><span class="s1">num_full_batches</span><span class="s2">, </span><span class="s1">batch_size</span><span class="s2">]</span>
+            <span class="s2">)</span>
+
+            <span class="s1">flat_dataset </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensor_slices</span><span class="s2">(</span><span class="s1">first_k_indices</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_partial_batch_size</span><span class="s2">:</span>
+                <span class="s1">index_remainder </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensors</span><span class="s2">(</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">slice</span><span class="s2">(</span>
+                        <span class="s1">indices</span><span class="s2">, [</span><span class="s1">num_in_full_batch</span><span class="s2">], [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_partial_batch_size</span><span class="s2">]</span>
+                    <span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s1">flat_dataset </span><span class="s2">= </span><span class="s1">flat_dataset</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">(</span><span class="s1">index_remainder</span><span class="s2">)</span>
+
+            <span class="s0">return </span><span class="s1">flat_dataset</span>
+
+        <span class="s0">def </span><span class="s1">slice_inputs</span><span class="s2">(</span><span class="s1">indices_dataset</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+            <span class="s3">&quot;&quot;&quot;Slice inputs into a Dataset of batches. 
+ 
+            Given a Dataset of batch indices and the unsliced inputs, 
+            this step slices the inputs in a parallelized fashion 
+            and produces a dataset of input batches. 
+ 
+            Args: 
+                indices_dataset: A Dataset of batched indices. 
+                inputs: A python data structure that contains the inputs, 
+                    targets, and possibly sample weights. 
+ 
+            Returns: 
+                A Dataset of input batches matching the batch indices. 
+            &quot;&quot;&quot;</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">convert_to_sliceable</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_inputs</span><span class="s2">, </span><span class="s1">target_backend</span><span class="s2">=</span><span class="s4">&quot;tensorflow&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">lists_to_tuples</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+            <span class="s1">dataset </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">zip</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s1">indices_dataset</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">.</span><span class="s1">from_tensors</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">).</span><span class="s1">repeat</span><span class="s2">())</span>
+            <span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">grab_batch</span><span class="s2">(</span><span class="s1">i</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+
+                <span class="s0">def </span><span class="s1">grab_one</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+                    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">TensorflowSparseWrapper</span><span class="s2">):</span>
+                        <span class="s0">return </span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">slice_tensorflow_sparse_wrapper</span><span class="s2">(</span>
+                            <span class="s1">x</span><span class="s2">, </span><span class="s1">i</span>
+                        <span class="s2">)</span>
+                    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, (</span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">)):</span>
+                        <span class="s0">return None</span>
+                    <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+                        <span class="s0">return </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">gather</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">i</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">)</span>
+                    <span class="s0">return </span><span class="s1">x</span>
+
+                <span class="s0">return </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">traverse</span><span class="s2">(</span><span class="s1">grab_one</span><span class="s2">, </span><span class="s1">data</span><span class="s2">)</span>
+
+            <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span>
+                <span class="s1">grab_batch</span><span class="s2">, </span><span class="s1">num_parallel_calls</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span>
+            <span class="s2">)</span>
+
+            <span class="s6"># Default optimizations are disabled to avoid the overhead of</span>
+            <span class="s6"># (unnecessary) input pipeline graph serialization &amp; deserialization</span>
+            <span class="s1">options </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Options</span><span class="s2">()</span>
+            <span class="s1">options</span><span class="s2">.</span><span class="s1">experimental_optimization</span><span class="s2">.</span><span class="s1">apply_default_optimizations </span><span class="s2">= (</span>
+                <span class="s0">False</span>
+            <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle</span><span class="s2">:</span>
+                <span class="s1">options</span><span class="s2">.</span><span class="s1">experimental_external_state_policy </span><span class="s2">= (</span>
+                    <span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">experimental</span><span class="s2">.</span><span class="s1">ExternalStatePolicy</span><span class="s2">.</span><span class="s1">IGNORE</span>
+                <span class="s2">)</span>
+            <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">with_options</span><span class="s2">(</span><span class="s1">options</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">dataset</span>
+
+        <span class="s1">indices_dataset </span><span class="s2">= </span><span class="s1">indices_dataset</span><span class="s2">.</span><span class="s1">flat_map</span><span class="s2">(</span><span class="s1">slice_batch_indices</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">shuffle </span><span class="s2">== </span><span class="s4">&quot;batch&quot;</span><span class="s2">:</span>
+            <span class="s1">indices_dataset </span><span class="s2">= </span><span class="s1">indices_dataset</span><span class="s2">.</span><span class="s1">map</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">shuffle</span><span class="s2">)</span>
+
+        <span class="s1">dataset </span><span class="s2">= </span><span class="s1">slice_inputs</span><span class="s2">(</span><span class="s1">indices_dataset</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_inputs</span><span class="s2">)</span>
+
+        <span class="s1">options </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Options</span><span class="s2">()</span>
+        <span class="s1">options</span><span class="s2">.</span><span class="s1">experimental_distribute</span><span class="s2">.</span><span class="s1">auto_shard_policy </span><span class="s2">= (</span>
+            <span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">experimental</span><span class="s2">.</span><span class="s1">AutoShardPolicy</span><span class="s2">.</span><span class="s1">DATA</span>
+        <span class="s2">)</span>
+        <span class="s1">dataset </span><span class="s2">= </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">with_options</span><span class="s2">(</span><span class="s1">options</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">dataset</span><span class="s2">.</span><span class="s1">prefetch</span><span class="s2">(</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">AUTOTUNE</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_jax_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">convert_to_sliceable</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_inputs</span><span class="s2">, </span><span class="s1">target_backend</span><span class="s2">=</span><span class="s4">&quot;jax&quot;</span>
+        <span class="s2">)</span>
+
+        <span class="s0">def </span><span class="s1">slice_and_convert_to_jax</span><span class="s2">(</span><span class="s1">sliceable</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable</span><span class="s2">.</span><span class="s1">convert_to_jax_compatible</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">x</span>
+
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_get_iterator</span><span class="s2">(</span><span class="s1">slice_and_convert_to_jax</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_torch_dataloader</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">import </span><span class="s1">torch</span>
+
+        <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">torch</span><span class="s2">.</span><span class="s1">core </span><span class="s0">import </span><span class="s1">convert_to_tensor</span>
+
+        <span class="s0">class </span><span class="s1">ArrayDataset</span><span class="s2">(</span><span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">):</span>
+            <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">array</span><span class="s2">):</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">array </span><span class="s2">= </span><span class="s1">array</span>
+
+            <span class="s0">def </span><span class="s1">__getitems__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">):</span>
+                <span class="s0">def </span><span class="s1">slice_and_convert</span><span class="s2">(</span><span class="s1">sliceable</span><span class="s2">):</span>
+                    <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable</span><span class="s2">[</span><span class="s1">indices</span><span class="s2">]</span>
+                    <span class="s1">x </span><span class="s2">= </span><span class="s1">sliceable</span><span class="s2">.</span><span class="s1">convert_to_torch_compatible</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+                    <span class="s1">x </span><span class="s2">= </span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+                    <span class="s0">return </span><span class="s1">x</span>
+
+                <span class="s0">return </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">slice_and_convert</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">)</span>
+
+            <span class="s0">def </span><span class="s1">__len__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+                <span class="s0">return </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">array</span><span class="s2">[</span><span class="s5">0</span><span class="s2">])</span>
+
+        <span class="s0">class </span><span class="s1">RandomBatchSampler</span><span class="s2">(</span><span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Sampler</span><span class="s2">):</span>
+            <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">sampler</span><span class="s2">):</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">sampler </span><span class="s2">= </span><span class="s1">sampler</span>
+
+            <span class="s0">def </span><span class="s1">__iter__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+                <span class="s0">for </span><span class="s1">batch </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">sampler</span><span class="s2">:</span>
+                    <span class="s0">yield </span><span class="s2">[</span><span class="s1">batch</span><span class="s2">[</span><span class="s1">i</span><span class="s2">] </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">torch</span><span class="s2">.</span><span class="s1">randperm</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">))]</span>
+
+            <span class="s0">def </span><span class="s1">__len__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+                <span class="s0">return </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">sampler</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle </span><span class="s2">== </span><span class="s4">&quot;batch&quot;</span><span class="s2">:</span>
+            <span class="s1">batch_sampler </span><span class="s2">= </span><span class="s1">RandomBatchSampler</span><span class="s2">(</span>
+                <span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">BatchSampler</span><span class="s2">(</span>
+                    <span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples</span><span class="s2">),</span>
+                    <span class="s1">batch_size</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span><span class="s2">,</span>
+                    <span class="s1">drop_last</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle</span><span class="s2">:</span>
+            <span class="s1">batch_sampler </span><span class="s2">= </span><span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">BatchSampler</span><span class="s2">(</span>
+                <span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">RandomSampler</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples</span><span class="s2">)),</span>
+                <span class="s1">batch_size</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span><span class="s2">,</span>
+                <span class="s1">drop_last</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">batch_sampler </span><span class="s2">= </span><span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">BatchSampler</span><span class="s2">(</span>
+                <span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">SequentialSampler</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples</span><span class="s2">)),</span>
+                <span class="s1">batch_size</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span><span class="s2">,</span>
+                <span class="s1">drop_last</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s6"># Because ArrayDataset.__getitems__ returns full batches organized in</span>
+        <span class="s6"># the expected structure, there is nothing to collate.</span>
+        <span class="s0">def </span><span class="s1">no_op_collate</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">batch</span>
+
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">convert_to_sliceable</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_inputs</span><span class="s2">, </span><span class="s1">target_backend</span><span class="s2">=</span><span class="s4">&quot;torch&quot;</span>
+        <span class="s2">)</span>
+        <span class="s1">dataset </span><span class="s2">= </span><span class="s1">ArrayDataset</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">torch</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">DataLoader</span><span class="s2">(</span>
+            <span class="s1">dataset</span><span class="s2">, </span><span class="s1">batch_sampler</span><span class="s2">=</span><span class="s1">batch_sampler</span><span class="s2">, </span><span class="s1">collate_fn</span><span class="s2">=</span><span class="s1">no_op_collate</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_get_iterator</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">slice_and_convert_fn</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s1">global_permutation </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle </span><span class="s2">!= </span><span class="s4">&quot;batch&quot;</span><span class="s2">:</span>
+            <span class="s1">global_permutation </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">permutation</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples</span><span class="s2">)</span>
+
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_size</span><span class="s2">):</span>
+            <span class="s1">start </span><span class="s2">= </span><span class="s1">i </span><span class="s2">* </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span>
+            <span class="s1">stop </span><span class="s2">= </span><span class="s1">min</span><span class="s2">((</span><span class="s1">i </span><span class="s2">+ </span><span class="s5">1</span><span class="s2">) * </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_num_samples</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle </span><span class="s2">== </span><span class="s4">&quot;batch&quot;</span><span class="s2">:</span>
+                <span class="s1">indices </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">random</span><span class="s2">.</span><span class="s1">permutation</span><span class="s2">(</span><span class="s1">stop </span><span class="s2">- </span><span class="s1">start</span><span class="s2">) + </span><span class="s1">start</span>
+            <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_shuffle</span><span class="s2">:</span>
+                <span class="s1">indices </span><span class="s2">= </span><span class="s1">global_permutation</span><span class="s2">[</span><span class="s1">start</span><span class="s2">:</span><span class="s1">stop</span><span class="s2">]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">indices </span><span class="s2">= </span><span class="s1">slice</span><span class="s2">(</span><span class="s1">start</span><span class="s2">, </span><span class="s1">stop</span><span class="s2">)</span>
+
+            <span class="s1">slice_indices_and_convert_fn </span><span class="s2">= </span><span class="s1">functools</span><span class="s2">.</span><span class="s1">partial</span><span class="s2">(</span>
+                <span class="s1">slice_and_convert_fn</span><span class="s2">, </span><span class="s1">indices</span><span class="s2">=</span><span class="s1">indices</span>
+            <span class="s2">)</span>
+            <span class="s0">yield </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">slice_indices_and_convert_fn</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">num_batches</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_size</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">batch_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_size</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">has_partial_batch</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_partial_batch_size </span><span class="s2">&gt; </span><span class="s5">0</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">partial_batch_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_partial_batch_size </span><span class="s0">or None</span>
+
+
+<span class="s0">def </span><span class="s1">can_convert_arrays</span><span class="s2">(</span><span class="s1">arrays</span><span class="s2">):</span>
+    <span class="s3">&quot;&quot;&quot;Check if array like-inputs can be handled by `ArrayDataAdapter` 
+ 
+    Args: 
+        inputs: Structure of `Tensor`s, NumPy arrays, or tensor-like. 
+ 
+    Returns: 
+        `True` if `arrays` can be handled by `ArrayDataAdapter`, `False` 
+        otherwise. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">return </span><span class="s1">all</span><span class="s2">(</span>
+        <span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">array_slicing</span><span class="s2">.</span><span class="s1">can_slice_array</span><span class="s2">, </span><span class="s1">arrays</span><span class="s2">))</span>
+    <span class="s2">)</span>
+</pre>
+</body>
+</html>

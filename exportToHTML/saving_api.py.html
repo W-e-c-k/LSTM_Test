@@ -1,0 +1,299 @@
+<html>
+<head>
+<title>saving_api.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+saving_api.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">zipfile</span>
+
+<span class="s0">from </span><span class="s1">absl </span><span class="s0">import </span><span class="s1">logging</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">legacy_h5_format</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">saving_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">file_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">io_utils</span>
+
+<span class="s0">try</span><span class="s2">:</span>
+    <span class="s0">import </span><span class="s1">h5py</span>
+<span class="s0">except </span><span class="s1">ImportError</span><span class="s2">:</span>
+    <span class="s1">h5py </span><span class="s2">= </span><span class="s0">None</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">([</span><span class="s3">&quot;keras.saving.save_model&quot;</span><span class="s2">, </span><span class="s3">&quot;keras.models.save_model&quot;</span><span class="s2">])</span>
+<span class="s0">def </span><span class="s1">save_model</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">overwrite</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">zipped</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Saves a model as a `.keras` file. 
+ 
+    Args: 
+        model: Keras model instance to be saved. 
+        filepath: `str` or `pathlib.Path` object. Path where to save the model. 
+        overwrite: Whether we should overwrite any existing model at the target 
+            location, or instead ask the user via an interactive prompt. 
+        zipped: Whether to save the model as a zipped `.keras` 
+            archive (default when saving locally), or as an unzipped directory 
+            (default when saving on the Hugging Face Hub). 
+ 
+    Example: 
+ 
+    ```python 
+    model = keras.Sequential( 
+        [ 
+            keras.layers.Dense(5, input_shape=(3,)), 
+            keras.layers.Softmax(), 
+        ], 
+    ) 
+    model.save(&quot;model.keras&quot;) 
+    loaded_model = keras.saving.load_model(&quot;model.keras&quot;) 
+    x = keras.random.uniform((10, 3)) 
+    assert np.allclose(model.predict(x), loaded_model.predict(x)) 
+    ``` 
+ 
+    Note that `model.save()` is an alias for `keras.saving.save_model()`. 
+ 
+    The saved `.keras` file is a `zip` archive that contains: 
+ 
+    - The model's configuration (architecture) 
+    - The model's weights 
+    - The model's optimizer's state (if any) 
+ 
+    Thus models can be reinstantiated in the exact same state. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">include_optimizer </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;include_optimizer&quot;</span><span class="s2">, </span><span class="s0">True</span><span class="s2">)</span>
+    <span class="s1">save_format </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;save_format&quot;</span><span class="s2">, </span><span class="s0">False</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">save_format</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">((</span><span class="s3">&quot;.h5&quot;</span><span class="s2">, </span><span class="s3">&quot;.hdf5&quot;</span><span class="s2">)) </span><span class="s0">or </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span>
+            <span class="s3">&quot;.keras&quot;</span>
+        <span class="s2">):</span>
+            <span class="s1">logging</span><span class="s2">.</span><span class="s1">warning</span><span class="s2">(</span>
+                <span class="s3">&quot;The `save_format` argument is deprecated in Keras 3. &quot;</span>
+                <span class="s3">&quot;We recommend removing this argument as it can be inferred &quot;</span>
+                <span class="s3">&quot;from the file path. &quot;</span>
+                <span class="s3">f&quot;Received: save_format=</span><span class="s0">{</span><span class="s1">save_format</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;The `save_format` argument is deprecated in Keras 3. &quot;</span>
+                <span class="s3">&quot;Please remove this argument and pass a file path with &quot;</span>
+                <span class="s3">&quot;either `.keras` or `.h5` extension.&quot;</span>
+                <span class="s3">f&quot;Received: save_format=</span><span class="s0">{</span><span class="s1">save_format</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">kwargs</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;The following argument(s) are not supported: &quot;</span>
+            <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">list</span><span class="s2">(</span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s5"># Deprecation warnings</span>
+    <span class="s0">if </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">((</span><span class="s3">&quot;.h5&quot;</span><span class="s2">, </span><span class="s3">&quot;.hdf5&quot;</span><span class="s2">)):</span>
+        <span class="s1">logging</span><span class="s2">.</span><span class="s1">warning</span><span class="s2">(</span>
+            <span class="s3">&quot;You are saving your model as an HDF5 file via &quot;</span>
+            <span class="s3">&quot;`model.save()` or `keras.saving.save_model(model)`. &quot;</span>
+            <span class="s3">&quot;This file format is considered legacy. &quot;</span>
+            <span class="s3">&quot;We recommend using instead the native Keras format, &quot;</span>
+            <span class="s3">&quot;e.g. `model.save('my_model.keras')` or &quot;</span>
+            <span class="s3">&quot;`keras.saving.save_model(model, 'my_model.keras')`. &quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">is_hf </span><span class="s2">= </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;hf://&quot;</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">zipped </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">zipped </span><span class="s2">= </span><span class="s0">not </span><span class="s1">is_hf  </span><span class="s5"># default behavior depends on destination</span>
+
+    <span class="s5"># If file exists and should not be overwritten.</span>
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s1">exists </span><span class="s2">= (</span><span class="s0">not </span><span class="s1">is_hf</span><span class="s2">) </span><span class="s0">and </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+    <span class="s0">except </span><span class="s1">TypeError</span><span class="s2">:</span>
+        <span class="s1">exists </span><span class="s2">= </span><span class="s0">False</span>
+    <span class="s0">if </span><span class="s1">exists </span><span class="s0">and not </span><span class="s1">overwrite</span><span class="s2">:</span>
+        <span class="s1">proceed </span><span class="s2">= </span><span class="s1">io_utils</span><span class="s2">.</span><span class="s1">ask_to_proceed_with_overwrite</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">proceed</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+    <span class="s0">if </span><span class="s1">zipped </span><span class="s0">and </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.keras&quot;</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">save_model</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">zipped</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">save_model</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">zipped</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">((</span><span class="s3">&quot;.h5&quot;</span><span class="s2">, </span><span class="s3">&quot;.hdf5&quot;</span><span class="s2">)):</span>
+        <span class="s0">return </span><span class="s1">legacy_h5_format</span><span class="s2">.</span><span class="s1">save_model_to_hdf5</span><span class="s2">(</span>
+            <span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">overwrite</span><span class="s2">, </span><span class="s1">include_optimizer</span>
+        <span class="s2">)</span>
+    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+        <span class="s3">&quot;Invalid filepath extension for saving. &quot;</span>
+        <span class="s3">&quot;Please add either a `.keras` extension for the native Keras &quot;</span>
+        <span class="s3">f&quot;format (recommended) or a `.h5` extension. &quot;</span>
+        <span class="s3">&quot;Use `model.export(filepath)` if you want to export a SavedModel &quot;</span>
+        <span class="s3">&quot;for use with TFLite/TFServing/etc. &quot;</span>
+        <span class="s3">f&quot;Received: filepath=</span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s3">.&quot;</span>
+    <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">([</span><span class="s3">&quot;keras.saving.load_model&quot;</span><span class="s2">, </span><span class="s3">&quot;keras.models.load_model&quot;</span><span class="s2">])</span>
+<span class="s0">def </span><span class="s1">load_model</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">compile</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">safe_mode</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Loads a model saved via `model.save()`. 
+ 
+    Args: 
+        filepath: `str` or `pathlib.Path` object, path to the saved model file. 
+        custom_objects: Optional dictionary mapping names 
+            (strings) to custom classes or functions to be 
+            considered during deserialization. 
+        compile: Boolean, whether to compile the model after loading. 
+        safe_mode: Boolean, whether to disallow unsafe `lambda` deserialization. 
+            When `safe_mode=False`, loading an object has the potential to 
+            trigger arbitrary code execution. This argument is only 
+            applicable to the Keras v3 model format. Defaults to `True`. 
+ 
+    Returns: 
+        A Keras model instance. If the original model was compiled, 
+        and the argument `compile=True` is set, then the returned model 
+        will be compiled. Otherwise, the model will be left uncompiled. 
+ 
+    Example: 
+ 
+    ```python 
+    model = keras.Sequential([ 
+        keras.layers.Dense(5, input_shape=(3,)), 
+        keras.layers.Softmax()]) 
+    model.save(&quot;model.keras&quot;) 
+    loaded_model = keras.saving.load_model(&quot;model.keras&quot;) 
+    x = np.random.random((10, 3)) 
+    assert np.allclose(model.predict(x), loaded_model.predict(x)) 
+    ``` 
+ 
+    Note that the model variables may have different name values 
+    (`var.name` property, e.g. `&quot;dense_1/kernel:0&quot;`) after being reloaded. 
+    It is recommended that you use layer attributes to 
+    access specific variables, e.g. `model.get_layer(&quot;dense_1&quot;).kernel`. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">is_keras_zip </span><span class="s2">= </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.keras&quot;</span><span class="s2">) </span><span class="s0">and </span><span class="s1">zipfile</span><span class="s2">.</span><span class="s1">is_zipfile</span><span class="s2">(</span>
+        <span class="s1">filepath</span>
+    <span class="s2">)</span>
+    <span class="s1">is_keras_dir </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">isdir</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">) </span><span class="s0">and </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span>
+        <span class="s1">file_utils</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s3">&quot;config.json&quot;</span><span class="s2">)</span>
+    <span class="s2">)</span>
+
+    <span class="s5"># Support for remote zip files</span>
+    <span class="s0">if </span><span class="s2">(</span>
+        <span class="s1">file_utils</span><span class="s2">.</span><span class="s1">is_remote_path</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+        <span class="s0">and not </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">isdir</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+        <span class="s0">and not </span><span class="s1">is_keras_zip</span>
+    <span class="s2">):</span>
+        <span class="s1">local_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span>
+            <span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">get_temp_dir</span><span class="s2">(), </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">basename</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+        <span class="s2">)</span>
+
+        <span class="s5"># Copy from remote to temporary local directory</span>
+        <span class="s1">file_utils</span><span class="s2">.</span><span class="s1">copy</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">local_path</span><span class="s2">)</span>
+
+        <span class="s5"># Switch filepath to local zipfile for loading model</span>
+        <span class="s0">if </span><span class="s1">zipfile</span><span class="s2">.</span><span class="s1">is_zipfile</span><span class="s2">(</span><span class="s1">local_path</span><span class="s2">):</span>
+            <span class="s1">filepath </span><span class="s2">= </span><span class="s1">local_path</span>
+            <span class="s1">is_keras_zip </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">if </span><span class="s1">is_keras_zip </span><span class="s0">or </span><span class="s1">is_keras_dir</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">load_model</span><span class="s2">(</span>
+            <span class="s1">filepath</span><span class="s2">,</span>
+            <span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span><span class="s2">,</span>
+            <span class="s1">compile</span><span class="s2">=</span><span class="s1">compile</span><span class="s2">,</span>
+            <span class="s1">safe_mode</span><span class="s2">=</span><span class="s1">safe_mode</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">((</span><span class="s3">&quot;.h5&quot;</span><span class="s2">, </span><span class="s3">&quot;.hdf5&quot;</span><span class="s2">)):</span>
+        <span class="s0">return </span><span class="s1">legacy_h5_format</span><span class="s2">.</span><span class="s1">load_model_from_hdf5</span><span class="s2">(</span>
+            <span class="s1">filepath</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span><span class="s2">, </span><span class="s1">compile</span><span class="s2">=</span><span class="s1">compile</span>
+        <span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.keras&quot;</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;File not found: filepath=</span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s3">. &quot;</span>
+            <span class="s3">&quot;Please ensure the file is an accessible `.keras` &quot;</span>
+            <span class="s3">&quot;zip file.&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;File format not supported: filepath=</span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s3">. &quot;</span>
+            <span class="s3">&quot;Keras 3 only supports V3 `.keras` files and &quot;</span>
+            <span class="s3">&quot;legacy H5 format files (`.h5` extension). &quot;</span>
+            <span class="s3">&quot;Note that the legacy SavedModel format is not &quot;</span>
+            <span class="s3">&quot;supported by `load_model()` in Keras 3. In &quot;</span>
+            <span class="s3">&quot;order to reload a TensorFlow SavedModel as an &quot;</span>
+            <span class="s3">&quot;inference-only layer in Keras 3, use &quot;</span>
+            <span class="s3">&quot;`keras.layers.TFSMLayer(&quot;</span>
+            <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s3">, call_endpoint='serving_default')` &quot;</span>
+            <span class="s3">&quot;(note that your `call_endpoint` &quot;</span>
+            <span class="s3">&quot;might have a different name).&quot;</span>
+        <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.saving.save_weights&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">save_weights</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">overwrite</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+    <span class="s0">if not </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.weights.h5&quot;</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;The filename must end in `.weights.h5`. &quot;</span>
+            <span class="s3">f&quot;Received: filepath=</span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s1">exists </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+    <span class="s0">except </span><span class="s1">TypeError</span><span class="s2">:</span>
+        <span class="s1">exists </span><span class="s2">= </span><span class="s0">False</span>
+    <span class="s0">if </span><span class="s1">exists </span><span class="s0">and not </span><span class="s1">overwrite</span><span class="s2">:</span>
+        <span class="s1">proceed </span><span class="s2">= </span><span class="s1">io_utils</span><span class="s2">.</span><span class="s1">ask_to_proceed_with_overwrite</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">proceed</span><span class="s2">:</span>
+            <span class="s0">return</span>
+    <span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">save_weights_only</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.saving.load_weights&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">load_weights</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">skip_mismatch</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.keras&quot;</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">kwargs</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">f&quot;Invalid keyword arguments: </span><span class="s0">{</span><span class="s1">kwargs</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+        <span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">load_weights_only</span><span class="s2">(</span>
+            <span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">skip_mismatch</span><span class="s2">=</span><span class="s1">skip_mismatch</span>
+        <span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.weights.h5&quot;</span><span class="s2">):</span>
+        <span class="s1">objects_to_skip </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;objects_to_skip&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">kwargs</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">f&quot;Invalid keyword arguments: </span><span class="s0">{</span><span class="s1">kwargs</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+        <span class="s1">saving_lib</span><span class="s2">.</span><span class="s1">load_weights_only</span><span class="s2">(</span>
+            <span class="s1">model</span><span class="s2">,</span>
+            <span class="s1">filepath</span><span class="s2">,</span>
+            <span class="s1">skip_mismatch</span><span class="s2">=</span><span class="s1">skip_mismatch</span><span class="s2">,</span>
+            <span class="s1">objects_to_skip</span><span class="s2">=</span><span class="s1">objects_to_skip</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.h5&quot;</span><span class="s2">) </span><span class="s0">or </span><span class="s1">str</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">).</span><span class="s1">endswith</span><span class="s2">(</span><span class="s3">&quot;.hdf5&quot;</span><span class="s2">):</span>
+        <span class="s1">by_name </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;by_name&quot;</span><span class="s2">, </span><span class="s0">False</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">kwargs</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s3">f&quot;Invalid keyword arguments: </span><span class="s0">{</span><span class="s1">kwargs</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">h5py</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ImportError</span><span class="s2">(</span>
+                <span class="s3">&quot;Loading a H5 file requires `h5py` to be installed.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">with </span><span class="s1">h5py</span><span class="s2">.</span><span class="s1">File</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s3">&quot;r&quot;</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s3">&quot;layer_names&quot; </span><span class="s0">not in </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs </span><span class="s0">and </span><span class="s3">&quot;model_weights&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">:</span>
+                <span class="s1">f </span><span class="s2">= </span><span class="s1">f</span><span class="s2">[</span><span class="s3">&quot;model_weights&quot;</span><span class="s2">]</span>
+            <span class="s0">if </span><span class="s1">by_name</span><span class="s2">:</span>
+                <span class="s1">legacy_h5_format</span><span class="s2">.</span><span class="s1">load_weights_from_hdf5_group_by_name</span><span class="s2">(</span>
+                    <span class="s1">f</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">skip_mismatch</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">legacy_h5_format</span><span class="s2">.</span><span class="s1">load_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s1">model</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;File format not supported: filepath=</span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s3">. &quot;</span>
+            <span class="s3">&quot;Keras 3 only supports V3 `.keras` and `.weights.h5` &quot;</span>
+            <span class="s3">&quot;files, or legacy V1/V2 `.h5` files.&quot;</span>
+        <span class="s2">)</span>
+</pre>
+</body>
+</html>

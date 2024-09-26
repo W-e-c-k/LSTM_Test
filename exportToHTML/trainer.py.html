@@ -1,0 +1,1110 @@
+<html>
+<head>
+<title>trainer.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #2aacb8;}
+.s4 { color: #7a7e85;}
+.s5 { color: #6aab73;}
+.s6 { color: #5f826b; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+trainer.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">import </span><span class="s1">platform</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">metrics </span><span class="s0">as </span><span class="s1">metrics_module</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">optimizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">optimizers</span><span class="s2">.</span><span class="s1">loss_scale_optimizer </span><span class="s0">import </span><span class="s1">LossScaleOptimizer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">compile_utils </span><span class="s0">import </span><span class="s1">CompileLoss</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">compile_utils </span><span class="s0">import </span><span class="s1">CompileMetrics</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">trainers</span><span class="s2">.</span><span class="s1">data_adapters </span><span class="s0">import </span><span class="s1">data_adapter_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">traceback_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">tracking</span>
+
+
+<span class="s0">class </span><span class="s1">Trainer</span><span class="s2">:</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lock </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_run_eagerly </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_jit_compile </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">compiled </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">loss </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">steps_per_execution </span><span class="s2">= </span><span class="s3">1</span>
+        <span class="s4"># Can be set by callbacks in on_train_begin</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_initial_epoch </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_loss_has_training_arg </span><span class="s2">= (</span>
+            <span class="s5">&quot;training&quot; </span><span class="s0">in </span><span class="s1">inspect</span><span class="s2">.</span><span class="s1">signature</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_loss</span><span class="s2">).</span><span class="s1">parameters</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">traceback_utils</span><span class="s2">.</span><span class="s1">filter_traceback</span>
+    <span class="s2">@</span><span class="s1">tracking</span><span class="s2">.</span><span class="s1">no_automatic_dependency_tracking</span>
+    <span class="s0">def </span><span class="s1">compile</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">optimizer</span><span class="s2">=</span><span class="s5">&quot;rmsprop&quot;</span><span class="s2">,</span>
+        <span class="s1">loss</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">loss_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">metrics</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">weighted_metrics</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">run_eagerly</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">steps_per_execution</span><span class="s2">=</span><span class="s3">1</span><span class="s2">,</span>
+        <span class="s1">jit_compile</span><span class="s2">=</span><span class="s5">&quot;auto&quot;</span><span class="s2">,</span>
+        <span class="s1">auto_scale_loss</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Configures the model for training. 
+ 
+        Example: 
+ 
+        ```python 
+        model.compile( 
+            optimizer=keras.optimizers.Adam(learning_rate=1e-3), 
+            loss=keras.losses.BinaryCrossentropy(), 
+            metrics=[ 
+                keras.metrics.BinaryAccuracy(), 
+                keras.metrics.FalseNegatives(), 
+            ], 
+        ) 
+        ``` 
+ 
+        Args: 
+            optimizer: String (name of optimizer) or optimizer instance. See 
+                `keras.optimizers`. 
+            loss: Loss function. May be a string (name of loss function), or 
+                a `keras.losses.Loss` instance. See `keras.losses`. A 
+                loss function is any callable with the signature 
+                `loss = fn(y_true, y_pred)`, where `y_true` are the ground truth 
+                values, and `y_pred` are the model's predictions. 
+                `y_true` should have shape `(batch_size, d0, .. dN)` 
+                (except in the case of sparse loss functions such as 
+                sparse categorical crossentropy which expects integer arrays of 
+                shape `(batch_size, d0, .. dN-1)`). 
+                `y_pred` should have shape `(batch_size, d0, .. dN)`. 
+                The loss function should return a float tensor. 
+            loss_weights: Optional list or dictionary specifying scalar 
+                coefficients (Python floats) to weight the loss contributions of 
+                different model outputs. The loss value that will be minimized 
+                by the model will then be the *weighted sum* of all individual 
+                losses, weighted by the `loss_weights` coefficients.  If a list, 
+                it is expected to have a 1:1 mapping to the model's outputs. If 
+                a dict, it is expected to map output names (strings) to scalar 
+                coefficients. 
+            metrics: List of metrics to be evaluated by the model during 
+                training and testing. Each of this can be a string (name of a 
+                built-in function), function or a `keras.metrics.Metric` 
+                instance. See `keras.metrics`. Typically you will use 
+                `metrics=['accuracy']`. A function is any callable with the 
+                signature `result = fn(y_true, _pred)`. To specify different 
+                metrics for different outputs of a multi-output model, you could 
+                also pass a dictionary, such as 
+                `metrics={'a':'accuracy', 'b':['accuracy', 'mse']}`. 
+                You can also pass a list to specify a metric or a list of 
+                metrics for each output, such as 
+                `metrics=[['accuracy'], ['accuracy', 'mse']]` 
+                or `metrics=['accuracy', ['accuracy', 'mse']]`. When you pass 
+                the strings 'accuracy' or 'acc', we convert this to one of 
+                `keras.metrics.BinaryAccuracy`, 
+                `keras.metrics.CategoricalAccuracy`, 
+                `keras.metrics.SparseCategoricalAccuracy` based on the 
+                shapes of the targets and of the model output. A similar 
+                conversion is done for the strings `&quot;crossentropy&quot;` 
+                and `&quot;ce&quot;` as well. 
+                The metrics passed here are evaluated without sample weighting; 
+                if you would like sample weighting to apply, you can specify 
+                your metrics via the `weighted_metrics` argument instead. 
+            weighted_metrics: List of metrics to be evaluated and weighted by 
+                `sample_weight` or `class_weight` during training and testing. 
+            run_eagerly: Bool. If `True`, this model's forward pass 
+                 will never be compiled. It is recommended to leave this 
+                 as `False` when training (for best performance), 
+                 and to set it to `True` when debugging. 
+            steps_per_execution: Int. The number of batches to run 
+                during each a single compiled function call. Running multiple 
+                batches inside a single compiled function call can 
+                greatly improve performance on TPUs or small models with a large 
+                Python overhead. At most, one full epoch will be run each 
+                execution. If a number larger than the size of the epoch is 
+                passed, the execution will be truncated to the size of the 
+                epoch. Note that if `steps_per_execution` is set to `N`, 
+                `Callback.on_batch_begin` and `Callback.on_batch_end` methods 
+                will only be called every `N` batches (i.e. before/after 
+                each compiled function execution). 
+                Not supported with the PyTorch backend. 
+            jit_compile: Bool or `&quot;auto&quot;`. Whether to use XLA compilation when 
+                compiling a model. For `jax` and `tensorflow` backends, 
+                `jit_compile=&quot;auto&quot;` enables XLA compilation if the model 
+                supports it, and disabled otherwise. 
+                For `torch` backend, `&quot;auto&quot;` will default to eager 
+                execution and `jit_compile=True` will run with `torch.compile` 
+                with the `&quot;inductor&quot;` backend. 
+            auto_scale_loss: Bool. If `True` and the model dtype policy is 
+                `&quot;mixed_float16&quot;`, the passed optimizer will be automatically 
+                wrapped in a `LossScaleOptimizer`, which will dynamically 
+                scale the loss to prevent underflow. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">optimizer </span><span class="s2">= </span><span class="s1">optimizers</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">optimizer</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer </span><span class="s2">= </span><span class="s1">optimizer</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">auto_scale_loss</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">dtype_policy</span><span class="s2">.</span><span class="s1">name </span><span class="s2">== </span><span class="s5">&quot;mixed_float16&quot;</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer</span>
+            <span class="s0">and not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s1">LossScaleOptimizer</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer </span><span class="s2">= </span><span class="s1">LossScaleOptimizer</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;loss_scale_optimizer&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s5">&quot;output_names&quot;</span><span class="s2">):</span>
+            <span class="s1">output_names </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">output_names</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">output_names </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">loss </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss </span><span class="s2">= </span><span class="s1">CompileLoss</span><span class="s2">(</span>
+                <span class="s1">loss</span><span class="s2">, </span><span class="s1">loss_weights</span><span class="s2">, </span><span class="s1">output_names</span><span class="s2">=</span><span class="s1">output_names</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">loss </span><span class="s2">= </span><span class="s1">loss</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">metrics </span><span class="s0">is not None or </span><span class="s1">weighted_metrics </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics </span><span class="s2">= </span><span class="s1">CompileMetrics</span><span class="s2">(</span>
+                <span class="s1">metrics</span><span class="s2">, </span><span class="s1">weighted_metrics</span><span class="s2">, </span><span class="s1">output_names</span><span class="s2">=</span><span class="s1">output_names</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">jit_compile </span><span class="s2">== </span><span class="s5">&quot;auto&quot;</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">run_eagerly</span><span class="s2">:</span>
+                <span class="s1">jit_compile </span><span class="s2">= </span><span class="s0">False</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">jit_compile </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_resolve_auto_jit_compile</span><span class="s2">()</span>
+        <span class="s0">if </span><span class="s1">jit_compile </span><span class="s0">and </span><span class="s1">run_eagerly</span><span class="s2">:</span>
+            <span class="s1">jit_compile </span><span class="s2">= </span><span class="s0">False</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s5">&quot;If `run_eagerly` is True, then `jit_compile` &quot;</span>
+                <span class="s5">&quot;cannot also be True. Disabling `jit_compile`.&quot;</span><span class="s2">,</span>
+                <span class="s1">stacklevel</span><span class="s2">=</span><span class="s3">2</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">jit_compile </span><span class="s2">= </span><span class="s1">jit_compile</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">run_eagerly </span><span class="s2">= </span><span class="s1">run_eagerly</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">stop_training </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">compiled </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_loss_tracker </span><span class="s2">= </span><span class="s1">metrics_module</span><span class="s2">.</span><span class="s1">Mean</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s5">&quot;loss&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">steps_per_execution </span><span class="s2">= </span><span class="s1">steps_per_execution</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">train_function </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">test_function </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">predict_function </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_config </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">SerializableDict</span><span class="s2">(</span>
+            <span class="s1">optimizer</span><span class="s2">=</span><span class="s1">optimizer</span><span class="s2">,</span>
+            <span class="s1">loss</span><span class="s2">=</span><span class="s1">loss</span><span class="s2">,</span>
+            <span class="s1">loss_weights</span><span class="s2">=</span><span class="s1">loss_weights</span><span class="s2">,</span>
+            <span class="s1">metrics</span><span class="s2">=</span><span class="s1">metrics</span><span class="s2">,</span>
+            <span class="s1">weighted_metrics</span><span class="s2">=</span><span class="s1">weighted_metrics</span><span class="s2">,</span>
+            <span class="s1">run_eagerly</span><span class="s2">=</span><span class="s1">run_eagerly</span><span class="s2">,</span>
+            <span class="s1">steps_per_execution</span><span class="s2">=</span><span class="s1">steps_per_execution</span><span class="s2">,</span>
+            <span class="s1">jit_compile</span><span class="s2">=</span><span class="s1">jit_compile</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">jit_compile</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_jit_compile </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s4"># Value was never set. Resolve it now.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_jit_compile </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_resolve_auto_jit_compile</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_jit_compile</span>
+
+    <span class="s2">@</span><span class="s1">jit_compile</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">jit_compile</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">value</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">value </span><span class="s0">and not </span><span class="s1">model_supports_jit</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s5">&quot;Model doesn't support `jit_compile=True`. &quot;</span>
+                <span class="s5">&quot;Proceeding with `jit_compile=False`.&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_jit_compile </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_jit_compile </span><span class="s2">= </span><span class="s1">value</span>
+
+    <span class="s0">def </span><span class="s1">_resolve_auto_jit_compile</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() == </span><span class="s5">&quot;torch&quot;</span><span class="s2">:</span>
+            <span class="s4"># jit_compile = &quot;auto&quot; with the pytorch backend defaults to eager</span>
+            <span class="s0">return False</span>
+
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() == </span><span class="s5">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+            <span class="s1">devices </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">config</span><span class="s2">.</span><span class="s1">list_physical_devices</span><span class="s2">()</span>
+            <span class="s0">if not </span><span class="s1">list</span><span class="s2">(</span><span class="s1">filter</span><span class="s2">(</span><span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">x</span><span class="s2">.</span><span class="s1">device_type </span><span class="s2">!= </span><span class="s5">&quot;CPU&quot;</span><span class="s2">, </span><span class="s1">devices</span><span class="s2">)):</span>
+                <span class="s4"># Disable XLA on CPU-only machines.</span>
+                <span class="s0">return False</span>
+
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_distribute_strategy</span><span class="s2">:</span>
+                <span class="s4"># Disable XLA with tf.distribute</span>
+                <span class="s0">return False</span>
+
+        <span class="s0">if </span><span class="s1">model_supports_jit</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+            <span class="s0">return True</span>
+        <span class="s0">return False</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">run_eagerly</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_run_eagerly</span>
+
+    <span class="s2">@</span><span class="s1">run_eagerly</span><span class="s2">.</span><span class="s1">setter</span>
+    <span class="s0">def </span><span class="s1">run_eagerly</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">value</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_run_eagerly </span><span class="s2">= </span><span class="s1">value</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">metrics</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">metrics </span><span class="s2">= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_loss_tracker</span><span class="s2">] </span><span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compiled </span><span class="s0">else </span><span class="s2">[]</span>
+        <span class="s1">metrics</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span><span class="s1">super</span><span class="s2">().</span><span class="s1">metrics</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compiled </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">metrics </span><span class="s2">+= [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compiled </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">metrics</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">metrics</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">metrics_names</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">[</span><span class="s1">m</span><span class="s2">.</span><span class="s1">name </span><span class="s0">for </span><span class="s1">m </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">reset_metrics</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">for </span><span class="s1">m </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">:</span>
+            <span class="s1">m</span><span class="s2">.</span><span class="s1">reset_state</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">compute_loss</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y_pred</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">training</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Compute the total loss, validate it, and return it. 
+ 
+        Subclasses can optionally override this method to provide custom loss 
+        computation logic. 
+ 
+        Example: 
+ 
+        ```python 
+        class MyModel(Model): 
+            def __init__(self, *args, **kwargs): 
+                super().__init__(*args, **kwargs) 
+                self.loss_tracker = metrics.Mean(name='loss') 
+ 
+            def compute_loss(self, x, y, y_pred, sample_weight, training=True): 
+                loss = ops.mean((y_pred - y) ** 2) 
+                loss += ops.sum(self.losses) 
+                self.loss_tracker.update_state(loss) 
+                return loss 
+ 
+            def reset_metrics(self): 
+                self.loss_tracker.reset_state() 
+ 
+            @property 
+            def metrics(self): 
+                return [self.loss_tracker] 
+ 
+        inputs = layers.Input(shape=(10,), name='my_input') 
+        outputs = layers.Dense(10)(inputs) 
+        model = MyModel(inputs, outputs) 
+        model.add_loss(ops.sum(outputs)) 
+ 
+        optimizer = SGD() 
+        model.compile(optimizer, loss='mse', steps_per_execution=10) 
+        dataset = ... 
+        model.fit(dataset, epochs=2, steps_per_epoch=10) 
+        print(f&quot;Custom loss: {model.loss_tracker.result()}&quot;) 
+        ``` 
+ 
+        Args: 
+            x: Input data. 
+            y: Target data. 
+            y_pred: Predictions returned by the model (output of `model(x)`) 
+            sample_weight: Sample weights for weighting the loss function. 
+            training: Whether we are training or evaluating the model. 
+ 
+        Returns: 
+            The total loss as a scalar tensor, or `None` if no loss results 
+            (which is the case when called by `Model.test_step`). 
+        &quot;&quot;&quot;</span>
+        <span class="s4"># The default implementation does not use `x` or `training`.</span>
+        <span class="s0">del </span><span class="s1">x</span>
+        <span class="s0">del </span><span class="s1">training</span>
+        <span class="s1">losses </span><span class="s2">= []</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">loss </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss</span><span class="s2">(</span><span class="s1">y</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">loss </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">losses</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">loss</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">loss </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">losses</span><span class="s2">:</span>
+            <span class="s1">losses</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">loss</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">())))</span>
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s5">&quot;jax&quot; </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">losses</span><span class="s2">) == </span><span class="s3">0</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;No loss to compute. Provide a `loss` argument in `compile()`.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">losses</span><span class="s2">) == </span><span class="s3">1</span><span class="s2">:</span>
+            <span class="s1">total_loss </span><span class="s2">= </span><span class="s1">losses</span><span class="s2">[</span><span class="s3">0</span><span class="s2">]</span>
+        <span class="s0">elif </span><span class="s1">len</span><span class="s2">(</span><span class="s1">losses</span><span class="s2">) == </span><span class="s3">0</span><span class="s2">:</span>
+            <span class="s1">total_loss </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">zeros</span><span class="s2">(())</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">total_loss </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">losses</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">total_loss</span>
+
+    <span class="s0">def </span><span class="s1">_compute_loss</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y_pred</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">training</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Backwards compatibility wrapper for `compute_loss`. 
+ 
+        This should be used instead `compute_loss` within `train_step` and 
+        `test_step` to support overrides of `compute_loss` that may not have 
+        the `training` argument, as this argument was added in Keras 3.3. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_loss_has_training_arg</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_loss</span><span class="s2">(</span>
+                <span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s1">training</span>
+            <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_loss</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">stateless_compute_loss</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">trainable_variables</span><span class="s2">,</span>
+        <span class="s1">non_trainable_variables</span><span class="s2">,</span>
+        <span class="s1">metrics_variables</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y_pred</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">training</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">var_mapping </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">trainable_variables</span><span class="s2">, </span><span class="s1">trainable_variables</span><span class="s2">))</span>
+        <span class="s1">var_mapping</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span>
+            <span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">non_trainable_variables</span><span class="s2">, </span><span class="s1">non_trainable_variables</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">var_mapping</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span><span class="s1">zip</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">metrics_variables</span><span class="s2">, </span><span class="s1">metrics_variables</span><span class="s2">))</span>
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">StatelessScope</span><span class="s2">(</span><span class="s1">state_mapping</span><span class="s2">=</span><span class="s1">var_mapping</span><span class="s2">) </span><span class="s0">as </span><span class="s1">scope</span><span class="s2">:</span>
+            <span class="s4"># Note that this is needed for the regularization loss, which need</span>
+            <span class="s4"># the latest value of train/non-trainable variables.</span>
+            <span class="s1">loss </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_loss</span><span class="s2">(</span>
+                <span class="s1">x</span><span class="s2">,</span>
+                <span class="s1">y</span><span class="s2">,</span>
+                <span class="s1">y_pred</span><span class="s2">,</span>
+                <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+                <span class="s1">training</span><span class="s2">=</span><span class="s1">training</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s4"># Update non trainable vars (may have been updated in compute_loss)</span>
+        <span class="s1">non_trainable_variables </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">non_trainable_variables</span><span class="s2">:</span>
+            <span class="s1">new_v </span><span class="s2">= </span><span class="s1">scope</span><span class="s2">.</span><span class="s1">get_current_value</span><span class="s2">(</span><span class="s1">v</span><span class="s2">)</span>
+            <span class="s1">non_trainable_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">new_v</span><span class="s2">)</span>
+
+        <span class="s4"># Update metrics vars (may have been updated in compute_loss)</span>
+        <span class="s1">metrics_variables </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">metrics_variables</span><span class="s2">:</span>
+            <span class="s1">new_v </span><span class="s2">= </span><span class="s1">scope</span><span class="s2">.</span><span class="s1">get_current_value</span><span class="s2">(</span><span class="s1">v</span><span class="s2">)</span>
+            <span class="s1">metrics_variables</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">new_v</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">loss</span><span class="s2">, (</span>
+            <span class="s1">trainable_variables</span><span class="s2">,</span>
+            <span class="s1">non_trainable_variables</span><span class="s2">,</span>
+            <span class="s1">metrics_variables</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">compute_metrics</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">y</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Update metric states and collect all metrics to be returned. 
+ 
+        Subclasses can optionally override this method to provide custom metric 
+        updating and collection logic. Custom metrics are not passed in 
+        `compile()`, they can be created in `__init__` or `build`. They are 
+        automatically tracked and returned by `self.metrics`. 
+ 
+        Example: 
+ 
+        ```python 
+        class MyModel(Sequential): 
+            def __init__(self, *args, **kwargs): 
+                super().__init__(*args, **kwargs) 
+                self.custom_metric = MyMetric(name=&quot;custom_metric&quot;) 
+ 
+            def compute_metrics(self, x, y, y_pred, sample_weight): 
+                # This super call updates metrics from `compile` and returns 
+                # results for all metrics listed in `self.metrics`. 
+                metric_results = super().compute_metrics( 
+                    x, y, y_pred, sample_weight) 
+ 
+                # `metric_results` contains the previous result for 
+                # `custom_metric`, this is where we update it. 
+                self.custom_metric.update_state(x, y, y_pred, sample_weight) 
+                metric_results['custom_metric'] = self.custom_metric.result() 
+                return metric_results 
+        ``` 
+ 
+        Args: 
+            x: Input data. 
+            y: Target data. 
+            y_pred: Predictions returned by the model output of `model.call(x)`. 
+            sample_weight: Sample weights for weighting the loss function. 
+ 
+        Returns: 
+            A `dict` containing values that will be passed to 
+            `keras.callbacks.CallbackList.on_train_batch_end()`. Typically, 
+            the values of the metrics listed in `self.metrics` are returned. 
+            Example: `{'loss': 0.2, 'accuracy': 0.7}`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">del </span><span class="s1">x  </span><span class="s4"># The default implementation does not use `x`.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">y</span><span class="s2">, </span><span class="s1">y_pred</span><span class="s2">, </span><span class="s1">sample_weight</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">get_metrics_result</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">get_metrics_result</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Returns the model's metrics values as a dict. 
+ 
+        If any of the metric result is a dict (containing multiple metrics), 
+        each of them gets added to the top level returned dict of this method. 
+ 
+        Returns: 
+            A `dict` containing values of the metrics listed in `self.metrics`. 
+            Example: `{'loss': 0.2, 'accuracy': 0.7}`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">return_metrics </span><span class="s2">= {}</span>
+        <span class="s0">for </span><span class="s1">metric </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">:</span>
+            <span class="s1">result </span><span class="s2">= </span><span class="s1">metric</span><span class="s2">.</span><span class="s1">result</span><span class="s2">()</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">result</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+                <span class="s1">return_metrics</span><span class="s2">.</span><span class="s1">update</span><span class="s2">(</span><span class="s1">result</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">return_metrics</span><span class="s2">[</span><span class="s1">metric</span><span class="s2">.</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">result</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_pythonify_logs</span><span class="s2">(</span><span class="s1">return_metrics</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">fit</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">epochs</span><span class="s2">=</span><span class="s3">1</span><span class="s2">,</span>
+        <span class="s1">verbose</span><span class="s2">=</span><span class="s5">&quot;auto&quot;</span><span class="s2">,</span>
+        <span class="s1">callbacks</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">validation_split</span><span class="s2">=</span><span class="s3">0.0</span><span class="s2">,</span>
+        <span class="s1">validation_data</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">shuffle</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">class_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">initial_epoch</span><span class="s2">=</span><span class="s3">0</span><span class="s2">,</span>
+        <span class="s1">steps_per_epoch</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">validation_steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">validation_batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">validation_freq</span><span class="s2">=</span><span class="s3">1</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Trains the model for a fixed number of epochs (dataset iterations). 
+ 
+        Args: 
+            x: Input data. It could be: 
+                - A NumPy array (or array-like), or a list of arrays 
+                (in case the model has multiple inputs). 
+                - A tensor, or a list of tensors 
+                (in case the model has multiple inputs). 
+                - A dict mapping input names to the corresponding array/tensors, 
+                if the model has named inputs. 
+                - A `tf.data.Dataset`. Should return a tuple 
+                of either `(inputs, targets)` or 
+                `(inputs, targets, sample_weights)`. 
+                - A `keras.utils.PyDataset` returning `(inputs, 
+                targets)` or `(inputs, targets, sample_weights)`. 
+            y: Target data. Like the input data `x`, 
+                it could be either NumPy array(s) or backend-native tensor(s). 
+                If `x` is a dataset, generator, 
+                or `keras.utils.PyDataset` instance, `y` should 
+                not be specified (since targets will be obtained from `x`). 
+            batch_size: Integer or `None`. 
+                Number of samples per gradient update. 
+                If unspecified, `batch_size` will default to 32. 
+                Do not specify the `batch_size` if your data is in the 
+                form of datasets, generators, or `keras.utils.PyDataset` 
+                instances (since they generate batches). 
+            epochs: Integer. Number of epochs to train the model. 
+                An epoch is an iteration over the entire `x` and `y` 
+                data provided 
+                (unless the `steps_per_epoch` flag is set to 
+                something other than None). 
+                Note that in conjunction with `initial_epoch`, 
+                `epochs` is to be understood as &quot;final epoch&quot;. 
+                The model is not trained for a number of iterations 
+                given by `epochs`, but merely until the epoch 
+                of index `epochs` is reached. 
+            verbose: `&quot;auto&quot;`, 0, 1, or 2. Verbosity mode. 
+                0 = silent, 1 = progress bar, 2 = one line per epoch. 
+                &quot;auto&quot; becomes 1 for most cases. 
+                Note that the progress bar is not 
+                particularly useful when logged to a file, 
+                so `verbose=2` is recommended when not running interactively 
+                (e.g., in a production environment). Defaults to `&quot;auto&quot;`. 
+            callbacks: List of `keras.callbacks.Callback` instances. 
+                List of callbacks to apply during training. 
+                See `keras.callbacks`. Note 
+                `keras.callbacks.ProgbarLogger` and 
+                `keras.callbacks.History` callbacks are created 
+                automatically and need not be passed to `model.fit()`. 
+                `keras.callbacks.ProgbarLogger` is created 
+                or not based on the `verbose` argument in `model.fit()`. 
+            validation_split: Float between 0 and 1. 
+                Fraction of the training data to be used as validation data. 
+                The model will set apart this fraction of the training data, 
+                will not train on it, and will evaluate 
+                the loss and any model metrics 
+                on this data at the end of each epoch. 
+                The validation data is selected from the last samples 
+                in the `x` and `y` data provided, before shuffling. This 
+                argument is not supported when `x` is a dataset, generator or 
+                `keras.utils.PyDataset` instance. 
+                If both `validation_data` and `validation_split` are provided, 
+                `validation_data` will override `validation_split`. 
+            validation_data: Data on which to evaluate 
+                the loss and any model metrics at the end of each epoch. 
+                The model will not be trained on this data. Thus, note the fact 
+                that the validation loss of data provided using 
+                `validation_split` or `validation_data` is not affected by 
+                regularization layers like noise and dropout. 
+                `validation_data` will override `validation_split`. 
+                It could be: 
+                - A tuple `(x_val, y_val)` of NumPy arrays or tensors. 
+                - A tuple `(x_val, y_val, val_sample_weights)` of NumPy 
+                arrays. 
+                - A `tf.data.Dataset`. 
+                - A Python generator or `keras.utils.PyDataset` returning 
+                `(inputs, targets)` or `(inputs, targets, sample_weights)`. 
+            shuffle: Boolean, whether to shuffle the training data 
+                before each epoch. This argument is 
+                ignored when `x` is a generator or a `tf.data.Dataset`. 
+            class_weight: Optional dictionary mapping class indices (integers) 
+                to a weight (float) value, used for weighting the loss function 
+                (during training only). 
+                This can be useful to tell the model to 
+                &quot;pay more attention&quot; to samples from 
+                an under-represented class. When `class_weight` is specified 
+                and targets have a rank of 2 or greater, either `y` must be 
+                one-hot encoded, or an explicit final dimension of `1` must 
+                be included for sparse class labels. 
+            sample_weight: Optional NumPy array of weights for 
+                the training samples, used for weighting the loss function 
+                (during training only). You can either pass a flat (1D) 
+                NumPy array with the same length as the input samples 
+                (1:1 mapping between weights and samples), 
+                or in the case of temporal data, 
+                you can pass a 2D array with shape 
+                `(samples, sequence_length)`, 
+                to apply a different weight to every timestep of every sample. 
+                This argument is not supported when `x` is a dataset, generator, 
+                or `keras.utils.PyDataset` instance, instead provide the 
+                sample_weights as the third element of `x`. 
+                Note that sample weighting does not apply to metrics specified 
+                via the `metrics` argument in `compile()`. To apply sample 
+                weighting to your metrics, you can specify them via the 
+                `weighted_metrics` in `compile()` instead. 
+            initial_epoch: Integer. 
+                Epoch at which to start training 
+                (useful for resuming a previous training run). 
+            steps_per_epoch: Integer or `None`. 
+                Total number of steps (batches of samples) 
+                before declaring one epoch finished and starting the 
+                next epoch. When training with input tensors such as 
+                backend-native tensors, the default `None` is equal to 
+                the number of samples in your dataset divided by 
+                the batch size, or 1 if that cannot be determined. If `x` is a 
+                `tf.data.Dataset`, and `steps_per_epoch` 
+                is `None`, the epoch will run until the input dataset is 
+                exhausted.  When passing an infinitely repeating dataset, you 
+                must specify the `steps_per_epoch` argument. If 
+                `steps_per_epoch=-1` the training will run indefinitely with an 
+                infinitely repeating dataset. 
+            validation_steps: Only relevant if `validation_data` is provided. 
+                Total number of steps (batches of 
+                samples) to draw before stopping when performing validation 
+                at the end of every epoch. If `validation_steps` is `None`, 
+                validation will run until the `validation_data` dataset is 
+                exhausted. In the case of an infinitely repeated dataset, it 
+                will run into an infinite loop. If `validation_steps` is 
+                specified and only part of the dataset will be consumed, the 
+                evaluation will start from the beginning of the dataset at each 
+                epoch. This ensures that the same validation samples are used 
+                every time. 
+            validation_batch_size: Integer or `None`. 
+                Number of samples per validation batch. 
+                If unspecified, will default to `batch_size`. 
+                Do not specify the `validation_batch_size` if your data is in 
+                the form of datasets or `keras.utils.PyDataset` 
+                instances (since they generate batches). 
+            validation_freq: Only relevant if validation data is provided. 
+                Specifies how many training epochs to run 
+                before a new validation run is performed, 
+                e.g. `validation_freq=2` runs validation every 2 epochs. 
+ 
+        Unpacking behavior for iterator-like inputs: 
+            A common pattern is to pass an iterator like object such as a 
+            `tf.data.Dataset` or a `keras.utils.PyDataset` to `fit()`, 
+            which will in fact yield not only features (`x`) 
+            but optionally targets (`y`) and sample weights (`sample_weight`). 
+            Keras requires that the output of such iterator-likes be 
+            unambiguous. The iterator should return a tuple 
+            of length 1, 2, or 3, where the optional second and third elements 
+            will be used for `y` and `sample_weight` respectively. 
+            Any other type provided will be wrapped in 
+            a length-one tuple, effectively treating everything as `x`. When 
+            yielding dicts, they should still adhere to the top-level tuple 
+            structure, 
+            e.g. `({&quot;x0&quot;: x0, &quot;x1&quot;: x1}, y)`. Keras will not attempt to separate 
+            features, targets, and weights from the keys of a single dict. 
+            A notable unsupported data type is the `namedtuple`. The reason is 
+            that it behaves like both an ordered datatype (tuple) and a mapping 
+            datatype (dict). So given a namedtuple of the form: 
+            `namedtuple(&quot;example_tuple&quot;, [&quot;y&quot;, &quot;x&quot;])` 
+            it is ambiguous whether to reverse the order of the elements when 
+            interpreting the value. Even worse is a tuple of the form: 
+            `namedtuple(&quot;other_tuple&quot;, [&quot;x&quot;, &quot;y&quot;, &quot;z&quot;])` 
+            where it is unclear if the tuple was intended to be unpacked 
+            into `x`, `y`, and `sample_weight` or passed through 
+            as a single element to `x`. 
+ 
+        Returns: 
+            A `History` object. Its `History.history` attribute is 
+            a record of training loss values and metrics values 
+            at successive epochs, as well as validation loss values 
+            and validation metrics values (if applicable). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">evaluate</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">verbose</span><span class="s2">=</span><span class="s5">&quot;auto&quot;</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">callbacks</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">return_dict</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Returns the loss value &amp; metrics values for the model in test mode. 
+ 
+        Computation is done in batches (see the `batch_size` arg.) 
+ 
+        Args: 
+            x: Input data. It could be: 
+                - A NumPy array (or array-like), or a list of arrays 
+                    (in case the model has multiple inputs). 
+                - A tensor, or a list of tensors 
+                    (in case the model has multiple inputs). 
+                - A dict mapping input names to the corresponding array/tensors, 
+                    if the model has named inputs. 
+                - A `tf.data.Dataset`. Should return a tuple 
+                    of either `(inputs, targets)` or 
+                    `(inputs, targets, sample_weights)`. 
+                - A generator or `keras.utils.PyDataset` returning 
+                    `(inputs, targets)` or `(inputs, targets, sample_weights)`. 
+            y: Target data. Like the input data `x`, it could be either NumPy 
+                array(s) or backend-native tensor(s). 
+                If `x` is a `tf.data.Dataset` or `keras.utils.PyDataset` 
+                instance, `y` should not be specified 
+                (since targets will be obtained from the iterator/dataset). 
+            batch_size: Integer or `None`. Number of samples per batch of 
+                computation. If unspecified, `batch_size` will default to 32. Do 
+                not specify the `batch_size` if your data is in the form of a 
+                dataset, generators, or `keras.utils.PyDataset` instances 
+                (since they generate batches). 
+            verbose: `&quot;auto&quot;`, 0, 1, or 2. Verbosity mode. 
+                0 = silent, 1 = progress bar, 2 = single line. 
+                `&quot;auto&quot;` becomes 1 for most cases. 
+                Note that the progress bar is not 
+                particularly useful when logged to a file, so `verbose=2` is 
+                recommended when not running interactively 
+                (e.g. in a production environment). Defaults to `&quot;auto&quot;`. 
+            sample_weight: Optional NumPy array of weights for the test samples, 
+                used for weighting the loss function. You can either pass a flat 
+                (1D) NumPy array with the same length as the input samples 
+                (1:1 mapping between weights and samples), or in the case of 
+                temporal data, you can pass a 2D array with shape `(samples, 
+                sequence_length)`, to apply a different weight to every 
+                timestep of every sample. This argument is not supported when 
+                `x` is a dataset, instead pass sample weights as the third 
+                element of `x`. 
+            steps: Integer or `None`. Total number of steps (batches of samples) 
+                before declaring the evaluation round finished. Ignored with the 
+                default value of `None`. If `x` is a `tf.data.Dataset` and 
+                `steps` is `None`, evaluation will run until the dataset 
+                is exhausted. 
+            callbacks: List of `keras.callbacks.Callback` instances. 
+                List of callbacks to apply during evaluation. 
+            return_dict: If `True`, loss and metric results are returned as a 
+                dict, with each key being the name of the metric. 
+                If `False`, they are returned as a list. 
+ 
+        Returns: 
+            Scalar test loss (if the model has a single output and no metrics) 
+            or list of scalars (if the model has multiple outputs 
+            and/or metrics). The attribute `model.metrics_names` will give you 
+            the display labels for the scalar outputs. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">predict</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">verbose</span><span class="s2">=</span><span class="s5">&quot;auto&quot;</span><span class="s2">, </span><span class="s1">steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">callbacks</span><span class="s2">=</span><span class="s0">None</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Generates output predictions for the input samples. 
+ 
+        Computation is done in batches. This method is designed for batch 
+        processing of large numbers of inputs. It is not intended for use inside 
+        of loops that iterate over your data and process small numbers of inputs 
+        at a time. 
+ 
+        For small numbers of inputs that fit in one batch, 
+        directly use `__call__()` for faster execution, e.g., 
+        `model(x)`, or `model(x, training=False)` if you have layers such as 
+        `BatchNormalization` that behave differently during 
+        inference. 
+ 
+        Note: See [this FAQ entry]( 
+        https://keras.io/getting_started/faq/#whats-the-difference-between-model-methods-predict-and-call) 
+        for more details about the difference between `Model` methods 
+        `predict()` and `__call__()`. 
+ 
+        Args: 
+            x: Input samples. It could be: 
+                - A NumPy array (or array-like), or a list of arrays 
+                    (in case the model has multiple inputs). 
+                - A tensor, or a list of tensors 
+                    (in case the model has multiple inputs). 
+                - A `tf.data.Dataset`. 
+                - A `keras.utils.PyDataset` instance. 
+            batch_size: Integer or `None`. 
+                Number of samples per batch. 
+                If unspecified, `batch_size` will default to 32. 
+                Do not specify the `batch_size` if your data is in the 
+                form of dataset, generators, or `keras.utils.PyDataset` 
+                instances (since they generate batches). 
+            verbose: `&quot;auto&quot;`, 0, 1, or 2. Verbosity mode. 
+                0 = silent, 1 = progress bar, 2 = single line. 
+                `&quot;auto&quot;` becomes 1 for most cases. Note that the progress bar 
+                is not particularly useful when logged to a file, 
+                so `verbose=2` is recommended when not running interactively 
+                (e.g. in a production environment). Defaults to `&quot;auto&quot;`. 
+            steps: Total number of steps (batches of samples) 
+                before declaring the prediction round finished. 
+                Ignored with the default value of `None`. 
+                If `x` is a `tf.data.Dataset` and `steps` is `None`, 
+                `predict()` will run until the input dataset is exhausted. 
+            callbacks: List of `keras.callbacks.Callback` instances. 
+                List of callbacks to apply during prediction. 
+ 
+        Returns: 
+            NumPy array(s) of predictions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">train_on_batch</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">class_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">return_dict</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Runs a single gradient update on a single batch of data. 
+ 
+        Args: 
+            x: Input data. Must be array-like. 
+            y: Target data. Must be array-like. 
+            sample_weight: Optional array of the same length as x, containing 
+                weights to apply to the model's loss for each sample. 
+                In the case of temporal data, you can pass a 2D array 
+                with shape `(samples, sequence_length)`, to apply a different 
+                weight to every timestep of every sample. 
+            class_weight: Optional dictionary mapping class indices (integers) 
+                to a weight (float) to apply to the model's loss for the samples 
+                from this class during training. This can be useful to tell the 
+                model to &quot;pay more attention&quot; to samples from an 
+                under-represented class. When `class_weight` is specified 
+                and targets have a rank of 2 or greater, either `y` must 
+                be one-hot encoded, or an explicit final dimension of 1 
+                must be included for sparse class labels. 
+            return_dict: If `True`, loss and metric results are returned as a 
+                dict, with each key being the name of the metric. If `False`, 
+                they are returned as a list. 
+ 
+        Returns: 
+            A scalar loss value (when no metrics and `return_dict=False`), 
+            a list of loss and metric values 
+            (if there are metrics and `return_dict=False`), or a dict of 
+            metric and loss values (if `return_dict=True`). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">test_on_batch</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">x</span><span class="s2">,</span>
+        <span class="s1">y</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sample_weight</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">return_dict</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Test the model on a single batch of samples. 
+ 
+        Args: 
+            x: Input data. Must be array-like. 
+            y: Target data. Must be array-like. 
+            sample_weight: Optional array of the same length as x, containing 
+                weights to apply to the model's loss for each sample. 
+                In the case of temporal data, you can pass a 2D array 
+                with shape `(samples, sequence_length)`, to apply a different 
+                weight to every timestep of every sample. 
+            return_dict: If `True`, loss and metric results are returned as a 
+                dict, with each key being the name of the metric. If `False`, 
+                they are returned as a list. 
+ 
+        Returns: 
+            A scalar loss value (when no metrics and `return_dict=False`), 
+            a list of loss and metric values 
+            (if there are metrics and `return_dict=False`), or a dict of 
+            metric and loss values (if `return_dict=True`). 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">predict_on_batch</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Returns predictions for a single batch of samples. 
+ 
+        Args: 
+            x: Input data. It must be array-like. 
+ 
+        Returns: 
+            NumPy array(s) of predictions. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+
+    <span class="s0">def </span><span class="s1">get_compile_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Returns a serialized config with information for compiling the model. 
+ 
+        This method returns a config dictionary containing all the information 
+        (optimizer, loss, metrics, etc.) with which the model was compiled. 
+ 
+        Returns: 
+            A dict containing information for compiling the model. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compiled </span><span class="s0">and </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s5">&quot;_compile_config&quot;</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_config</span><span class="s2">.</span><span class="s1">serialize</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">compile_from_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Compiles the model with the information given in config. 
+ 
+        This method uses the information in the config (optimizer, loss, 
+        metrics, etc.) to compile the model. 
+ 
+        Args: 
+            config: Dict containing information for compiling the model. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">has_overridden_compile </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">compile </span><span class="s2">!= </span><span class="s1">Trainer</span><span class="s2">.</span><span class="s1">compile</span>
+        <span class="s0">if </span><span class="s1">has_overridden_compile</span><span class="s2">:</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s5">&quot;`compile()` was not called as part of model loading &quot;</span>
+                <span class="s5">&quot;because the model's `compile()` method is custom. &quot;</span>
+                <span class="s5">&quot;All subclassed Models that have `compile()` &quot;</span>
+                <span class="s5">&quot;overridden should also override &quot;</span>
+                <span class="s5">&quot;`get_compile_config()` and `compile_from_config(config)`. &quot;</span>
+                <span class="s5">&quot;Alternatively, you can &quot;</span>
+                <span class="s5">&quot;call `compile()` manually after loading.&quot;</span><span class="s2">,</span>
+                <span class="s1">stacklevel</span><span class="s2">=</span><span class="s3">2</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s0">return</span>
+        <span class="s1">config </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span><span class="s1">config</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">compile</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s5">&quot;optimizer&quot;</span><span class="s2">) </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s4"># Create optimizer variables.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">trainable_variables</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_should_eval</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">, </span><span class="s1">validation_freq</span><span class="s2">):</span>
+        <span class="s1">epoch </span><span class="s2">= </span><span class="s1">epoch </span><span class="s2">+ </span><span class="s3">1  </span><span class="s4"># one-index the user-facing epoch.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">validation_freq</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">epoch </span><span class="s2">% </span><span class="s1">validation_freq </span><span class="s2">== </span><span class="s3">0</span>
+        <span class="s0">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">validation_freq</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">epoch </span><span class="s0">in </span><span class="s1">validation_freq</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s5">&quot;Expected `validation_freq` to be a list or int. &quot;</span>
+                <span class="s5">f&quot;Received: validation_freq=</span><span class="s0">{</span><span class="s1">validation_freq</span><span class="s0">} </span><span class="s5">of the &quot;</span>
+                <span class="s5">f&quot;type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">validation_freq</span><span class="s2">)</span><span class="s0">}</span><span class="s5">.&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_pythonify_logs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">):</span>
+        <span class="s1">result </span><span class="s2">= {}</span>
+        <span class="s0">for </span><span class="s1">key</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()):</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+                <span class="s1">result</span><span class="s2">.</span><span class="s1">update</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_pythonify_logs</span><span class="s2">(</span><span class="s1">value</span><span class="s2">))</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">try</span><span class="s2">:</span>
+                    <span class="s1">value </span><span class="s2">= </span><span class="s1">float</span><span class="s2">(</span><span class="s1">value</span><span class="s2">)</span>
+                <span class="s0">except</span><span class="s2">:</span>
+                    <span class="s0">pass</span>
+                <span class="s1">result</span><span class="s2">[</span><span class="s1">key</span><span class="s2">] = </span><span class="s1">value</span>
+        <span class="s0">return </span><span class="s1">result</span>
+
+    <span class="s0">def </span><span class="s1">_get_metrics_result_or_logs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Returns model metrics as a dict if the keys match with input logs. 
+ 
+        When the training / evalution is performed with an asynchronous steps, 
+        the last scheduled `train / test_step` may not give the latest metrics 
+        because it is not guaranteed to be executed the last. This method gets 
+        metrics from the model directly instead of relying on the return from 
+        last step function. 
+ 
+        When the user has custom train / test step functions, the metrics 
+        returned may be different from `Model.metrics`. In those instances, 
+        this function will be no-op and return the logs passed in. 
+ 
+        Args: 
+            logs: A `dict` of metrics returned by train / test step function. 
+ 
+        Returns: 
+            A `dict` containing values of the metrics listed in `self.metrics` 
+            when logs and model metrics keys match. Otherwise it returns input 
+            `logs`. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">metric_logs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">get_metrics_result</span><span class="s2">()</span>
+        <span class="s4"># Verify that train / test step logs passed and metric logs have</span>
+        <span class="s4"># matching keys. It could be different when using custom step functions,</span>
+        <span class="s4"># in which case we return the logs from the last step.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">) </span><span class="s0">and </span><span class="s1">set</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()) == </span><span class="s1">set</span><span class="s2">(</span>
+            <span class="s1">metric_logs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()</span>
+        <span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">metric_logs</span>
+        <span class="s0">return </span><span class="s1">logs</span>
+
+    <span class="s0">def </span><span class="s1">_flatten_metrics_in_order</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">):</span>
+        <span class="s6">&quot;&quot;&quot;Turns `logs` dict into a list as per key order of `metrics_names`.&quot;&quot;&quot;</span>
+        <span class="s1">metric_names </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">metric </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">metrics</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">metric</span><span class="s2">, </span><span class="s1">CompileMetrics</span><span class="s2">):</span>
+                <span class="s1">metric_names </span><span class="s2">+= [</span>
+                    <span class="s1">sub_metric</span><span class="s2">.</span><span class="s1">name </span><span class="s0">for </span><span class="s1">sub_metric </span><span class="s0">in </span><span class="s1">metric</span><span class="s2">.</span><span class="s1">metrics</span>
+                <span class="s2">]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">metric_names</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">metric</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">results </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">metric_names</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">name </span><span class="s0">in </span><span class="s1">logs</span><span class="s2">:</span>
+                <span class="s1">results</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">[</span><span class="s1">name</span><span class="s2">])</span>
+        <span class="s0">for </span><span class="s1">key </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()):</span>
+            <span class="s0">if </span><span class="s1">key </span><span class="s0">not in </span><span class="s1">metric_names</span><span class="s2">:</span>
+                <span class="s1">results</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">[</span><span class="s1">key</span><span class="s2">])</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">results</span><span class="s2">) == </span><span class="s3">1</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">results</span><span class="s2">[</span><span class="s3">0</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s1">results</span>
+
+    <span class="s0">def </span><span class="s1">_assert_compile_called</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">method_name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compiled</span><span class="s2">:</span>
+            <span class="s1">msg </span><span class="s2">= </span><span class="s5">&quot;You must call `compile()` before &quot;</span>
+            <span class="s0">if </span><span class="s1">metrics_module</span><span class="s2">:</span>
+                <span class="s1">msg </span><span class="s2">+= </span><span class="s5">&quot;using the model.&quot;</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">msg </span><span class="s2">+= </span><span class="s5">f&quot;calling `</span><span class="s0">{</span><span class="s1">method_name</span><span class="s0">}</span><span class="s5">()`.&quot;</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s1">msg</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_symbolic_build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">iterator</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">data_batch</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">model_unbuilt </span><span class="s2">= </span><span class="s0">not </span><span class="s1">all</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">built </span><span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_flatten_layers</span><span class="s2">())</span>
+        <span class="s1">compile_metrics_unbuilt </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics </span><span class="s0">is not None</span>
+            <span class="s0">and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_metrics</span><span class="s2">.</span><span class="s1">built</span>
+        <span class="s2">)</span>
+        <span class="s1">compile_loss_unbuilt </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss </span><span class="s0">is not None and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compile_loss</span><span class="s2">.</span><span class="s1">built</span>
+        <span class="s2">)</span>
+        <span class="s1">optimizer_unbuilt </span><span class="s2">= (</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer </span><span class="s0">is not None and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">built</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">model_unbuilt </span><span class="s0">or </span><span class="s1">compile_metrics_unbuilt </span><span class="s0">or </span><span class="s1">compile_loss_unbuilt</span><span class="s2">:</span>
+            <span class="s4"># Create symbolic tensors matching an input batch.</span>
+
+            <span class="s0">def </span><span class="s1">to_symbolic_input</span><span class="s2">(</span><span class="s1">v</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">v </span><span class="s0">is None</span><span class="s2">:</span>
+                    <span class="s0">return None</span>
+                <span class="s0">return </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">KerasTensor</span><span class="s2">(</span>
+                    <span class="s1">v</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">v</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+                <span class="s2">)</span>
+
+            <span class="s0">if </span><span class="s1">data_batch </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s0">for </span><span class="s1">_</span><span class="s2">, </span><span class="s1">data </span><span class="s0">in </span><span class="s1">iterator</span><span class="s2">.</span><span class="s1">enumerate_epoch</span><span class="s2">():</span>
+                    <span class="s1">data_batch </span><span class="s2">= </span><span class="s1">data</span><span class="s2">[</span><span class="s3">0</span><span class="s2">]</span>
+                    <span class="s0">break</span>
+            <span class="s1">data_batch </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">to_symbolic_input</span><span class="s2">, </span><span class="s1">data_batch</span><span class="s2">)</span>
+            <span class="s2">(</span>
+                <span class="s1">x</span><span class="s2">,</span>
+                <span class="s1">y</span><span class="s2">,</span>
+                <span class="s1">sample_weight</span><span class="s2">,</span>
+            <span class="s2">) = </span><span class="s1">data_adapter_utils</span><span class="s2">.</span><span class="s1">unpack_x_y_sample_weight</span><span class="s2">(</span><span class="s1">data_batch</span><span class="s2">)</span>
+
+            <span class="s4"># Build all model state with `backend.compute_output_spec`.</span>
+            <span class="s0">try</span><span class="s2">:</span>
+                <span class="s1">y_pred </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">compute_output_spec</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+            <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">RuntimeError</span><span class="s2">(</span>
+                    <span class="s5">&quot;Unable to automatically build the model. &quot;</span>
+                    <span class="s5">&quot;Please build it yourself before calling &quot;</span>
+                    <span class="s5">&quot;fit/evaluate/predict. &quot;</span>
+                    <span class="s5">&quot;A model is 'built' when its variables have &quot;</span>
+                    <span class="s5">&quot;been created and its `self.built` attribute &quot;</span>
+                    <span class="s5">&quot;is True. Usually, calling the model on a batch &quot;</span>
+                    <span class="s5">&quot;of data is the right way to build it.</span><span class="s0">\n</span><span class="s5">&quot;</span>
+                    <span class="s5">&quot;Exception encountered:</span><span class="s0">\n</span><span class="s5">&quot;</span>
+                    <span class="s5">f&quot;'</span><span class="s0">{</span><span class="s1">e</span><span class="s0">}</span><span class="s5">'&quot;</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">compile_metrics_unbuilt</span><span class="s2">:</span>
+                <span class="s4"># Build all metric state with `backend.compute_output_spec`.</span>
+                <span class="s1">backend</span><span class="s2">.</span><span class="s1">compute_output_spec</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">compute_metrics</span><span class="s2">,</span>
+                    <span class="s1">x</span><span class="s2">,</span>
+                    <span class="s1">y</span><span class="s2">,</span>
+                    <span class="s1">y_pred</span><span class="s2">,</span>
+                    <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">compile_loss_unbuilt</span><span class="s2">:</span>
+                <span class="s4"># Build `CompileLoss` state with `backend.compute_output_spec`.</span>
+                <span class="s1">backend</span><span class="s2">.</span><span class="s1">compute_output_spec</span><span class="s2">(</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_loss</span><span class="s2">,</span>
+                    <span class="s1">x</span><span class="s2">,</span>
+                    <span class="s1">y</span><span class="s2">,</span>
+                    <span class="s1">y_pred</span><span class="s2">,</span>
+                    <span class="s1">sample_weight</span><span class="s2">=</span><span class="s1">sample_weight</span><span class="s2">,</span>
+                    <span class="s1">training</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+                <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">optimizer_unbuilt</span><span class="s2">:</span>
+            <span class="s4"># Build optimizer</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">trainable_variables</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_post_build</span><span class="s2">()</span>
+
+
+<span class="s0">def </span><span class="s1">model_supports_jit</span><span class="s2">(</span><span class="s1">model</span><span class="s2">):</span>
+    <span class="s4"># XLA not supported with TF on MacOS GPU</span>
+    <span class="s0">if </span><span class="s1">platform</span><span class="s2">.</span><span class="s1">system</span><span class="s2">() == </span><span class="s5">&quot;Darwin&quot; </span><span class="s0">and </span><span class="s5">&quot;arm&quot; </span><span class="s0">in </span><span class="s1">platform</span><span class="s2">.</span><span class="s1">processor</span><span class="s2">().</span><span class="s1">lower</span><span class="s2">():</span>
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() == </span><span class="s5">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+            <span class="s0">if </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">config</span><span class="s2">.</span><span class="s1">list_physical_devices</span><span class="s2">(</span><span class="s5">&quot;GPU&quot;</span><span class="s2">):</span>
+                <span class="s0">return False</span>
+    <span class="s4"># XLA not supported by some layers</span>
+    <span class="s0">if </span><span class="s1">all</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">supports_jit </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_flatten_layers</span><span class="s2">()):</span>
+        <span class="s0">return True</span>
+    <span class="s0">return False</span>
+</pre>
+</body>
+</html>

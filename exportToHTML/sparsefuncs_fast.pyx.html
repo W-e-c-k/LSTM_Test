@@ -1,0 +1,662 @@
+<html>
+<head>
+<title>sparsefuncs_fast.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sparsefuncs_fast.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Utilities to work with sparse matrices and arrays written in Cython.&quot;&quot;&quot;</span>
+
+<span class="s0"># Authors: Mathieu Blondel</span>
+<span class="s0">#          Olivier Grisel</span>
+<span class="s0">#          Peter Prettenhofer</span>
+<span class="s0">#          Lars Buitinck</span>
+<span class="s0">#          Giorgio Patrini</span>
+<span class="s0">#</span>
+<span class="s0"># License: BSD 3 clause</span>
+
+<span class="s0">from libc.math cimport fabs, sqrt, isnan</span>
+<span class="s0">from libc.stdint cimport intptr_t</span>
+
+<span class="s0">import numpy as np</span>
+<span class="s0">from cython cimport floating</span>
+<span class="s0">from ..utils._typedefs cimport float64_t, int32_t, int64_t, intp_t, uint64_t</span>
+
+
+<span class="s0">ctypedef fused integral:</span>
+    <span class="s0">int32_t</span>
+    <span class="s0">int64_t</span>
+
+
+<span class="s0">def csr_row_norms(X):</span>
+    <span class="s0">&quot;&quot;&quot;Squared L2 norm of each row in CSR matrix X.&quot;&quot;&quot;</span>
+    <span class="s0">if X.dtype not in [np.float32, np.float64]:</span>
+        <span class="s0">X = X.astype(np.float64)</span>
+    <span class="s0">return _sqeuclidean_row_norms_sparse(X.data, X.indptr)</span>
+
+
+<span class="s0">def _sqeuclidean_row_norms_sparse(</span>
+    <span class="s0">const floating[::1] X_data,</span>
+    <span class="s0">const integral[::1] X_indptr,</span>
+<span class="s0">):</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">integral n_samples = X_indptr.shape[0] - 1</span>
+        <span class="s0">integral i, j</span>
+
+    <span class="s0">dtype = np.float32 if floating is float else np.float64</span>
+
+    <span class="s0">cdef floating[::1] squared_row_norms = np.zeros(n_samples, dtype=dtype)</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0">for i in range(n_samples):</span>
+            <span class="s0">for j in range(X_indptr[i], X_indptr[i + 1]):</span>
+                <span class="s0">squared_row_norms[i] += X_data[j] * X_data[j]</span>
+
+    <span class="s0">return np.asarray(squared_row_norms)</span>
+
+
+<span class="s0">def csr_mean_variance_axis0(X, weights=None, return_sum_weights=False):</span>
+    <span class="s0">&quot;&quot;&quot;Compute mean and variance along axis 0 on a CSR matrix</span>
+
+    <span class="s0">Uses a np.float64 accumulator.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : CSR sparse matrix, shape (n_samples, n_features)</span>
+        <span class="s0">Input data.</span>
+
+    <span class="s0">weights : ndarray of shape (n_samples,), dtype=floating, default=None</span>
+        <span class="s0">If it is set to None samples will be equally weighted.</span>
+
+        <span class="s0">.. versionadded:: 0.24</span>
+
+    <span class="s0">return_sum_weights : bool, default=False</span>
+        <span class="s0">If True, returns the sum of weights seen for each feature.</span>
+
+        <span class="s0">.. versionadded:: 0.24</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">means : float array with shape (n_features,)</span>
+        <span class="s0">Feature-wise means</span>
+
+    <span class="s0">variances : float array with shape (n_features,)</span>
+        <span class="s0">Feature-wise variances</span>
+
+    <span class="s0">sum_weights : ndarray of shape (n_features,), dtype=floating</span>
+        <span class="s0">Returned if return_sum_weights is True.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if X.dtype not in [np.float32, np.float64]:</span>
+        <span class="s0">X = X.astype(np.float64)</span>
+
+    <span class="s0">if weights is None:</span>
+        <span class="s0">weights = np.ones(X.shape[0], dtype=X.dtype)</span>
+
+    <span class="s0">means, variances, sum_weights = _csr_mean_variance_axis0(</span>
+        <span class="s0">X.data, X.shape[0], X.shape[1], X.indices, X.indptr, weights)</span>
+
+    <span class="s0">if return_sum_weights:</span>
+        <span class="s0">return means, variances, sum_weights</span>
+    <span class="s0">return means, variances</span>
+
+
+<span class="s0">def _csr_mean_variance_axis0(</span>
+    <span class="s0">const floating[::1] X_data,</span>
+    <span class="s0">uint64_t n_samples,</span>
+    <span class="s0">uint64_t n_features,</span>
+    <span class="s0">const integral[:] X_indices,</span>
+    <span class="s0">const integral[:] X_indptr,</span>
+    <span class="s0">const floating[:] weights,</span>
+<span class="s0">):</span>
+    <span class="s0"># Implement the function here since variables using fused types</span>
+    <span class="s0"># cannot be declared directly and can only be passed as function arguments</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">intp_t row_ind</span>
+        <span class="s0">uint64_t feature_idx</span>
+        <span class="s0">integral i, col_ind</span>
+        <span class="s0">float64_t diff</span>
+        <span class="s0"># means[j] contains the mean of feature j</span>
+        <span class="s0">float64_t[::1] means = np.zeros(n_features)</span>
+        <span class="s0"># variances[j] contains the variance of feature j</span>
+        <span class="s0">float64_t[::1] variances = np.zeros(n_features)</span>
+
+        <span class="s0">float64_t[::1] sum_weights = np.full(</span>
+            <span class="s0">fill_value=np.sum(weights, dtype=np.float64), shape=n_features</span>
+        <span class="s0">)</span>
+        <span class="s0">float64_t[::1] sum_weights_nz = np.zeros(shape=n_features)</span>
+        <span class="s0">float64_t[::1] correction = np.zeros(shape=n_features)</span>
+
+        <span class="s0">uint64_t[::1] counts = np.full(</span>
+            <span class="s0">fill_value=weights.shape[0], shape=n_features, dtype=np.uint64</span>
+        <span class="s0">)</span>
+        <span class="s0">uint64_t[::1] counts_nz = np.zeros(shape=n_features, dtype=np.uint64)</span>
+
+    <span class="s0">for row_ind in range(len(X_indptr) - 1):</span>
+        <span class="s0">for i in range(X_indptr[row_ind], X_indptr[row_ind + 1]):</span>
+            <span class="s0">col_ind = X_indices[i]</span>
+            <span class="s0">if not isnan(X_data[i]):</span>
+                <span class="s0">means[col_ind] += &lt;float64_t&gt;(X_data[i]) * weights[row_ind]</span>
+                <span class="s0"># sum of weights where X[:, col_ind] is non-zero</span>
+                <span class="s0">sum_weights_nz[col_ind] += weights[row_ind]</span>
+                <span class="s0"># number of non-zero elements of X[:, col_ind]</span>
+                <span class="s0">counts_nz[col_ind] += 1</span>
+            <span class="s0">else:</span>
+                <span class="s0"># sum of weights where X[:, col_ind] is not nan</span>
+                <span class="s0">sum_weights[col_ind] -= weights[row_ind]</span>
+                <span class="s0"># number of non nan elements of X[:, col_ind]</span>
+                <span class="s0">counts[col_ind] -= 1</span>
+
+    <span class="s0">for feature_idx in range(n_features):</span>
+        <span class="s0">means[feature_idx] /= sum_weights[feature_idx]</span>
+
+    <span class="s0">for row_ind in range(len(X_indptr) - 1):</span>
+        <span class="s0">for i in range(X_indptr[row_ind], X_indptr[row_ind + 1]):</span>
+            <span class="s0">col_ind = X_indices[i]</span>
+            <span class="s0">if not isnan(X_data[i]):</span>
+                <span class="s0">diff = X_data[i] - means[col_ind]</span>
+                <span class="s0"># correction term of the corrected 2 pass algorithm.</span>
+                <span class="s0"># See &quot;Algorithms for computing the sample variance: analysis</span>
+                <span class="s0"># and recommendations&quot;, by Chan, Golub, and LeVeque.</span>
+                <span class="s0">correction[col_ind] += diff * weights[row_ind]</span>
+                <span class="s0">variances[col_ind] += diff * diff * weights[row_ind]</span>
+
+    <span class="s0">for feature_idx in range(n_features):</span>
+        <span class="s0">if counts[feature_idx] != counts_nz[feature_idx]:</span>
+            <span class="s0">correction[feature_idx] -= (</span>
+                <span class="s0">sum_weights[feature_idx] - sum_weights_nz[feature_idx]</span>
+            <span class="s0">) * means[feature_idx]</span>
+        <span class="s0">correction[feature_idx] = correction[feature_idx]**2 / sum_weights[feature_idx]</span>
+        <span class="s0">if counts[feature_idx] != counts_nz[feature_idx]:</span>
+            <span class="s0"># only compute it when it's guaranteed to be non-zero to avoid</span>
+            <span class="s0"># catastrophic cancellation.</span>
+            <span class="s0">variances[feature_idx] += (</span>
+                <span class="s0">sum_weights[feature_idx] - sum_weights_nz[feature_idx]</span>
+            <span class="s0">) * means[feature_idx]**2</span>
+        <span class="s0">variances[feature_idx] = (</span>
+            <span class="s0">(variances[feature_idx] - correction[feature_idx]) /</span>
+            <span class="s0">sum_weights[feature_idx]</span>
+        <span class="s0">)</span>
+
+    <span class="s0">if floating is float:</span>
+        <span class="s0">return (</span>
+            <span class="s0">np.array(means, dtype=np.float32),</span>
+            <span class="s0">np.array(variances, dtype=np.float32),</span>
+            <span class="s0">np.array(sum_weights, dtype=np.float32),</span>
+        <span class="s0">)</span>
+    <span class="s0">else:</span>
+        <span class="s0">return (</span>
+            <span class="s0">np.asarray(means), np.asarray(variances), np.asarray(sum_weights)</span>
+        <span class="s0">)</span>
+
+
+<span class="s0">def csc_mean_variance_axis0(X, weights=None, return_sum_weights=False):</span>
+    <span class="s0">&quot;&quot;&quot;Compute mean and variance along axis 0 on a CSC matrix</span>
+
+    <span class="s0">Uses a np.float64 accumulator.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : CSC sparse matrix, shape (n_samples, n_features)</span>
+        <span class="s0">Input data.</span>
+
+    <span class="s0">weights : ndarray of shape (n_samples,), dtype=floating, default=None</span>
+        <span class="s0">If it is set to None samples will be equally weighted.</span>
+
+        <span class="s0">.. versionadded:: 0.24</span>
+
+    <span class="s0">return_sum_weights : bool, default=False</span>
+        <span class="s0">If True, returns the sum of weights seen for each feature.</span>
+
+        <span class="s0">.. versionadded:: 0.24</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">means : float array with shape (n_features,)</span>
+        <span class="s0">Feature-wise means</span>
+
+    <span class="s0">variances : float array with shape (n_features,)</span>
+        <span class="s0">Feature-wise variances</span>
+
+    <span class="s0">sum_weights : ndarray of shape (n_features,), dtype=floating</span>
+        <span class="s0">Returned if return_sum_weights is True.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if X.dtype not in [np.float32, np.float64]:</span>
+        <span class="s0">X = X.astype(np.float64)</span>
+
+    <span class="s0">if weights is None:</span>
+        <span class="s0">weights = np.ones(X.shape[0], dtype=X.dtype)</span>
+
+    <span class="s0">means, variances, sum_weights = _csc_mean_variance_axis0(</span>
+        <span class="s0">X.data, X.shape[0], X.shape[1], X.indices, X.indptr, weights)</span>
+
+    <span class="s0">if return_sum_weights:</span>
+        <span class="s0">return means, variances, sum_weights</span>
+    <span class="s0">return means, variances</span>
+
+
+<span class="s0">def _csc_mean_variance_axis0(</span>
+    <span class="s0">const floating[::1] X_data,</span>
+    <span class="s0">uint64_t n_samples,</span>
+    <span class="s0">uint64_t n_features,</span>
+    <span class="s0">const integral[:] X_indices,</span>
+    <span class="s0">const integral[:] X_indptr,</span>
+    <span class="s0">const floating[:] weights,</span>
+<span class="s0">):</span>
+    <span class="s0"># Implement the function here since variables using fused types</span>
+    <span class="s0"># cannot be declared directly and can only be passed as function arguments</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">integral i, row_ind</span>
+        <span class="s0">uint64_t feature_idx, col_ind</span>
+        <span class="s0">float64_t diff</span>
+        <span class="s0"># means[j] contains the mean of feature j</span>
+        <span class="s0">float64_t[::1] means = np.zeros(n_features)</span>
+        <span class="s0"># variances[j] contains the variance of feature j</span>
+        <span class="s0">float64_t[::1] variances = np.zeros(n_features)</span>
+
+        <span class="s0">float64_t[::1] sum_weights = np.full(</span>
+            <span class="s0">fill_value=np.sum(weights, dtype=np.float64), shape=n_features</span>
+        <span class="s0">)</span>
+        <span class="s0">float64_t[::1] sum_weights_nz = np.zeros(shape=n_features)</span>
+        <span class="s0">float64_t[::1] correction = np.zeros(shape=n_features)</span>
+
+        <span class="s0">uint64_t[::1] counts = np.full(</span>
+            <span class="s0">fill_value=weights.shape[0], shape=n_features, dtype=np.uint64</span>
+        <span class="s0">)</span>
+        <span class="s0">uint64_t[::1] counts_nz = np.zeros(shape=n_features, dtype=np.uint64)</span>
+
+    <span class="s0">for col_ind in range(n_features):</span>
+        <span class="s0">for i in range(X_indptr[col_ind], X_indptr[col_ind + 1]):</span>
+            <span class="s0">row_ind = X_indices[i]</span>
+            <span class="s0">if not isnan(X_data[i]):</span>
+                <span class="s0">means[col_ind] += &lt;float64_t&gt;(X_data[i]) * weights[row_ind]</span>
+                <span class="s0"># sum of weights where X[:, col_ind] is non-zero</span>
+                <span class="s0">sum_weights_nz[col_ind] += weights[row_ind]</span>
+                <span class="s0"># number of non-zero elements of X[:, col_ind]</span>
+                <span class="s0">counts_nz[col_ind] += 1</span>
+            <span class="s0">else:</span>
+                <span class="s0"># sum of weights where X[:, col_ind] is not nan</span>
+                <span class="s0">sum_weights[col_ind] -= weights[row_ind]</span>
+                <span class="s0"># number of non nan elements of X[:, col_ind]</span>
+                <span class="s0">counts[col_ind] -= 1</span>
+
+    <span class="s0">for feature_idx in range(n_features):</span>
+        <span class="s0">means[feature_idx] /= sum_weights[feature_idx]</span>
+
+    <span class="s0">for col_ind in range(n_features):</span>
+        <span class="s0">for i in range(X_indptr[col_ind], X_indptr[col_ind + 1]):</span>
+            <span class="s0">row_ind = X_indices[i]</span>
+            <span class="s0">if not isnan(X_data[i]):</span>
+                <span class="s0">diff = X_data[i] - means[col_ind]</span>
+                <span class="s0"># correction term of the corrected 2 pass algorithm.</span>
+                <span class="s0"># See &quot;Algorithms for computing the sample variance: analysis</span>
+                <span class="s0"># and recommendations&quot;, by Chan, Golub, and LeVeque.</span>
+                <span class="s0">correction[col_ind] += diff * weights[row_ind]</span>
+                <span class="s0">variances[col_ind] += diff * diff * weights[row_ind]</span>
+
+    <span class="s0">for feature_idx in range(n_features):</span>
+        <span class="s0">if counts[feature_idx] != counts_nz[feature_idx]:</span>
+            <span class="s0">correction[feature_idx] -= (</span>
+                <span class="s0">sum_weights[feature_idx] - sum_weights_nz[feature_idx]</span>
+            <span class="s0">) * means[feature_idx]</span>
+        <span class="s0">correction[feature_idx] = correction[feature_idx]**2 / sum_weights[feature_idx]</span>
+        <span class="s0">if counts[feature_idx] != counts_nz[feature_idx]:</span>
+            <span class="s0"># only compute it when it's guaranteed to be non-zero to avoid</span>
+            <span class="s0"># catastrophic cancellation.</span>
+            <span class="s0">variances[feature_idx] += (</span>
+                <span class="s0">sum_weights[feature_idx] - sum_weights_nz[feature_idx]</span>
+            <span class="s0">) * means[feature_idx]**2</span>
+        <span class="s0">variances[feature_idx] = (</span>
+            <span class="s0">(variances[feature_idx] - correction[feature_idx])</span>
+        <span class="s0">) / sum_weights[feature_idx]</span>
+
+    <span class="s0">if floating is float:</span>
+        <span class="s0">return (np.array(means, dtype=np.float32),</span>
+                <span class="s0">np.array(variances, dtype=np.float32),</span>
+                <span class="s0">np.array(sum_weights, dtype=np.float32))</span>
+    <span class="s0">else:</span>
+        <span class="s0">return (</span>
+            <span class="s0">np.asarray(means), np.asarray(variances), np.asarray(sum_weights)</span>
+        <span class="s0">)</span>
+
+
+<span class="s0">def incr_mean_variance_axis0(X, last_mean, last_var, last_n, weights=None):</span>
+    <span class="s0">&quot;&quot;&quot;Compute mean and variance along axis 0 on a CSR or CSC matrix.</span>
+
+    <span class="s0">last_mean, last_var are the statistics computed at the last step by this</span>
+    <span class="s0">function. Both must be initialized to 0.0. last_n is the</span>
+    <span class="s0">number of samples encountered until now and is initialized at 0.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : CSR or CSC sparse matrix, shape (n_samples, n_features)</span>
+      <span class="s0">Input data.</span>
+
+    <span class="s0">last_mean : float array with shape (n_features,)</span>
+      <span class="s0">Array of feature-wise means to update with the new data X.</span>
+
+    <span class="s0">last_var : float array with shape (n_features,)</span>
+      <span class="s0">Array of feature-wise var to update with the new data X.</span>
+
+    <span class="s0">last_n : float array with shape (n_features,)</span>
+      <span class="s0">Sum of the weights seen so far (if weights are all set to 1</span>
+      <span class="s0">this will be the same as number of samples seen so far, before X).</span>
+
+    <span class="s0">weights : float array with shape (n_samples,) or None. If it is set</span>
+      <span class="s0">to None samples will be equally weighted.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">updated_mean : float array with shape (n_features,)</span>
+      <span class="s0">Feature-wise means</span>
+
+    <span class="s0">updated_variance : float array with shape (n_features,)</span>
+      <span class="s0">Feature-wise variances</span>
+
+    <span class="s0">updated_n : int array with shape (n_features,)</span>
+      <span class="s0">Updated number of samples seen</span>
+
+    <span class="s0">Notes</span>
+    <span class="s0">-----</span>
+    <span class="s0">NaNs are ignored during the computation.</span>
+
+    <span class="s0">References</span>
+    <span class="s0">----------</span>
+    <span class="s0">T. Chan, G. Golub, R. LeVeque. Algorithms for computing the sample</span>
+      <span class="s0">variance: recommendations, The American Statistician, Vol. 37, No. 3,</span>
+      <span class="s0">pp. 242-247</span>
+
+    <span class="s0">Also, see the non-sparse implementation of this in</span>
+    <span class="s0">`utils.extmath._batch_mean_variance_update`.</span>
+
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if X.dtype not in [np.float32, np.float64]:</span>
+        <span class="s0">X = X.astype(np.float64)</span>
+    <span class="s0">X_dtype = X.dtype</span>
+    <span class="s0">if weights is None:</span>
+        <span class="s0">weights = np.ones(X.shape[0], dtype=X_dtype)</span>
+    <span class="s0">elif weights.dtype not in [np.float32, np.float64]:</span>
+        <span class="s0">weights = weights.astype(np.float64, copy=False)</span>
+    <span class="s0">if last_n.dtype not in [np.float32, np.float64]:</span>
+        <span class="s0">last_n = last_n.astype(np.float64, copy=False)</span>
+
+    <span class="s0">return _incr_mean_variance_axis0(X.data,</span>
+                                     <span class="s0">np.sum(weights),</span>
+                                     <span class="s0">X.shape[1],</span>
+                                     <span class="s0">X.indices,</span>
+                                     <span class="s0">X.indptr,</span>
+                                     <span class="s0">X.format,</span>
+                                     <span class="s0">last_mean.astype(X_dtype, copy=False),</span>
+                                     <span class="s0">last_var.astype(X_dtype, copy=False),</span>
+                                     <span class="s0">last_n.astype(X_dtype, copy=False),</span>
+                                     <span class="s0">weights.astype(X_dtype, copy=False))</span>
+
+
+<span class="s0">def _incr_mean_variance_axis0(</span>
+    <span class="s0">const floating[:] X_data,</span>
+    <span class="s0">floating n_samples,</span>
+    <span class="s0">uint64_t n_features,</span>
+    <span class="s0">const int[:] X_indices,</span>
+    <span class="s0"># X_indptr might be either int32 or int64</span>
+    <span class="s0">const integral[:] X_indptr,</span>
+    <span class="s0">str X_format,</span>
+    <span class="s0">floating[:] last_mean,</span>
+    <span class="s0">floating[:] last_var,</span>
+    <span class="s0">floating[:] last_n,</span>
+    <span class="s0"># previous sum of the weights (ie float)</span>
+    <span class="s0">const floating[:] weights,</span>
+<span class="s0">):</span>
+    <span class="s0"># Implement the function here since variables using fused types</span>
+    <span class="s0"># cannot be declared directly and can only be passed as function arguments</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">uint64_t i</span>
+
+        <span class="s0"># last = stats until now</span>
+        <span class="s0"># new = the current increment</span>
+        <span class="s0"># updated = the aggregated stats</span>
+        <span class="s0"># when arrays, they are indexed by i per-feature</span>
+        <span class="s0">floating[::1] new_mean</span>
+        <span class="s0">floating[::1] new_var</span>
+        <span class="s0">floating[::1] updated_mean</span>
+        <span class="s0">floating[::1] updated_var</span>
+
+    <span class="s0">if floating is float:</span>
+        <span class="s0">dtype = np.float32</span>
+    <span class="s0">else:</span>
+        <span class="s0">dtype = np.float64</span>
+
+    <span class="s0">new_mean = np.zeros(n_features, dtype=dtype)</span>
+    <span class="s0">new_var = np.zeros_like(new_mean, dtype=dtype)</span>
+    <span class="s0">updated_mean = np.zeros_like(new_mean, dtype=dtype)</span>
+    <span class="s0">updated_var = np.zeros_like(new_mean, dtype=dtype)</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">floating[::1] new_n</span>
+        <span class="s0">floating[::1] updated_n</span>
+        <span class="s0">floating[::1] last_over_new_n</span>
+
+    <span class="s0"># Obtain new stats first</span>
+    <span class="s0">updated_n = np.zeros(shape=n_features, dtype=dtype)</span>
+    <span class="s0">last_over_new_n = np.zeros_like(updated_n, dtype=dtype)</span>
+
+    <span class="s0"># X can be a CSR or CSC matrix</span>
+    <span class="s0">if X_format == 'csr':</span>
+        <span class="s0">new_mean, new_var, new_n = _csr_mean_variance_axis0(</span>
+            <span class="s0">X_data, n_samples, n_features, X_indices, X_indptr, weights)</span>
+    <span class="s0">else:  # X_format == 'csc'</span>
+        <span class="s0">new_mean, new_var, new_n = _csc_mean_variance_axis0(</span>
+            <span class="s0">X_data, n_samples, n_features, X_indices, X_indptr, weights)</span>
+
+    <span class="s0"># First pass</span>
+    <span class="s0">cdef bint is_first_pass = True</span>
+    <span class="s0">for i in range(n_features):</span>
+        <span class="s0">if last_n[i] &gt; 0:</span>
+            <span class="s0">is_first_pass = False</span>
+            <span class="s0">break</span>
+
+    <span class="s0">if is_first_pass:</span>
+        <span class="s0">return np.asarray(new_mean), np.asarray(new_var), np.asarray(new_n)</span>
+
+    <span class="s0">for i in range(n_features):</span>
+        <span class="s0">updated_n[i] = last_n[i] + new_n[i]</span>
+
+    <span class="s0"># Next passes</span>
+    <span class="s0">for i in range(n_features):</span>
+        <span class="s0">if new_n[i] &gt; 0:</span>
+            <span class="s0">last_over_new_n[i] = dtype(last_n[i]) / dtype(new_n[i])</span>
+            <span class="s0"># Unnormalized stats</span>
+            <span class="s0">last_mean[i] *= last_n[i]</span>
+            <span class="s0">last_var[i] *= last_n[i]</span>
+            <span class="s0">new_mean[i] *= new_n[i]</span>
+            <span class="s0">new_var[i] *= new_n[i]</span>
+            <span class="s0"># Update stats</span>
+            <span class="s0">updated_var[i] = (</span>
+                <span class="s0">last_var[i] + new_var[i] +</span>
+                <span class="s0">last_over_new_n[i] / updated_n[i] *</span>
+                <span class="s0">(last_mean[i] / last_over_new_n[i] - new_mean[i])**2</span>
+            <span class="s0">)</span>
+            <span class="s0">updated_mean[i] = (last_mean[i] + new_mean[i]) / updated_n[i]</span>
+            <span class="s0">updated_var[i] /= updated_n[i]</span>
+        <span class="s0">else:</span>
+            <span class="s0">updated_var[i] = last_var[i]</span>
+            <span class="s0">updated_mean[i] = last_mean[i]</span>
+            <span class="s0">updated_n[i] = last_n[i]</span>
+
+    <span class="s0">return (</span>
+        <span class="s0">np.asarray(updated_mean),</span>
+        <span class="s0">np.asarray(updated_var),</span>
+        <span class="s0">np.asarray(updated_n),</span>
+    <span class="s0">)</span>
+
+
+<span class="s0">def inplace_csr_row_normalize_l1(X):</span>
+    <span class="s0">&quot;&quot;&quot;Normalize inplace the rows of a CSR matrix or array by their L1 norm.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : scipy.sparse.csr_matrix and scipy.sparse.csr_array, \</span>
+            <span class="s0">shape=(n_samples, n_features)</span>
+        <span class="s0">The input matrix or array to be modified inplace.</span>
+
+    <span class="s0">Examples</span>
+    <span class="s0">--------</span>
+    <span class="s0">&gt;&gt;&gt; from scipy.sparse import csr_matrix</span>
+    <span class="s0">&gt;&gt;&gt; from sklearn.utils.sparsefuncs_fast import inplace_csr_row_normalize_l1</span>
+    <span class="s0">&gt;&gt;&gt; import numpy as np</span>
+    <span class="s0">&gt;&gt;&gt; indptr = np.array([0, 2, 3, 4])</span>
+    <span class="s0">&gt;&gt;&gt; indices = np.array([0, 1, 2, 3])</span>
+    <span class="s0">&gt;&gt;&gt; data = np.array([1.0, 2.0, 3.0, 4.0])</span>
+    <span class="s0">&gt;&gt;&gt; X = csr_matrix((data, indices, indptr), shape=(3, 4))</span>
+    <span class="s0">&gt;&gt;&gt; X.toarray()</span>
+    <span class="s0">array([[1., 2., 0., 0.],</span>
+           <span class="s0">[0., 0., 3., 0.],</span>
+           <span class="s0">[0., 0., 0., 4.]])</span>
+    <span class="s0">&gt;&gt;&gt; inplace_csr_row_normalize_l1(X)</span>
+    <span class="s0">&gt;&gt;&gt; X.toarray()</span>
+    <span class="s0">array([[0.33...   , 0.66...   , 0.        , 0.        ],</span>
+           <span class="s0">[0.        , 0.        , 1.        , 0.        ],</span>
+           <span class="s0">[0.        , 0.        , 0.        , 1.        ]])</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">_inplace_csr_row_normalize_l1(X.data, X.shape, X.indices, X.indptr)</span>
+
+
+<span class="s0">def _inplace_csr_row_normalize_l1(</span>
+    <span class="s0">floating[:] X_data,</span>
+    <span class="s0">shape,</span>
+    <span class="s0">const integral[:] X_indices,</span>
+    <span class="s0">const integral[:] X_indptr,</span>
+<span class="s0">):</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">uint64_t n_samples = shape[0]</span>
+
+        <span class="s0"># the column indices for row i are stored in:</span>
+        <span class="s0">#    indices[indptr[i]:indices[i+1]]</span>
+        <span class="s0"># and their corresponding values are stored in:</span>
+        <span class="s0">#    data[indptr[i]:indptr[i+1]]</span>
+        <span class="s0">uint64_t i</span>
+        <span class="s0">integral j</span>
+        <span class="s0">double sum_</span>
+
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">sum_ = 0.0</span>
+
+        <span class="s0">for j in range(X_indptr[i], X_indptr[i + 1]):</span>
+            <span class="s0">sum_ += fabs(X_data[j])</span>
+
+        <span class="s0">if sum_ == 0.0:</span>
+            <span class="s0"># do not normalize empty rows (can happen if CSR is not pruned</span>
+            <span class="s0"># correctly)</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">for j in range(X_indptr[i], X_indptr[i + 1]):</span>
+            <span class="s0">X_data[j] /= sum_</span>
+
+
+<span class="s0">def inplace_csr_row_normalize_l2(X):</span>
+    <span class="s0">&quot;&quot;&quot;Normalize inplace the rows of a CSR matrix or array by their L2 norm.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : scipy.sparse.csr_matrix, shape=(n_samples, n_features)</span>
+        <span class="s0">The input matrix or array to be modified inplace.</span>
+
+    <span class="s0">Examples</span>
+    <span class="s0">--------</span>
+    <span class="s0">&gt;&gt;&gt; from scipy.sparse import csr_matrix</span>
+    <span class="s0">&gt;&gt;&gt; from sklearn.utils.sparsefuncs_fast import inplace_csr_row_normalize_l2</span>
+    <span class="s0">&gt;&gt;&gt; import numpy as np</span>
+    <span class="s0">&gt;&gt;&gt; indptr = np.array([0, 2, 3, 4])</span>
+    <span class="s0">&gt;&gt;&gt; indices = np.array([0, 1, 2, 3])</span>
+    <span class="s0">&gt;&gt;&gt; data = np.array([1.0, 2.0, 3.0, 4.0])</span>
+    <span class="s0">&gt;&gt;&gt; X = csr_matrix((data, indices, indptr), shape=(3, 4))</span>
+    <span class="s0">&gt;&gt;&gt; X.toarray()</span>
+    <span class="s0">array([[1., 2., 0., 0.],</span>
+           <span class="s0">[0., 0., 3., 0.],</span>
+           <span class="s0">[0., 0., 0., 4.]])</span>
+    <span class="s0">&gt;&gt;&gt; inplace_csr_row_normalize_l2(X)</span>
+    <span class="s0">&gt;&gt;&gt; X.toarray()</span>
+    <span class="s0">array([[0.44...   , 0.89...   , 0.        , 0.        ],</span>
+           <span class="s0">[0.        , 0.        , 1.        , 0.        ],</span>
+           <span class="s0">[0.        , 0.        , 0.        , 1.        ]])</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">_inplace_csr_row_normalize_l2(X.data, X.shape, X.indices, X.indptr)</span>
+
+
+<span class="s0">def _inplace_csr_row_normalize_l2(</span>
+    <span class="s0">floating[:] X_data,</span>
+    <span class="s0">shape,</span>
+    <span class="s0">const integral[:] X_indices,</span>
+    <span class="s0">const integral[:] X_indptr,</span>
+<span class="s0">):</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">uint64_t n_samples = shape[0]</span>
+        <span class="s0">uint64_t i</span>
+        <span class="s0">integral j</span>
+        <span class="s0">double sum_</span>
+
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">sum_ = 0.0</span>
+
+        <span class="s0">for j in range(X_indptr[i], X_indptr[i + 1]):</span>
+            <span class="s0">sum_ += (X_data[j] * X_data[j])</span>
+
+        <span class="s0">if sum_ == 0.0:</span>
+            <span class="s0"># do not normalize empty rows (can happen if CSR is not pruned</span>
+            <span class="s0"># correctly)</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">sum_ = sqrt(sum_)</span>
+
+        <span class="s0">for j in range(X_indptr[i], X_indptr[i + 1]):</span>
+            <span class="s0">X_data[j] /= sum_</span>
+
+
+<span class="s0">def assign_rows_csr(</span>
+    <span class="s0">X,</span>
+    <span class="s0">const intptr_t[:] X_rows,</span>
+    <span class="s0">const intptr_t[:] out_rows,</span>
+    <span class="s0">floating[:, ::1] out,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Densify selected rows of a CSR matrix into a preallocated array.</span>
+
+    <span class="s0">Like out[out_rows] = X[X_rows].toarray() but without copying.</span>
+    <span class="s0">No-copy supported for both dtype=np.float32 and dtype=np.float64.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : scipy.sparse.csr_matrix, shape=(n_samples, n_features)</span>
+    <span class="s0">X_rows : array, dtype=np.intp, shape=n_rows</span>
+    <span class="s0">out_rows : array, dtype=np.intp, shape=n_rows</span>
+    <span class="s0">out : array, shape=(arbitrary, n_features)</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0"># intptr_t (npy_intp, np.intp in Python) is what np.where returns,</span>
+        <span class="s0"># but int is what scipy.sparse uses.</span>
+        <span class="s0">intp_t i, ind, j, k</span>
+        <span class="s0">intptr_t rX</span>
+        <span class="s0">const floating[:] data = X.data</span>
+        <span class="s0">const int32_t[:] indices = X.indices</span>
+        <span class="s0">const int32_t[:] indptr = X.indptr</span>
+
+    <span class="s0">if X_rows.shape[0] != out_rows.shape[0]:</span>
+        <span class="s0">raise ValueError(&quot;cannot assign %d rows to %d&quot;</span>
+                         <span class="s0">% (X_rows.shape[0], out_rows.shape[0]))</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0">for k in range(out_rows.shape[0]):</span>
+            <span class="s0">out[out_rows[k]] = 0.0</span>
+
+        <span class="s0">for i in range(X_rows.shape[0]):</span>
+            <span class="s0">rX = X_rows[i]</span>
+            <span class="s0">for ind in range(indptr[rX], indptr[rX + 1]):</span>
+                <span class="s0">j = indices[ind]</span>
+                <span class="s0">out[out_rows[i], j] = data[ind]</span>
+</pre>
+</body>
+</html>

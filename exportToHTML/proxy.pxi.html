@@ -1,0 +1,636 @@
+<html>
+<head>
+<title>proxy.pxi</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+proxy.pxi</font>
+</center></td></tr></table>
+<pre><span class="s0"># Proxy functions and low level node allocation stuff</span>
+
+<span class="s0"># Proxies represent elements, their reference is stored in the C</span>
+<span class="s0"># structure of the respective node to avoid multiple instantiation of</span>
+<span class="s0"># the Python class.</span>
+
+<span class="s0">@cython.linetrace(False)</span>
+<span class="s0">@cython.profile(False)</span>
+<span class="s0">cdef inline _Element getProxy(xmlNode* c_node):</span>
+    <span class="s0">&quot;&quot;&quot;Get a proxy for a given node.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">#print &quot;getProxy for:&quot;, &lt;int&gt;c_node</span>
+    <span class="s0">if c_node is not NULL and c_node._private is not NULL:</span>
+        <span class="s0">return &lt;_Element&gt;c_node._private</span>
+    <span class="s0">else:</span>
+        <span class="s0">return None</span>
+
+
+<span class="s0">@cython.linetrace(False)</span>
+<span class="s0">@cython.profile(False)</span>
+<span class="s0">cdef inline bint hasProxy(xmlNode* c_node):</span>
+    <span class="s0">if c_node._private is NULL:</span>
+        <span class="s0">return False</span>
+    <span class="s0">return True</span>
+
+
+<span class="s0">@cython.linetrace(False)</span>
+<span class="s0">@cython.profile(False)</span>
+<span class="s0">cdef inline int _registerProxy(_Element proxy, _Document doc,</span>
+                               <span class="s0">xmlNode* c_node) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Register a proxy and type for the node it's proxying for.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">#print &quot;registering for:&quot;, &lt;int&gt;proxy._c_node</span>
+    <span class="s0">assert not hasProxy(c_node), &quot;double registering proxy!&quot;</span>
+    <span class="s0">proxy._doc = doc</span>
+    <span class="s0">proxy._c_node = c_node</span>
+    <span class="s0">c_node._private = &lt;void*&gt;proxy</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">@cython.linetrace(False)</span>
+<span class="s0">@cython.profile(False)</span>
+<span class="s0">cdef inline int _unregisterProxy(_Element proxy) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Unregister a proxy for the node it's proxying for.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_node = proxy._c_node</span>
+    <span class="s0">assert c_node._private is &lt;void*&gt;proxy, &quot;Tried to unregister unknown proxy&quot;</span>
+    <span class="s0">c_node._private = NULL</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># temporarily make a node the root node of its document</span>
+
+<span class="s0">cdef xmlDoc* _fakeRootDoc(xmlDoc* c_base_doc, xmlNode* c_node) except NULL:</span>
+    <span class="s0">return _plainFakeRootDoc(c_base_doc, c_node, 1)</span>
+
+<span class="s0">cdef xmlDoc* _plainFakeRootDoc(xmlDoc* c_base_doc, xmlNode* c_node,</span>
+                               <span class="s0">bint with_siblings) except NULL:</span>
+    <span class="s0"># build a temporary document that has the given node as root node</span>
+    <span class="s0"># note that copy and original must not be modified during its lifetime!!</span>
+    <span class="s0"># always call _destroyFakeDoc() after use!</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">cdef xmlNode* c_root</span>
+    <span class="s0">cdef xmlNode* c_new_root</span>
+    <span class="s0">cdef xmlDoc*  c_doc</span>
+    <span class="s0">if with_siblings or (c_node.prev is NULL and c_node.next is NULL):</span>
+        <span class="s0">c_root = tree.xmlDocGetRootElement(c_base_doc)</span>
+        <span class="s0">if c_root is c_node:</span>
+            <span class="s0"># already the root node, no siblings</span>
+            <span class="s0">return c_base_doc</span>
+
+    <span class="s0">c_doc  = _copyDoc(c_base_doc, 0)                   # non recursive!</span>
+    <span class="s0">c_new_root = tree.xmlDocCopyNode(c_node, c_doc, 2) # non recursive!</span>
+    <span class="s0">tree.xmlDocSetRootElement(c_doc, c_new_root)</span>
+    <span class="s0">_copyParentNamespaces(c_node, c_new_root)</span>
+
+    <span class="s0">c_new_root.children = c_node.children</span>
+    <span class="s0">c_new_root.last = c_node.last</span>
+    <span class="s0">c_new_root.next = c_new_root.prev = NULL</span>
+
+    <span class="s0"># store original node</span>
+    <span class="s0">c_doc._private = c_node</span>
+
+    <span class="s0"># divert parent pointers of children</span>
+    <span class="s0">c_child = c_new_root.children</span>
+    <span class="s0">while c_child is not NULL:</span>
+        <span class="s0">c_child.parent = c_new_root</span>
+        <span class="s0">c_child = c_child.next</span>
+
+    <span class="s0">c_doc.children = c_new_root</span>
+    <span class="s0">return c_doc</span>
+
+<span class="s0">cdef void _destroyFakeDoc(xmlDoc* c_base_doc, xmlDoc* c_doc) noexcept:</span>
+    <span class="s0"># delete a temporary document</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">cdef xmlNode* c_parent</span>
+    <span class="s0">cdef xmlNode* c_root</span>
+    <span class="s0">if c_doc is c_base_doc:</span>
+        <span class="s0">return</span>
+    <span class="s0">c_root = tree.xmlDocGetRootElement(c_doc)</span>
+
+    <span class="s0"># restore parent pointers of children</span>
+    <span class="s0">c_parent = &lt;xmlNode*&gt;c_doc._private</span>
+    <span class="s0">c_child = c_root.children</span>
+    <span class="s0">while c_child is not NULL:</span>
+        <span class="s0">c_child.parent = c_parent</span>
+        <span class="s0">c_child = c_child.next</span>
+
+    <span class="s0"># prevent recursive removal of children</span>
+    <span class="s0">c_root.children = c_root.last = NULL</span>
+    <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+
+<span class="s0">cdef _Element _fakeDocElementFactory(_Document doc, xmlNode* c_element):</span>
+    <span class="s0">&quot;&quot;&quot;Special element factory for cases where we need to create a fake</span>
+    <span class="s0">root document, but still need to instantiate arbitrary nodes from</span>
+    <span class="s0">it.  If we instantiate the fake root node, things will turn bad</span>
+    <span class="s0">when it's destroyed.</span>
+
+    <span class="s0">Instead, if we are asked to instantiate the fake root node, we</span>
+    <span class="s0">instantiate the original node instead.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if c_element.doc is not doc._c_doc:</span>
+        <span class="s0">if c_element.doc._private is not NULL:</span>
+            <span class="s0">if c_element is c_element.doc.children:</span>
+                <span class="s0">c_element = &lt;xmlNode*&gt;c_element.doc._private</span>
+                <span class="s0">#assert c_element.type == tree.XML_ELEMENT_NODE</span>
+    <span class="s0">return _elementFactory(doc, c_element)</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># support for freeing tree elements when proxy objects are destroyed</span>
+
+<span class="s0">cdef int attemptDeallocation(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Attempt deallocation of c_node (or higher up in tree).</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_top</span>
+    <span class="s0"># could be we actually aren't referring to the tree at all</span>
+    <span class="s0">if c_node is NULL:</span>
+        <span class="s0">#print &quot;not freeing, node is NULL&quot;</span>
+        <span class="s0">return 0</span>
+    <span class="s0">c_top = getDeallocationTop(c_node)</span>
+    <span class="s0">if c_top is not NULL:</span>
+        <span class="s0">#print &quot;freeing:&quot;, c_top.name</span>
+        <span class="s0">_removeText(c_top.next) # tail</span>
+        <span class="s0">tree.xmlFreeNode(c_top)</span>
+        <span class="s0">return 1</span>
+    <span class="s0">return 0</span>
+
+<span class="s0">cdef xmlNode* getDeallocationTop(xmlNode* c_node) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Return the top of the tree that can be deallocated, or NULL.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_next</span>
+    <span class="s0">#print &quot;trying to do deallocating:&quot;, c_node.type</span>
+    <span class="s0">if hasProxy(c_node):</span>
+        <span class="s0">#print &quot;Not freeing: proxies still exist&quot;</span>
+        <span class="s0">return NULL</span>
+    <span class="s0">while c_node.parent is not NULL:</span>
+        <span class="s0">c_node = c_node.parent</span>
+        <span class="s0">#print &quot;checking:&quot;, c_current.type</span>
+        <span class="s0">if c_node.type == tree.XML_DOCUMENT_NODE or \</span>
+               <span class="s0">c_node.type == tree.XML_HTML_DOCUMENT_NODE:</span>
+            <span class="s0">#print &quot;not freeing: still in doc&quot;</span>
+            <span class="s0">return NULL</span>
+        <span class="s0"># if we're still attached to the document, don't deallocate</span>
+        <span class="s0">if hasProxy(c_node):</span>
+            <span class="s0">#print &quot;Not freeing: proxies still exist&quot;</span>
+            <span class="s0">return NULL</span>
+    <span class="s0"># see whether we have children to deallocate</span>
+    <span class="s0">if not canDeallocateChildNodes(c_node):</span>
+        <span class="s0">return NULL</span>
+    <span class="s0"># see whether we have siblings to deallocate</span>
+    <span class="s0">c_next = c_node.prev</span>
+    <span class="s0">while c_next:</span>
+        <span class="s0">if _isElement(c_next):</span>
+            <span class="s0">if hasProxy(c_next) or not canDeallocateChildNodes(c_next):</span>
+                <span class="s0">return NULL</span>
+        <span class="s0">c_next = c_next.prev</span>
+    <span class="s0">c_next = c_node.next</span>
+    <span class="s0">while c_next:</span>
+        <span class="s0">if _isElement(c_next):</span>
+            <span class="s0">if hasProxy(c_next) or not canDeallocateChildNodes(c_next):</span>
+                <span class="s0">return NULL</span>
+        <span class="s0">c_next = c_next.next</span>
+    <span class="s0">return c_node</span>
+
+<span class="s0">cdef int canDeallocateChildNodes(xmlNode* c_parent) noexcept:</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">c_node = c_parent.children</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_ELEMENT_FROM(c_parent, c_node, 1)</span>
+    <span class="s0">if hasProxy(c_node):</span>
+        <span class="s0">return 0</span>
+    <span class="s0">tree.END_FOR_EACH_ELEMENT_FROM(c_node)</span>
+    <span class="s0">return 1</span>
+
+<span class="s0">################################################################################</span>
+<span class="s0"># fix _Document references and namespaces when a node changes documents</span>
+
+<span class="s0">cdef void _copyParentNamespaces(xmlNode* c_from_node, xmlNode* c_to_node) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;Copy the namespaces of all ancestors of c_from_node to c_to_node.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_parent</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">cdef xmlNs* c_new_ns</span>
+    <span class="s0">cdef int prefix_known</span>
+    <span class="s0">c_parent = c_from_node.parent</span>
+    <span class="s0">while c_parent and (tree._isElementOrXInclude(c_parent) or</span>
+                        <span class="s0">c_parent.type == tree.XML_DOCUMENT_NODE):</span>
+        <span class="s0">c_new_ns = c_parent.nsDef</span>
+        <span class="s0">while c_new_ns:</span>
+            <span class="s0"># libxml2 will check if the prefix is already defined</span>
+            <span class="s0">tree.xmlNewNs(c_to_node, c_new_ns.href, c_new_ns.prefix)</span>
+            <span class="s0">c_new_ns = c_new_ns.next</span>
+        <span class="s0">c_parent = c_parent.parent</span>
+
+
+<span class="s0">ctypedef struct _ns_update_map:</span>
+    <span class="s0">xmlNs* old</span>
+    <span class="s0">xmlNs* new</span>
+
+
+<span class="s0">ctypedef struct _nscache:</span>
+    <span class="s0">_ns_update_map* ns_map</span>
+    <span class="s0">size_t size</span>
+    <span class="s0">size_t last</span>
+
+
+<span class="s0">cdef int _growNsCache(_nscache* c_ns_cache) except -1:</span>
+    <span class="s0">cdef _ns_update_map* ns_map_ptr</span>
+    <span class="s0">if c_ns_cache.size == 0:</span>
+        <span class="s0">c_ns_cache.size = 20</span>
+    <span class="s0">else:</span>
+        <span class="s0">c_ns_cache.size *= 2</span>
+    <span class="s0">ns_map_ptr = &lt;_ns_update_map*&gt; python.lxml_realloc(</span>
+        <span class="s0">c_ns_cache.ns_map, c_ns_cache.size, sizeof(_ns_update_map))</span>
+    <span class="s0">if not ns_map_ptr:</span>
+        <span class="s0">python.lxml_free(c_ns_cache.ns_map)</span>
+        <span class="s0">c_ns_cache.ns_map = NULL</span>
+        <span class="s0">raise MemoryError()</span>
+    <span class="s0">c_ns_cache.ns_map = ns_map_ptr</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef inline int _appendToNsCache(_nscache* c_ns_cache,</span>
+                                 <span class="s0">xmlNs* c_old_ns, xmlNs* c_new_ns) except -1:</span>
+    <span class="s0">if c_ns_cache.last &gt;= c_ns_cache.size:</span>
+        <span class="s0">_growNsCache(c_ns_cache)</span>
+    <span class="s0">c_ns_cache.ns_map[c_ns_cache.last] = _ns_update_map(old=c_old_ns, new=c_new_ns)</span>
+    <span class="s0">c_ns_cache.last += 1</span>
+
+
+<span class="s0">cdef int _stripRedundantNamespaceDeclarations(xmlNode* c_element, _nscache* c_ns_cache,</span>
+                                              <span class="s0">xmlNs** c_del_ns_list) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Removes namespace declarations from an element that are already</span>
+    <span class="s0">defined in its parents.  Does not free the xmlNs's, just prepends</span>
+    <span class="s0">them to the c_del_ns_list.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNs* c_ns</span>
+    <span class="s0">cdef xmlNs* c_ns_next</span>
+    <span class="s0">cdef xmlNs** c_nsdef</span>
+    <span class="s0"># use a xmlNs** to handle assignments to &quot;c_element.nsDef&quot; correctly</span>
+    <span class="s0">c_nsdef = &amp;c_element.nsDef</span>
+    <span class="s0">while c_nsdef[0] is not NULL:</span>
+        <span class="s0">c_ns = tree.xmlSearchNsByHref(</span>
+            <span class="s0">c_element.doc, c_element.parent, c_nsdef[0].href)</span>
+        <span class="s0">if c_ns is NULL:</span>
+            <span class="s0"># new namespace href =&gt; keep and cache the ns declaration</span>
+            <span class="s0">_appendToNsCache(c_ns_cache, c_nsdef[0], c_nsdef[0])</span>
+            <span class="s0">c_nsdef = &amp;c_nsdef[0].next</span>
+        <span class="s0">else:</span>
+            <span class="s0"># known namespace href =&gt; cache mapping and strip old ns</span>
+            <span class="s0">_appendToNsCache(c_ns_cache, c_nsdef[0], c_ns)</span>
+            <span class="s0"># cut out c_nsdef.next and prepend it to garbage chain</span>
+            <span class="s0">c_ns_next = c_nsdef[0].next</span>
+            <span class="s0">c_nsdef[0].next = c_del_ns_list[0]</span>
+            <span class="s0">c_del_ns_list[0] = c_nsdef[0]</span>
+            <span class="s0">c_nsdef[0] = c_ns_next</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef void _cleanUpFromNamespaceAdaptation(xmlNode* c_start_node,</span>
+                                          <span class="s0">_nscache* c_ns_cache, xmlNs* c_del_ns_list) noexcept:</span>
+    <span class="s0"># Try to recover from exceptions with really bad timing.  We were in the middle</span>
+    <span class="s0"># of ripping out xmlNS-es and likely ran out of memory.  Try to fix up the tree</span>
+    <span class="s0"># by re-adding the original xmlNs declarations (which might still be used in some</span>
+    <span class="s0"># places).</span>
+    <span class="s0">if c_ns_cache.ns_map:</span>
+        <span class="s0">python.lxml_free(c_ns_cache.ns_map)</span>
+    <span class="s0">if c_del_ns_list:</span>
+        <span class="s0">if not c_start_node.nsDef:</span>
+            <span class="s0">c_start_node.nsDef = c_del_ns_list</span>
+        <span class="s0">else:</span>
+            <span class="s0">c_ns = c_start_node.nsDef</span>
+            <span class="s0">while c_ns.next:</span>
+                <span class="s0">c_ns = c_ns.next</span>
+            <span class="s0">c_ns.next = c_del_ns_list</span>
+
+
+<span class="s0">cdef int moveNodeToDocument(_Document doc, xmlDoc* c_source_doc,</span>
+                            <span class="s0">xmlNode* c_element) except -1:</span>
+    <span class="s0">&quot;&quot;&quot;Fix the xmlNs pointers of a node and its subtree that were moved.</span>
+
+    <span class="s0">Originally copied from libxml2's xmlReconciliateNs().  Expects</span>
+    <span class="s0">libxml2 doc pointers of node to be correct already, but fixes</span>
+    <span class="s0">_Document references.</span>
+
+    <span class="s0">For each node in the subtree, we do this:</span>
+
+    <span class="s0">1) Remove redundant declarations of namespace that are already</span>
+       <span class="s0">defined in its parents.</span>
+
+    <span class="s0">2) Replace namespaces that are *not* defined on the node or its</span>
+       <span class="s0">parents by the equivalent namespace declarations that *are*</span>
+       <span class="s0">defined on the node or its parents (possibly using a different</span>
+       <span class="s0">prefix).  If a namespace is unknown, declare a new one on the</span>
+       <span class="s0">node.</span>
+
+    <span class="s0">3) Reassign the names of tags and attribute from the dict of the</span>
+       <span class="s0">target document *iff* it is different from the dict used in the</span>
+       <span class="s0">source subtree.</span>
+
+    <span class="s0">4) Set the Document reference to the new Document (if different).</span>
+       <span class="s0">This is done on backtracking to keep the original Document</span>
+       <span class="s0">alive as long as possible, until all its elements are updated.</span>
+
+    <span class="s0">Note that the namespace declarations are removed from the tree in</span>
+    <span class="s0">step 1), but freed only after the complete subtree was traversed</span>
+    <span class="s0">and all occurrences were replaced by tree-internal pointers.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef xmlNode* c_start_node</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef xmlDoc* c_doc = doc._c_doc</span>
+    <span class="s0">cdef tree.xmlAttr* c_attr</span>
+    <span class="s0">cdef char* c_name</span>
+    <span class="s0">cdef _nscache c_ns_cache = [NULL, 0, 0]</span>
+    <span class="s0">cdef xmlNs* c_del_ns_list = NULL</span>
+    <span class="s0">cdef proxy_count = 0</span>
+
+    <span class="s0">if not tree._isElementOrXInclude(c_element):</span>
+        <span class="s0">return 0</span>
+
+    <span class="s0">c_start_node = c_element</span>
+
+    <span class="s0">tree.BEGIN_FOR_EACH_FROM(c_element, c_element, 1)</span>
+    <span class="s0">if tree._isElementOrXInclude(c_element):</span>
+        <span class="s0">if hasProxy(c_element):</span>
+            <span class="s0">proxy_count += 1</span>
+
+        <span class="s0"># 1) cut out namespaces defined here that are already known by</span>
+        <span class="s0">#    the ancestors</span>
+        <span class="s0">if c_element.nsDef is not NULL:</span>
+            <span class="s0">try:</span>
+                <span class="s0">_stripRedundantNamespaceDeclarations(c_element, &amp;c_ns_cache, &amp;c_del_ns_list)</span>
+            <span class="s0">except:</span>
+                <span class="s0">_cleanUpFromNamespaceAdaptation(c_start_node, &amp;c_ns_cache, c_del_ns_list)</span>
+                <span class="s0">raise</span>
+
+        <span class="s0"># 2) make sure the namespaces of an element and its attributes</span>
+        <span class="s0">#    are declared in this document (i.e. on the node or its parents)</span>
+        <span class="s0">if c_element.ns is not NULL:</span>
+            <span class="s0">_fixCNs(doc, c_start_node, c_element, &amp;c_ns_cache, c_del_ns_list)</span>
+
+        <span class="s0">c_node = &lt;xmlNode*&gt;c_element.properties</span>
+        <span class="s0">while c_node is not NULL:</span>
+            <span class="s0">if c_node.ns is not NULL:</span>
+                <span class="s0">_fixCNs(doc, c_start_node, c_node, &amp;c_ns_cache, c_del_ns_list)</span>
+            <span class="s0">c_node = c_node.next</span>
+
+    <span class="s0">tree.END_FOR_EACH_FROM(c_element)</span>
+
+    <span class="s0"># free now unused namespace declarations</span>
+    <span class="s0">if c_del_ns_list is not NULL:</span>
+        <span class="s0">tree.xmlFreeNsList(c_del_ns_list)</span>
+
+    <span class="s0"># cleanup</span>
+    <span class="s0">if c_ns_cache.ns_map is not NULL:</span>
+        <span class="s0">python.lxml_free(c_ns_cache.ns_map)</span>
+
+    <span class="s0"># 3) fix the names in the tree if we moved it from a different thread</span>
+    <span class="s0">if doc._c_doc.dict is not c_source_doc.dict:</span>
+        <span class="s0">fixThreadDictNames(c_start_node, c_source_doc.dict, doc._c_doc.dict)</span>
+
+    <span class="s0"># 4) fix _Document references</span>
+    <span class="s0">#    (and potentially deallocate the source document)</span>
+    <span class="s0">if proxy_count &gt; 0:</span>
+        <span class="s0">if proxy_count == 1 and c_start_node._private is not NULL:</span>
+            <span class="s0">proxy = getProxy(c_start_node)</span>
+            <span class="s0">if proxy is not None:</span>
+                <span class="s0">if proxy._doc is not doc:</span>
+                    <span class="s0">proxy._doc = doc</span>
+            <span class="s0">else:</span>
+                <span class="s0">fixElementDocument(c_start_node, doc, proxy_count)</span>
+        <span class="s0">else:</span>
+            <span class="s0">fixElementDocument(c_start_node, doc, proxy_count)</span>
+
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef void _setTreeDoc(xmlNode* c_node, xmlDoc* c_doc) noexcept:</span>
+    <span class="s0">&quot;&quot;&quot;Adaptation of 'xmlSetTreeDoc()' that deep-fixes the document links iteratively.</span>
+    <span class="s0">It avoids https://gitlab.gnome.org/GNOME/libxml2/issues/42</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_FROM(c_node, c_node, 1)</span>
+    <span class="s0">if c_node.type == tree.XML_ELEMENT_NODE:</span>
+        <span class="s0">c_attr = &lt;tree.xmlAttr*&gt;c_node.properties</span>
+        <span class="s0">while c_attr:</span>
+            <span class="s0">if c_attr.atype == tree.XML_ATTRIBUTE_ID:</span>
+                <span class="s0">tree.xmlRemoveID(c_node.doc, c_attr)</span>
+            <span class="s0">c_attr.doc = c_doc</span>
+            <span class="s0">_fixDocChildren(c_attr.children, c_doc)</span>
+            <span class="s0">c_attr = c_attr.next</span>
+    <span class="s0"># Set doc link for all nodes, not only elements.</span>
+    <span class="s0">c_node.doc = c_doc</span>
+    <span class="s0">tree.END_FOR_EACH_FROM(c_node)</span>
+
+
+<span class="s0">cdef inline void _fixDocChildren(xmlNode* c_child, xmlDoc* c_doc) noexcept:</span>
+    <span class="s0">while c_child:</span>
+        <span class="s0">c_child.doc = c_doc</span>
+        <span class="s0">if c_child.children:</span>
+            <span class="s0">_fixDocChildren(c_child.children, c_doc)</span>
+        <span class="s0">c_child = c_child.next</span>
+
+
+<span class="s0">cdef int _fixCNs(_Document doc, xmlNode* c_start_node, xmlNode* c_node,</span>
+                 <span class="s0">_nscache* c_ns_cache, xmlNs* c_del_ns_list) except -1:</span>
+    <span class="s0">cdef xmlNs* c_ns = NULL</span>
+    <span class="s0">cdef bint is_prefixed_attr = (c_node.type == tree.XML_ATTRIBUTE_NODE and c_node.ns.prefix)</span>
+
+    <span class="s0">for ns_map in c_ns_cache.ns_map[:c_ns_cache.last]:</span>
+        <span class="s0">if c_node.ns is ns_map.old:</span>
+            <span class="s0">if is_prefixed_attr and not ns_map.new.prefix:</span>
+                <span class="s0"># avoid dropping prefix from attributes</span>
+                <span class="s0">continue</span>
+            <span class="s0">c_ns = ns_map.new</span>
+            <span class="s0">break</span>
+
+    <span class="s0">if c_ns:</span>
+        <span class="s0">c_node.ns = c_ns</span>
+    <span class="s0">else:</span>
+        <span class="s0"># not in cache or not acceptable</span>
+        <span class="s0"># =&gt; find a replacement from this document</span>
+        <span class="s0">try:</span>
+            <span class="s0">c_ns = doc._findOrBuildNodeNs(</span>
+                <span class="s0">c_start_node, c_node.ns.href, c_node.ns.prefix,</span>
+                <span class="s0">c_node.type == tree.XML_ATTRIBUTE_NODE)</span>
+            <span class="s0">c_node.ns = c_ns</span>
+            <span class="s0">_appendToNsCache(c_ns_cache, c_node.ns, c_ns)</span>
+        <span class="s0">except:</span>
+            <span class="s0">_cleanUpFromNamespaceAdaptation(c_start_node, c_ns_cache, c_del_ns_list)</span>
+            <span class="s0">raise</span>
+    <span class="s0">return 0</span>
+
+
+<span class="s0">cdef int fixElementDocument(xmlNode* c_element, _Document doc,</span>
+                             <span class="s0">size_t proxy_count) except -1:</span>
+    <span class="s0">cdef xmlNode* c_node = c_element</span>
+    <span class="s0">cdef _Element proxy = None # init-to-None required due to fake-loop below</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_FROM(c_element, c_node, 1)</span>
+    <span class="s0">if c_node._private is not NULL:</span>
+        <span class="s0">proxy = getProxy(c_node)</span>
+        <span class="s0">if proxy is not None:</span>
+            <span class="s0">if proxy._doc is not doc:</span>
+                <span class="s0">proxy._doc = doc</span>
+            <span class="s0">proxy_count -= 1</span>
+            <span class="s0">if proxy_count == 0:</span>
+                <span class="s0">return 0</span>
+    <span class="s0">tree.END_FOR_EACH_FROM(c_node)</span>
+
+
+<span class="s0">cdef void fixThreadDictNames(xmlNode* c_element,</span>
+                             <span class="s0">tree.xmlDict* c_src_dict,</span>
+                             <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0"># re-assign the names of tags and attributes</span>
+    <span class="s0">#</span>
+    <span class="s0"># this should only be called when the element is based on a</span>
+    <span class="s0"># different libxml2 tag name dictionary</span>
+    <span class="s0">if c_element.type == tree.XML_DOCUMENT_NODE or \</span>
+            <span class="s0">c_element.type == tree.XML_HTML_DOCUMENT_NODE:</span>
+        <span class="s0"># may define &quot;xml&quot; namespace</span>
+        <span class="s0">fixThreadDictNsForNode(c_element, c_src_dict, c_dict)</span>
+        <span class="s0">if c_element.doc.extSubset:</span>
+            <span class="s0">fixThreadDictNamesForDtd(c_element.doc.extSubset, c_src_dict, c_dict)</span>
+        <span class="s0">if c_element.doc.intSubset:</span>
+            <span class="s0">fixThreadDictNamesForDtd(c_element.doc.intSubset, c_src_dict, c_dict)</span>
+        <span class="s0">c_element = c_element.children</span>
+        <span class="s0">while c_element is not NULL:</span>
+            <span class="s0">fixThreadDictNamesForNode(c_element, c_src_dict, c_dict)</span>
+            <span class="s0">c_element = c_element.next</span>
+    <span class="s0">elif tree._isElementOrXInclude(c_element):</span>
+        <span class="s0">fixThreadDictNamesForNode(c_element, c_src_dict, c_dict)</span>
+
+
+<span class="s0">cdef inline void _fixThreadDictPtr(const_xmlChar** c_ptr,</span>
+                                   <span class="s0">tree.xmlDict* c_src_dict,</span>
+                                   <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0">c_str = c_ptr[0]</span>
+    <span class="s0">if c_str and c_src_dict and tree.xmlDictOwns(c_src_dict, c_str):</span>
+        <span class="s0"># return value can be NULL on memory error, but we don't handle that here</span>
+        <span class="s0">c_str = tree.xmlDictLookup(c_dict, c_str, -1)</span>
+        <span class="s0">if c_str:</span>
+            <span class="s0">c_ptr[0] = c_str</span>
+
+
+<span class="s0">cdef void fixThreadDictNamesForNode(xmlNode* c_element,</span>
+                                    <span class="s0">tree.xmlDict* c_src_dict,</span>
+                                    <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_node = c_element</span>
+    <span class="s0">tree.BEGIN_FOR_EACH_FROM(c_element, c_node, 1)</span>
+    <span class="s0">if c_node.type in (tree.XML_ELEMENT_NODE, tree.XML_XINCLUDE_START):</span>
+        <span class="s0">fixThreadDictNamesForAttributes(</span>
+            <span class="s0">c_node.properties, c_src_dict, c_dict)</span>
+        <span class="s0">fixThreadDictNsForNode(c_node, c_src_dict, c_dict)</span>
+        <span class="s0">_fixThreadDictPtr(&amp;c_node.name, c_src_dict, c_dict)</span>
+    <span class="s0">elif c_node.type == tree.XML_TEXT_NODE:</span>
+        <span class="s0"># libxml2's SAX2 parser interns some indentation space</span>
+        <span class="s0">fixThreadDictContentForNode(c_node, c_src_dict, c_dict)</span>
+    <span class="s0">elif c_node.type == tree.XML_COMMENT_NODE:</span>
+        <span class="s0">pass  # don't touch c_node.name</span>
+    <span class="s0">else:</span>
+        <span class="s0">_fixThreadDictPtr(&amp;c_node.name, c_src_dict, c_dict)</span>
+    <span class="s0">tree.END_FOR_EACH_FROM(c_node)</span>
+
+
+<span class="s0">cdef inline void fixThreadDictNamesForAttributes(tree.xmlAttr* c_attr,</span>
+                                                 <span class="s0">tree.xmlDict* c_src_dict,</span>
+                                                 <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_child</span>
+    <span class="s0">cdef xmlNode* c_node = &lt;xmlNode*&gt;c_attr</span>
+    <span class="s0">while c_node is not NULL:</span>
+        <span class="s0">if c_node.type not in (tree.XML_TEXT_NODE, tree.XML_COMMENT_NODE):</span>
+            <span class="s0">_fixThreadDictPtr(&amp;c_node.name, c_src_dict, c_dict)</span>
+        <span class="s0"># libxml2 keeps some (!) attribute values in the dict</span>
+        <span class="s0">c_child = c_node.children</span>
+        <span class="s0">while c_child is not NULL:</span>
+            <span class="s0">fixThreadDictContentForNode(c_child, c_src_dict, c_dict)</span>
+            <span class="s0">c_child = c_child.next</span>
+        <span class="s0">c_node = c_node.next</span>
+
+
+<span class="s0">cdef inline void fixThreadDictContentForNode(xmlNode* c_node,</span>
+                                             <span class="s0">tree.xmlDict* c_src_dict,</span>
+                                             <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0">if c_node.content is not NULL and \</span>
+           <span class="s0">c_node.content is not &lt;xmlChar*&gt;&amp;c_node.properties:</span>
+        <span class="s0">if tree.xmlDictOwns(c_src_dict, c_node.content):</span>
+            <span class="s0"># result can be NULL on memory error, but we don't handle that here</span>
+            <span class="s0">c_node.content = &lt;xmlChar*&gt;tree.xmlDictLookup(c_dict, c_node.content, -1)</span>
+
+
+<span class="s0">cdef inline void fixThreadDictNsForNode(xmlNode* c_node,</span>
+                                        <span class="s0">tree.xmlDict* c_src_dict,</span>
+                                        <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0">cdef xmlNs* c_ns = c_node.nsDef</span>
+    <span class="s0">while c_ns is not NULL:</span>
+        <span class="s0">_fixThreadDictPtr(&amp;c_ns.href, c_src_dict, c_dict)</span>
+        <span class="s0">_fixThreadDictPtr(&amp;c_ns.prefix, c_src_dict, c_dict)</span>
+        <span class="s0">c_ns = c_ns.next</span>
+
+
+<span class="s0">cdef void fixThreadDictNamesForDtd(tree.xmlDtd* c_dtd,</span>
+                                   <span class="s0">tree.xmlDict* c_src_dict,</span>
+                                   <span class="s0">tree.xmlDict* c_dict) noexcept nogil:</span>
+    <span class="s0">cdef xmlNode* c_node</span>
+    <span class="s0">cdef tree.xmlElement* c_element</span>
+    <span class="s0">cdef tree.xmlAttribute* c_attribute</span>
+    <span class="s0">cdef tree.xmlEntity* c_entity</span>
+
+    <span class="s0">c_node = c_dtd.children</span>
+    <span class="s0">while c_node:</span>
+        <span class="s0">if c_node.type == tree.XML_ELEMENT_DECL:</span>
+            <span class="s0">c_element = &lt;tree.xmlElement*&gt;c_node</span>
+            <span class="s0">if c_element.content:</span>
+                <span class="s0">_fixThreadDictPtr(&amp;c_element.content.name, c_src_dict, c_dict)</span>
+                <span class="s0">_fixThreadDictPtr(&amp;c_element.content.prefix, c_src_dict, c_dict)</span>
+            <span class="s0">c_attribute = c_element.attributes</span>
+            <span class="s0">while c_attribute:</span>
+                <span class="s0">_fixThreadDictPtr(&amp;c_attribute.defaultValue, c_src_dict, c_dict)</span>
+                <span class="s0">_fixThreadDictPtr(&amp;c_attribute.name, c_src_dict, c_dict)</span>
+                <span class="s0">_fixThreadDictPtr(&amp;c_attribute.prefix, c_src_dict, c_dict)</span>
+                <span class="s0">_fixThreadDictPtr(&amp;c_attribute.elem, c_src_dict, c_dict)</span>
+                <span class="s0">c_attribute = c_attribute.nexth</span>
+        <span class="s0">elif c_node.type == tree.XML_ENTITY_DECL:</span>
+            <span class="s0">c_entity = &lt;tree.xmlEntity*&gt;c_node</span>
+            <span class="s0">_fixThreadDictPtr(&amp;c_entity.name, c_src_dict, c_dict)</span>
+            <span class="s0">_fixThreadDictPtr(&amp;c_entity.ExternalID, c_src_dict, c_dict)</span>
+            <span class="s0">_fixThreadDictPtr(&amp;c_entity.SystemID, c_src_dict, c_dict)</span>
+            <span class="s0">_fixThreadDictPtr(&lt;const_xmlChar**&gt;&amp;c_entity.content, c_src_dict, c_dict)</span>
+        <span class="s0">c_node = c_node.next</span>
+
+
+<span class="s0">################################################################################</span>
+<span class="s0"># adopt an xmlDoc from an external libxml2 document source</span>
+
+<span class="s0">cdef _Document _adoptForeignDoc(xmlDoc* c_doc, _BaseParser parser=None, bint is_owned=True):</span>
+    <span class="s0">&quot;&quot;&quot;Convert and wrap an externally produced xmlDoc for use in lxml.</span>
+    <span class="s0">Assures that all '_private' pointers are NULL to prevent accidental</span>
+    <span class="s0">dereference into lxml proxy objects.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if c_doc is NULL:</span>
+        <span class="s0">raise ValueError(&quot;Illegal document provided: NULL&quot;)</span>
+    <span class="s0">if c_doc.type not in (tree.XML_DOCUMENT_NODE, tree.XML_HTML_DOCUMENT_NODE):</span>
+        <span class="s0">doc_type = c_doc.type</span>
+        <span class="s0">if is_owned:</span>
+            <span class="s0">tree.xmlFreeDoc(c_doc)</span>
+        <span class="s0">raise ValueError(f&quot;Illegal document provided: expected XML or HTML, found {doc_type}&quot;)</span>
+
+    <span class="s0">cdef xmlNode* c_node = &lt;xmlNode*&gt;c_doc</span>
+
+    <span class="s0">if is_owned:</span>
+        <span class="s0">tree.BEGIN_FOR_EACH_FROM(&lt;xmlNode*&gt;c_doc, c_node, 1)</span>
+        <span class="s0">c_node._private = NULL</span>
+        <span class="s0">tree.END_FOR_EACH_FROM(c_node)</span>
+    <span class="s0">else:</span>
+        <span class="s0"># create a fresh copy that lxml owns</span>
+        <span class="s0">c_doc = tree.xmlCopyDoc(c_doc, 1)</span>
+        <span class="s0">if c_doc is NULL:</span>
+            <span class="s0">raise MemoryError()</span>
+
+    <span class="s0">return _documentFactory(c_doc, parser)</span>
+</pre>
+</body>
+</html>

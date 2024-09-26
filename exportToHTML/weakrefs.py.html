@@ -1,0 +1,119 @@
+<html>
+<head>
+<title>weakrefs.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #7a7e85;}
+.s4 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+weakrefs.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">weakref</span>
+
+<span class="s0">from </span><span class="s2">.</span><span class="s1">__wrapt__ </span><span class="s0">import </span><span class="s1">ObjectProxy</span><span class="s2">, </span><span class="s1">_FunctionWrapperBase</span>
+
+<span class="s3"># A weak function proxy. This will work on instance methods, class</span>
+<span class="s3"># methods, static methods and regular functions. Special treatment is</span>
+<span class="s3"># needed for the method types because the bound method is effectively a</span>
+<span class="s3"># transient object and applying a weak reference to one will immediately</span>
+<span class="s3"># result in it being destroyed and the weakref callback called. The weak</span>
+<span class="s3"># reference is therefore applied to the instance the method is bound to</span>
+<span class="s3"># and the original function. The function is then rebound at the point</span>
+<span class="s3"># of a call via the weak function proxy.</span>
+
+<span class="s0">def </span><span class="s1">_weak_function_proxy_callback</span><span class="s2">(</span><span class="s1">ref</span><span class="s2">, </span><span class="s1">proxy</span><span class="s2">, </span><span class="s1">callback</span><span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">proxy</span><span class="s2">.</span><span class="s1">_self_expired</span><span class="s2">:</span>
+        <span class="s0">return</span>
+
+    <span class="s1">proxy</span><span class="s2">.</span><span class="s1">_self_expired </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s3"># This could raise an exception. We let it propagate back and let</span>
+    <span class="s3"># the weakref.proxy() deal with it, at which point it generally</span>
+    <span class="s3"># prints out a short error message direct to stderr and keeps going.</span>
+
+    <span class="s0">if </span><span class="s1">callback </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">callback</span><span class="s2">(</span><span class="s1">proxy</span><span class="s2">)</span>
+
+<span class="s0">class </span><span class="s1">WeakFunctionProxy</span><span class="s2">(</span><span class="s1">ObjectProxy</span><span class="s2">):</span>
+
+    <span class="s1">__slots__ </span><span class="s2">= (</span><span class="s4">'_self_expired'</span><span class="s2">, </span><span class="s4">'_self_instance'</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">wrapped</span><span class="s2">, </span><span class="s1">callback</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s3"># We need to determine if the wrapped function is actually a</span>
+        <span class="s3"># bound method. In the case of a bound method, we need to keep a</span>
+        <span class="s3"># reference to the original unbound function and the instance.</span>
+        <span class="s3"># This is necessary because if we hold a reference to the bound</span>
+        <span class="s3"># function, it will be the only reference and given it is a</span>
+        <span class="s3"># temporary object, it will almost immediately expire and</span>
+        <span class="s3"># the weakref callback triggered. So what is done is that we</span>
+        <span class="s3"># hold a reference to the instance and unbound function and</span>
+        <span class="s3"># when called bind the function to the instance once again and</span>
+        <span class="s3"># then call it. Note that we avoid using a nested function for</span>
+        <span class="s3"># the callback here so as not to cause any odd reference cycles.</span>
+
+        <span class="s1">_callback </span><span class="s2">= </span><span class="s1">callback </span><span class="s0">and </span><span class="s1">functools</span><span class="s2">.</span><span class="s1">partial</span><span class="s2">(</span>
+                <span class="s1">_weak_function_proxy_callback</span><span class="s2">, </span><span class="s1">proxy</span><span class="s2">=</span><span class="s1">self</span><span class="s2">,</span>
+                <span class="s1">callback</span><span class="s2">=</span><span class="s1">callback</span><span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_self_expired </span><span class="s2">= </span><span class="s0">False</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">, </span><span class="s1">_FunctionWrapperBase</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_self_instance </span><span class="s2">= </span><span class="s1">weakref</span><span class="s2">.</span><span class="s1">ref</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">.</span><span class="s1">_self_instance</span><span class="s2">,</span>
+                    <span class="s1">_callback</span><span class="s2">)</span>
+
+            <span class="s0">if </span><span class="s1">wrapped</span><span class="s2">.</span><span class="s1">_self_parent </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">super</span><span class="s2">(</span><span class="s1">WeakFunctionProxy</span><span class="s2">, </span><span class="s1">self</span><span class="s2">).</span><span class="s1">__init__</span><span class="s2">(</span>
+                        <span class="s1">weakref</span><span class="s2">.</span><span class="s1">proxy</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">.</span><span class="s1">_self_parent</span><span class="s2">, </span><span class="s1">_callback</span><span class="s2">))</span>
+
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">super</span><span class="s2">(</span><span class="s1">WeakFunctionProxy</span><span class="s2">, </span><span class="s1">self</span><span class="s2">).</span><span class="s1">__init__</span><span class="s2">(</span>
+                        <span class="s1">weakref</span><span class="s2">.</span><span class="s1">proxy</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">, </span><span class="s1">_callback</span><span class="s2">))</span>
+
+            <span class="s0">return</span>
+
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_self_instance </span><span class="s2">= </span><span class="s1">weakref</span><span class="s2">.</span><span class="s1">ref</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">.</span><span class="s1">__self__</span><span class="s2">, </span><span class="s1">_callback</span><span class="s2">)</span>
+
+            <span class="s1">super</span><span class="s2">(</span><span class="s1">WeakFunctionProxy</span><span class="s2">, </span><span class="s1">self</span><span class="s2">).</span><span class="s1">__init__</span><span class="s2">(</span>
+                    <span class="s1">weakref</span><span class="s2">.</span><span class="s1">proxy</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">.</span><span class="s1">__func__</span><span class="s2">, </span><span class="s1">_callback</span><span class="s2">))</span>
+
+        <span class="s0">except </span><span class="s1">AttributeError</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_self_instance </span><span class="s2">= </span><span class="s0">None</span>
+
+            <span class="s1">super</span><span class="s2">(</span><span class="s1">WeakFunctionProxy</span><span class="s2">, </span><span class="s1">self</span><span class="s2">).</span><span class="s1">__init__</span><span class="s2">(</span>
+                    <span class="s1">weakref</span><span class="s2">.</span><span class="s1">proxy</span><span class="s2">(</span><span class="s1">wrapped</span><span class="s2">, </span><span class="s1">_callback</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">__call__</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s0">def </span><span class="s1">_unpack_self</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, *</span><span class="s1">args</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">, </span><span class="s1">args</span>
+
+        <span class="s1">self</span><span class="s2">, </span><span class="s1">args </span><span class="s2">= </span><span class="s1">_unpack_self</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">)</span>
+
+        <span class="s3"># We perform a boolean check here on the instance and wrapped</span>
+        <span class="s3"># function as that will trigger the reference error prior to</span>
+        <span class="s3"># calling if the reference had expired.</span>
+
+        <span class="s1">instance </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_self_instance </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_self_instance</span><span class="s2">()</span>
+        <span class="s1">function </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__wrapped__ </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__wrapped__</span>
+
+        <span class="s3"># If the wrapped function was originally a bound function, for</span>
+        <span class="s3"># which we retained a reference to the instance and the unbound</span>
+        <span class="s3"># function we need to rebind the function and then call it. If</span>
+        <span class="s3"># not just called the wrapped function.</span>
+
+        <span class="s0">if </span><span class="s1">instance </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__wrapped__</span><span class="s2">(*</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">function</span><span class="s2">.</span><span class="s1">__get__</span><span class="s2">(</span><span class="s1">instance</span><span class="s2">, </span><span class="s1">type</span><span class="s2">(</span><span class="s1">instance</span><span class="s2">))(*</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

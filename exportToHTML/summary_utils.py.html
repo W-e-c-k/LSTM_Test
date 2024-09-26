@@ -1,0 +1,466 @@
+<html>
+<head>
+<title>summary_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #7a7e85;}
+.s4 { color: #2aacb8;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+summary_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">functools</span>
+<span class="s0">import </span><span class="s1">math</span>
+<span class="s0">import </span><span class="s1">re</span>
+<span class="s0">import </span><span class="s1">shutil</span>
+
+<span class="s0">import </span><span class="s1">rich</span>
+<span class="s0">import </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">console</span>
+<span class="s0">import </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">markup</span>
+
+<span class="s3"># See https://github.com/keras-team/keras/issues/448</span>
+<span class="s3"># for below imports</span>
+<span class="s0">import </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">table</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">dtype_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">io_utils</span>
+
+
+<span class="s0">def </span><span class="s1">count_params</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">):</span>
+    <span class="s1">shapes </span><span class="s2">= [</span><span class="s1">v</span><span class="s2">.</span><span class="s1">shape </span><span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">weights</span><span class="s2">]</span>
+    <span class="s0">return </span><span class="s1">int</span><span class="s2">(</span><span class="s1">sum</span><span class="s2">(</span><span class="s1">math</span><span class="s2">.</span><span class="s1">prod</span><span class="s2">(</span><span class="s1">p</span><span class="s2">) </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">shapes</span><span class="s2">))</span>
+
+
+<span class="s2">@</span><span class="s1">functools</span><span class="s2">.</span><span class="s1">lru_cache</span><span class="s2">(</span><span class="s4">512</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">_compute_memory_size</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+    <span class="s1">weight_counts </span><span class="s2">= </span><span class="s1">math</span><span class="s2">.</span><span class="s1">prod</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">)</span>
+    <span class="s1">dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s1">per_param_size </span><span class="s2">= </span><span class="s1">dtype_utils</span><span class="s2">.</span><span class="s1">dtype_size</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">weight_counts </span><span class="s2">* </span><span class="s1">per_param_size</span>
+
+
+<span class="s0">def </span><span class="s1">weight_memory_size</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Compute the memory footprint for weights based on their dtypes. 
+ 
+    Args: 
+        weights: An iterable contains the weights to compute weight size. 
+ 
+    Returns: 
+        The total memory size (in Bytes) of the weights. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">unique_weights </span><span class="s2">= {</span><span class="s1">id</span><span class="s2">(</span><span class="s1">w</span><span class="s2">): </span><span class="s1">w </span><span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">weights</span><span class="s2">}.</span><span class="s1">values</span><span class="s2">()</span>
+    <span class="s1">total_memory_size </span><span class="s2">= </span><span class="s4">0</span>
+    <span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">unique_weights</span><span class="s2">:</span>
+        <span class="s1">total_memory_size </span><span class="s2">+= </span><span class="s1">_compute_memory_size</span><span class="s2">(</span><span class="s1">w</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">w</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">total_memory_size </span><span class="s2">/ </span><span class="s4">8</span>
+
+
+<span class="s0">def </span><span class="s1">readable_memory_size</span><span class="s2">(</span><span class="s1">weight_memory_size</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Convert the weight memory size (Bytes) to a readable string.&quot;&quot;&quot;</span>
+    <span class="s1">units </span><span class="s2">= [</span><span class="s6">&quot;B&quot;</span><span class="s2">, </span><span class="s6">&quot;KB&quot;</span><span class="s2">, </span><span class="s6">&quot;MB&quot;</span><span class="s2">, </span><span class="s6">&quot;GB&quot;</span><span class="s2">, </span><span class="s6">&quot;TB&quot;</span><span class="s2">, </span><span class="s6">&quot;PB&quot;</span><span class="s2">]</span>
+    <span class="s1">scale </span><span class="s2">= </span><span class="s4">1024</span>
+    <span class="s0">for </span><span class="s1">unit </span><span class="s0">in </span><span class="s1">units</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">weight_memory_size </span><span class="s2">/ </span><span class="s1">scale </span><span class="s2">&lt; </span><span class="s4">1</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s6">&quot;{:.2f} {}&quot;</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span><span class="s1">weight_memory_size</span><span class="s2">, </span><span class="s1">unit</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">weight_memory_size </span><span class="s2">/= </span><span class="s1">scale</span>
+    <span class="s0">return </span><span class="s6">&quot;{:.2f} {}&quot;</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span><span class="s1">weight_memory_size</span><span class="s2">, </span><span class="s1">units</span><span class="s2">[-</span><span class="s4">1</span><span class="s2">])</span>
+
+
+<span class="s0">def </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Themes numbers in a summary using rich markup. 
+ 
+    We use a separate color for `None`s, e.g. in a layer shape. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">x </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s6">f&quot;[color(45)]</span><span class="s0">{</span><span class="s1">x</span><span class="s0">}</span><span class="s6">[/]&quot;</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s6">f&quot;[color(34)]</span><span class="s0">{</span><span class="s1">x</span><span class="s0">}</span><span class="s6">[/]&quot;</span>
+
+
+<span class="s0">def </span><span class="s1">highlight_symbol</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Themes keras symbols in a summary using rich markup.&quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s6">f&quot;[color(33)]</span><span class="s0">{</span><span class="s1">x</span><span class="s0">}</span><span class="s6">[/]&quot;</span>
+
+
+<span class="s0">def </span><span class="s1">bold_text</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">color</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Bolds text using rich markup.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">color</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s6">f&quot;[bold][color(</span><span class="s0">{</span><span class="s1">color</span><span class="s0">}</span><span class="s6">)]</span><span class="s0">{</span><span class="s1">x</span><span class="s0">}</span><span class="s6">[/][/]&quot;</span>
+    <span class="s0">return </span><span class="s6">f&quot;[bold]</span><span class="s0">{</span><span class="s1">x</span><span class="s0">}</span><span class="s6">[/]&quot;</span>
+
+
+<span class="s0">def </span><span class="s1">format_layer_shape</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+    <span class="s0">if not </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_inbound_nodes </span><span class="s0">and not </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_build_shapes_dict</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s6">&quot;?&quot;</span>
+
+    <span class="s0">def </span><span class="s1">format_shape</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">):</span>
+        <span class="s1">highlighted </span><span class="s2">= [</span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s1">x</span><span class="s2">) </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">shape</span><span class="s2">]</span>
+        <span class="s0">return </span><span class="s6">&quot;(&quot; </span><span class="s2">+ </span><span class="s6">&quot;, &quot;</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">highlighted</span><span class="s2">) + </span><span class="s6">&quot;)&quot;</span>
+
+    <span class="s3"># There are 2 approaches to get output shapes:</span>
+    <span class="s3"># 1. Using `layer._inbound_nodes`, which is possible if the model is a</span>
+    <span class="s3"># Sequential or Functional.</span>
+    <span class="s3"># 2. Using `layer._build_shapes_dict`, which is possible if users manually</span>
+    <span class="s3"># build the layer.</span>
+    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_inbound_nodes</span><span class="s2">) &gt; </span><span class="s4">0</span><span class="s2">:</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_inbound_nodes</span><span class="s2">)):</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_inbound_nodes</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">output_tensors</span>
+            <span class="s1">output_shapes </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span>
+                <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">format_shape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">), </span><span class="s1">outputs</span>
+            <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s6">&quot;output_shape&quot;</span><span class="s2">):</span>
+                <span class="s1">output_shapes </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">output_shape</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">outputs </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(**</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_build_shapes_dict</span><span class="s2">)</span>
+                <span class="s1">output_shapes </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_shape_structure</span><span class="s2">(</span>
+                    <span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">format_shape</span><span class="s2">(</span><span class="s1">x</span><span class="s2">), </span><span class="s1">outputs</span>
+                <span class="s2">)</span>
+        <span class="s0">except </span><span class="s1">NotImplementedError</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s6">&quot;?&quot;</span>
+    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">output_shapes</span><span class="s2">) == </span><span class="s4">1</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">output_shapes</span><span class="s2">[</span><span class="s4">0</span><span class="s2">]</span>
+    <span class="s1">out </span><span class="s2">= </span><span class="s1">str</span><span class="s2">(</span><span class="s1">output_shapes</span><span class="s2">)</span>
+    <span class="s1">out </span><span class="s2">= </span><span class="s1">out</span><span class="s2">.</span><span class="s1">replace</span><span class="s2">(</span><span class="s6">&quot;'&quot;</span><span class="s2">, </span><span class="s6">&quot;&quot;</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">out</span>
+
+
+<span class="s0">def </span><span class="s1">print_summary</span><span class="s2">(</span>
+    <span class="s1">model</span><span class="s2">,</span>
+    <span class="s1">line_length</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">positions</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">print_fn</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">expand_nested</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">show_trainable</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+    <span class="s1">layer_range</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Prints a summary of a model. 
+ 
+    Args: 
+        model: Keras model instance. 
+        line_length: Total length of printed lines 
+            (e.g. set this to adapt the display to different 
+            terminal window sizes). 
+        positions: Relative or absolute positions of log elements in each line. 
+            If not provided, defaults to `[0.3, 0.6, 0.70, 1.]`. 
+        print_fn: Print function to use. 
+            It will be called on each line of the summary. 
+            You can set it to a custom function 
+            in order to capture the string summary. 
+            It defaults to `print` (prints to stdout). 
+        expand_nested: Whether to expand the nested models. 
+            If not provided, defaults to `False`. 
+        show_trainable: Whether to show if a layer is trainable. 
+            If not provided, defaults to `False`. 
+        layer_range: List or tuple containing two strings, 
+            the starting layer name and ending layer name (both inclusive), 
+            indicating the range of layers to be printed in the summary. The 
+            strings could also be regexes instead of an exact name. In this 
+             case, the starting layer will be the first layer that matches 
+            `layer_range[0]` and the ending layer will be the last element that 
+            matches `layer_range[1]`. By default (`None`) all 
+            layers in the model are included in the summary. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models </span><span class="s0">import </span><span class="s1">Functional</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models </span><span class="s0">import </span><span class="s1">Sequential</span>
+
+    <span class="s0">if not </span><span class="s1">print_fn </span><span class="s0">and not </span><span class="s1">io_utils</span><span class="s2">.</span><span class="s1">is_interactive_logging_enabled</span><span class="s2">():</span>
+        <span class="s1">print_fn </span><span class="s2">= </span><span class="s1">io_utils</span><span class="s2">.</span><span class="s1">print_msg</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">Sequential</span><span class="s2">):</span>
+        <span class="s1">sequential_like </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">layers </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span>
+    <span class="s0">elif not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">Functional</span><span class="s2">):</span>
+        <span class="s3"># We treat subclassed models as a simple sequence of layers, for logging</span>
+        <span class="s3"># purposes.</span>
+        <span class="s1">sequential_like </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">layers </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">layers </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_operations</span>
+        <span class="s1">sequential_like </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">nodes_by_depth </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_nodes_by_depth</span><span class="s2">.</span><span class="s1">values</span><span class="s2">()</span>
+        <span class="s1">nodes </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">nodes_by_depth</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">v</span><span class="s2">) &gt; </span><span class="s4">1</span><span class="s2">) </span><span class="s0">or </span><span class="s2">(</span>
+                <span class="s1">len</span><span class="s2">(</span><span class="s1">v</span><span class="s2">) == </span><span class="s4">1 </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">tree</span><span class="s2">.</span><span class="s1">flatten</span><span class="s2">(</span><span class="s1">v</span><span class="s2">[</span><span class="s4">0</span><span class="s2">].</span><span class="s1">input_tensors</span><span class="s2">)) &gt; </span><span class="s4">1</span>
+            <span class="s2">):</span>
+                <span class="s3"># if the model has multiple nodes</span>
+                <span class="s3"># or if the nodes have multiple inbound_layers</span>
+                <span class="s3"># the model is no longer sequential</span>
+                <span class="s1">sequential_like </span><span class="s2">= </span><span class="s0">False</span>
+                <span class="s0">break</span>
+            <span class="s1">nodes </span><span class="s2">+= </span><span class="s1">v</span>
+        <span class="s0">if </span><span class="s1">sequential_like</span><span class="s2">:</span>
+            <span class="s3"># search for shared layers</span>
+            <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+                <span class="s1">flag </span><span class="s2">= </span><span class="s0">False</span>
+                <span class="s0">for </span><span class="s1">node </span><span class="s0">in </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_inbound_nodes</span><span class="s2">:</span>
+                    <span class="s0">if </span><span class="s1">node </span><span class="s0">in </span><span class="s1">nodes</span><span class="s2">:</span>
+                        <span class="s0">if </span><span class="s1">flag</span><span class="s2">:</span>
+                            <span class="s1">sequential_like </span><span class="s2">= </span><span class="s0">False</span>
+                            <span class="s0">break</span>
+                        <span class="s0">else</span><span class="s2">:</span>
+                            <span class="s1">flag </span><span class="s2">= </span><span class="s0">True</span>
+                <span class="s0">if not </span><span class="s1">sequential_like</span><span class="s2">:</span>
+                    <span class="s0">break</span>
+
+    <span class="s0">if </span><span class="s1">sequential_like</span><span class="s2">:</span>
+        <span class="s1">default_line_length </span><span class="s2">= </span><span class="s4">88</span>
+        <span class="s1">positions </span><span class="s2">= </span><span class="s1">positions </span><span class="s0">or </span><span class="s2">[</span><span class="s4">0.45</span><span class="s2">, </span><span class="s4">0.80</span><span class="s2">, </span><span class="s4">1.0</span><span class="s2">]</span>
+        <span class="s3"># header names for the different log elements</span>
+        <span class="s1">header </span><span class="s2">= [</span><span class="s6">&quot;Layer (type)&quot;</span><span class="s2">, </span><span class="s6">&quot;Output Shape&quot;</span><span class="s2">, </span><span class="s6">&quot;Param #&quot;</span><span class="s2">]</span>
+        <span class="s1">alignment </span><span class="s2">= [</span><span class="s6">&quot;left&quot;</span><span class="s2">, </span><span class="s6">&quot;left&quot;</span><span class="s2">, </span><span class="s6">&quot;right&quot;</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">default_line_length </span><span class="s2">= </span><span class="s4">108</span>
+        <span class="s1">positions </span><span class="s2">= </span><span class="s1">positions </span><span class="s0">or </span><span class="s2">[</span><span class="s4">0.3</span><span class="s2">, </span><span class="s4">0.56</span><span class="s2">, </span><span class="s4">0.74</span><span class="s2">, </span><span class="s4">1.0</span><span class="s2">]</span>
+        <span class="s3"># header names for the different log elements</span>
+        <span class="s1">header </span><span class="s2">= [</span><span class="s6">&quot;Layer (type)&quot;</span><span class="s2">, </span><span class="s6">&quot;Output Shape&quot;</span><span class="s2">, </span><span class="s6">&quot;Param #&quot;</span><span class="s2">, </span><span class="s6">&quot;Connected to&quot;</span><span class="s2">]</span>
+        <span class="s1">alignment </span><span class="s2">= [</span><span class="s6">&quot;left&quot;</span><span class="s2">, </span><span class="s6">&quot;left&quot;</span><span class="s2">, </span><span class="s6">&quot;right&quot;</span><span class="s2">, </span><span class="s6">&quot;left&quot;</span><span class="s2">]</span>
+        <span class="s1">relevant_nodes </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_nodes_by_depth</span><span class="s2">.</span><span class="s1">values</span><span class="s2">():</span>
+            <span class="s1">relevant_nodes </span><span class="s2">+= </span><span class="s1">v</span>
+
+    <span class="s0">if </span><span class="s1">show_trainable</span><span class="s2">:</span>
+        <span class="s1">default_line_length </span><span class="s2">+= </span><span class="s4">12</span>
+        <span class="s1">positions </span><span class="s2">= [</span><span class="s1">p </span><span class="s2">* </span><span class="s4">0.90 </span><span class="s0">for </span><span class="s1">p </span><span class="s0">in </span><span class="s1">positions</span><span class="s2">] + [</span><span class="s4">1.0</span><span class="s2">]</span>
+        <span class="s1">header</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s6">&quot;Trainable&quot;</span><span class="s2">)</span>
+        <span class="s1">alignment</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s6">&quot;center&quot;</span><span class="s2">)</span>
+
+    <span class="s3"># Compute columns widths</span>
+    <span class="s1">default_line_length </span><span class="s2">= </span><span class="s1">min</span><span class="s2">(</span>
+        <span class="s1">default_line_length</span><span class="s2">, </span><span class="s1">shutil</span><span class="s2">.</span><span class="s1">get_terminal_size</span><span class="s2">().</span><span class="s1">columns </span><span class="s2">- </span><span class="s4">4</span>
+    <span class="s2">)</span>
+    <span class="s1">line_length </span><span class="s2">= </span><span class="s1">line_length </span><span class="s0">or </span><span class="s1">default_line_length</span>
+    <span class="s1">column_widths </span><span class="s2">= []</span>
+    <span class="s1">current </span><span class="s2">= </span><span class="s4">0</span>
+    <span class="s0">for </span><span class="s1">pos </span><span class="s0">in </span><span class="s1">positions</span><span class="s2">:</span>
+        <span class="s1">width </span><span class="s2">= </span><span class="s1">int</span><span class="s2">(</span><span class="s1">pos </span><span class="s2">* </span><span class="s1">line_length</span><span class="s2">) - </span><span class="s1">current</span>
+        <span class="s0">if </span><span class="s1">width </span><span class="s2">&lt; </span><span class="s4">4</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s6">&quot;Insufficient console width to print summary.&quot;</span><span class="s2">)</span>
+        <span class="s1">column_widths</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">width</span><span class="s2">)</span>
+        <span class="s1">current </span><span class="s2">+= </span><span class="s1">width</span>
+
+    <span class="s3"># Render summary as a rich table.</span>
+    <span class="s1">columns </span><span class="s2">= []</span>
+    <span class="s3"># Right align parameter counts.</span>
+    <span class="s0">for </span><span class="s1">i</span><span class="s2">, </span><span class="s1">name </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">header</span><span class="s2">):</span>
+        <span class="s1">column </span><span class="s2">= </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">table</span><span class="s2">.</span><span class="s1">Column</span><span class="s2">(</span>
+            <span class="s1">name</span><span class="s2">,</span>
+            <span class="s1">justify</span><span class="s2">=</span><span class="s1">alignment</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+            <span class="s1">width</span><span class="s2">=</span><span class="s1">column_widths</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],</span>
+        <span class="s2">)</span>
+        <span class="s1">columns</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">column</span><span class="s2">)</span>
+
+    <span class="s1">table </span><span class="s2">= </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">table</span><span class="s2">.</span><span class="s1">Table</span><span class="s2">(*</span><span class="s1">columns</span><span class="s2">, </span><span class="s1">width</span><span class="s2">=</span><span class="s1">line_length</span><span class="s2">, </span><span class="s1">show_lines</span><span class="s2">=</span><span class="s0">True</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_connections</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+        <span class="s1">connections </span><span class="s2">= </span><span class="s6">&quot;&quot;</span>
+        <span class="s0">for </span><span class="s1">node </span><span class="s0">in </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_inbound_nodes</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">relevant_nodes </span><span class="s0">and </span><span class="s1">node </span><span class="s0">not in </span><span class="s1">relevant_nodes</span><span class="s2">:</span>
+                <span class="s3"># node is not part of the current network</span>
+                <span class="s0">continue</span>
+            <span class="s0">for </span><span class="s1">kt </span><span class="s0">in </span><span class="s1">node</span><span class="s2">.</span><span class="s1">input_tensors</span><span class="s2">:</span>
+                <span class="s1">keras_history </span><span class="s2">= </span><span class="s1">kt</span><span class="s2">.</span><span class="s1">_keras_history</span>
+                <span class="s1">inbound_layer </span><span class="s2">= </span><span class="s1">keras_history</span><span class="s2">.</span><span class="s1">operation</span>
+                <span class="s1">node_index </span><span class="s2">= </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s1">keras_history</span><span class="s2">.</span><span class="s1">node_index</span><span class="s2">)</span>
+                <span class="s1">tensor_index </span><span class="s2">= </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s1">keras_history</span><span class="s2">.</span><span class="s1">tensor_index</span><span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">connections</span><span class="s2">:</span>
+                    <span class="s1">connections </span><span class="s2">+= </span><span class="s6">&quot;, &quot;</span>
+                <span class="s1">connections </span><span class="s2">+= (</span>
+                    <span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">inbound_layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s6">[</span><span class="s0">{</span><span class="s1">node_index</span><span class="s0">}</span><span class="s6">][</span><span class="s0">{</span><span class="s1">tensor_index</span><span class="s0">}</span><span class="s6">]&quot;</span>
+                <span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">connections</span><span class="s2">:</span>
+            <span class="s1">connections </span><span class="s2">= </span><span class="s6">&quot;-&quot;</span>
+        <span class="s0">return </span><span class="s1">connections</span>
+
+    <span class="s0">def </span><span class="s1">get_layer_fields</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">prefix</span><span class="s2">=</span><span class="s6">&quot;&quot;</span><span class="s2">):</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">format_layer_shape</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">prefix </span><span class="s2">+ </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span>
+        <span class="s1">cls_name </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">markup</span><span class="s2">.</span><span class="s1">escape</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">name </span><span class="s2">+= </span><span class="s6">f&quot; (</span><span class="s0">{</span><span class="s1">highlight_symbol</span><span class="s2">(</span><span class="s1">rich</span><span class="s2">.</span><span class="s1">markup</span><span class="s2">.</span><span class="s1">escape</span><span class="s2">(</span><span class="s1">cls_name</span><span class="s2">))</span><span class="s0">}</span><span class="s6">)&quot;</span>
+
+        <span class="s0">if not </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s6">&quot;built&quot;</span><span class="s2">):</span>
+            <span class="s1">params </span><span class="s2">= </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s4">0</span><span class="s2">)</span>
+        <span class="s0">elif not </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+            <span class="s1">params </span><span class="s2">= </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s4">0</span><span class="s2">) + </span><span class="s6">&quot; (unbuilt)&quot;</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">params </span><span class="s2">= </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">count_params</span><span class="s2">()</span><span class="s0">:</span><span class="s6">,</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">)</span>
+
+        <span class="s1">fields </span><span class="s2">= [</span><span class="s1">name</span><span class="s2">, </span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">params</span><span class="s2">]</span>
+        <span class="s0">if not </span><span class="s1">sequential_like</span><span class="s2">:</span>
+            <span class="s1">fields</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">get_connections</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">))</span>
+        <span class="s0">if </span><span class="s1">show_trainable</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s6">&quot;weights&quot;</span><span class="s2">) </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">weights</span><span class="s2">) &gt; </span><span class="s4">0</span><span class="s2">:</span>
+                <span class="s1">fields</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span>
+                    <span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot;Y&quot;</span><span class="s2">, </span><span class="s1">color</span><span class="s2">=</span><span class="s4">34</span><span class="s2">)</span>
+                    <span class="s0">if </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">trainable</span>
+                    <span class="s0">else </span><span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot;N&quot;</span><span class="s2">, </span><span class="s1">color</span><span class="s2">=</span><span class="s4">9</span><span class="s2">)</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">fields</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot;-&quot;</span><span class="s2">))</span>
+        <span class="s0">return </span><span class="s1">fields</span>
+
+    <span class="s0">def </span><span class="s1">print_layer</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">nested_level</span><span class="s2">=</span><span class="s4">0</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">nested_level</span><span class="s2">:</span>
+            <span class="s1">prefix </span><span class="s2">= </span><span class="s6">&quot;   &quot; </span><span class="s2">* </span><span class="s1">nested_level </span><span class="s2">+ </span><span class="s6">&quot;└&quot; </span><span class="s2">+ </span><span class="s6">&quot; &quot;</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">prefix </span><span class="s2">= </span><span class="s6">&quot;&quot;</span>
+
+        <span class="s1">fields </span><span class="s2">= </span><span class="s1">get_layer_fields</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">prefix</span><span class="s2">=</span><span class="s1">prefix</span><span class="s2">)</span>
+
+        <span class="s1">rows </span><span class="s2">= [</span><span class="s1">fields</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">expand_nested </span><span class="s0">and </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s6">&quot;layers&quot;</span><span class="s2">) </span><span class="s0">and </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s1">nested_layers </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">layers</span>
+            <span class="s1">nested_level </span><span class="s2">+= </span><span class="s4">1</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">nested_layers</span><span class="s2">)):</span>
+                <span class="s1">rows</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span>
+                    <span class="s1">print_layer</span><span class="s2">(</span><span class="s1">nested_layers</span><span class="s2">[</span><span class="s1">i</span><span class="s2">], </span><span class="s1">nested_level</span><span class="s2">=</span><span class="s1">nested_level</span><span class="s2">)</span>
+                <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">rows</span>
+
+    <span class="s3"># Render all layers to the rich table.</span>
+    <span class="s1">layer_range </span><span class="s2">= </span><span class="s1">get_layer_index_bound_by_layer_name</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">, </span><span class="s1">layer_range</span><span class="s2">)</span>
+    <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">layers</span><span class="s2">[</span><span class="s1">layer_range</span><span class="s2">[</span><span class="s4">0</span><span class="s2">] : </span><span class="s1">layer_range</span><span class="s2">[</span><span class="s4">1</span><span class="s2">]]:</span>
+        <span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">print_layer</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+            <span class="s1">table</span><span class="s2">.</span><span class="s1">add_row</span><span class="s2">(*</span><span class="s1">row</span><span class="s2">)</span>
+
+    <span class="s3"># After the table, append information about parameter count and size.</span>
+    <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s6">&quot;_collected_trainable_weights&quot;</span><span class="s2">):</span>
+        <span class="s1">trainable_count </span><span class="s2">= </span><span class="s1">count_params</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">_collected_trainable_weights</span><span class="s2">)</span>
+        <span class="s1">trainable_memory_size </span><span class="s2">= </span><span class="s1">weight_memory_size</span><span class="s2">(</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">_collected_trainable_weights</span>
+        <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">trainable_count </span><span class="s2">= </span><span class="s1">count_params</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">trainable_weights</span><span class="s2">)</span>
+        <span class="s1">trainable_memory_size </span><span class="s2">= </span><span class="s1">weight_memory_size</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">trainable_weights</span><span class="s2">)</span>
+
+    <span class="s1">non_trainable_count </span><span class="s2">= </span><span class="s1">count_params</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">non_trainable_weights</span><span class="s2">)</span>
+    <span class="s1">non_trainable_memory_size </span><span class="s2">= </span><span class="s1">weight_memory_size</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">non_trainable_weights</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">model</span><span class="s2">.</span><span class="s1">compiled </span><span class="s0">and </span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer </span><span class="s0">and </span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">built</span><span class="s2">:</span>
+        <span class="s1">optimizer_weight_count </span><span class="s2">= </span><span class="s1">count_params</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">)</span>
+        <span class="s1">optimizer_memory_size </span><span class="s2">= </span><span class="s1">weight_memory_size</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">variables</span><span class="s2">)</span>
+        <span class="s1">optimizer_built </span><span class="s2">= </span><span class="s0">True</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">optimizer_weight_count </span><span class="s2">= </span><span class="s4">0</span>
+        <span class="s1">optimizer_memory_size </span><span class="s2">= </span><span class="s4">0</span>
+        <span class="s1">optimizer_built </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s1">total_count </span><span class="s2">= </span><span class="s1">trainable_count </span><span class="s2">+ </span><span class="s1">non_trainable_count </span><span class="s2">+ </span><span class="s1">optimizer_weight_count</span>
+    <span class="s1">total_memory_size </span><span class="s2">= (</span>
+        <span class="s1">trainable_memory_size</span>
+        <span class="s2">+ </span><span class="s1">non_trainable_memory_size</span>
+        <span class="s2">+ </span><span class="s1">optimizer_memory_size</span>
+    <span class="s2">)</span>
+
+    <span class="s3"># Create a rich console for printing. Capture for non-interactive logging.</span>
+    <span class="s0">if </span><span class="s1">print_fn</span><span class="s2">:</span>
+        <span class="s1">console </span><span class="s2">= </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">console</span><span class="s2">.</span><span class="s1">Console</span><span class="s2">(</span>
+            <span class="s1">highlight</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, </span><span class="s1">force_terminal</span><span class="s2">=</span><span class="s0">False</span><span class="s2">, </span><span class="s1">color_system</span><span class="s2">=</span><span class="s0">None</span>
+        <span class="s2">)</span>
+        <span class="s1">console</span><span class="s2">.</span><span class="s1">begin_capture</span><span class="s2">()</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">console </span><span class="s2">= </span><span class="s1">rich</span><span class="s2">.</span><span class="s1">console</span><span class="s2">.</span><span class="s1">Console</span><span class="s2">(</span><span class="s1">highlight</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+
+    <span class="s3"># Print the to the console.</span>
+    <span class="s1">console</span><span class="s2">.</span><span class="s1">print</span><span class="s2">(</span><span class="s1">bold_text</span><span class="s2">(</span><span class="s6">f'Model: &quot;</span><span class="s0">{</span><span class="s1">rich</span><span class="s2">.</span><span class="s1">markup</span><span class="s2">.</span><span class="s1">escape</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span><span class="s0">}</span><span class="s6">&quot;'</span><span class="s2">))</span>
+    <span class="s1">console</span><span class="s2">.</span><span class="s1">print</span><span class="s2">(</span><span class="s1">table</span><span class="s2">)</span>
+    <span class="s1">console</span><span class="s2">.</span><span class="s1">print</span><span class="s2">(</span>
+        <span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot; Total params: &quot;</span><span class="s2">)</span>
+        <span class="s2">+ </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">total_count</span><span class="s0">:</span><span class="s6">,</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">)</span>
+        <span class="s2">+ </span><span class="s6">f&quot; (</span><span class="s0">{</span><span class="s1">readable_memory_size</span><span class="s2">(</span><span class="s1">total_memory_size</span><span class="s2">)</span><span class="s0">}</span><span class="s6">)&quot;</span>
+    <span class="s2">)</span>
+    <span class="s1">console</span><span class="s2">.</span><span class="s1">print</span><span class="s2">(</span>
+        <span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot; Trainable params: &quot;</span><span class="s2">)</span>
+        <span class="s2">+ </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">trainable_count</span><span class="s0">:</span><span class="s6">,</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">)</span>
+        <span class="s2">+ </span><span class="s6">f&quot; (</span><span class="s0">{</span><span class="s1">readable_memory_size</span><span class="s2">(</span><span class="s1">trainable_memory_size</span><span class="s2">)</span><span class="s0">}</span><span class="s6">)&quot;</span>
+    <span class="s2">)</span>
+    <span class="s1">console</span><span class="s2">.</span><span class="s1">print</span><span class="s2">(</span>
+        <span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot; Non-trainable params: &quot;</span><span class="s2">)</span>
+        <span class="s2">+ </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">non_trainable_count</span><span class="s0">:</span><span class="s6">,</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">)</span>
+        <span class="s2">+ </span><span class="s6">f&quot; (</span><span class="s0">{</span><span class="s1">readable_memory_size</span><span class="s2">(</span><span class="s1">non_trainable_memory_size</span><span class="s2">)</span><span class="s0">}</span><span class="s6">)&quot;</span>
+    <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">optimizer_built</span><span class="s2">:</span>
+        <span class="s1">console</span><span class="s2">.</span><span class="s1">print</span><span class="s2">(</span>
+            <span class="s1">bold_text</span><span class="s2">(</span><span class="s6">&quot; Optimizer params: &quot;</span><span class="s2">)</span>
+            <span class="s2">+ </span><span class="s1">highlight_number</span><span class="s2">(</span><span class="s6">f&quot;</span><span class="s0">{</span><span class="s1">optimizer_weight_count</span><span class="s0">:</span><span class="s6">,</span><span class="s0">}</span><span class="s6">&quot;</span><span class="s2">)</span>
+            <span class="s2">+ </span><span class="s6">f&quot; (</span><span class="s0">{</span><span class="s1">readable_memory_size</span><span class="s2">(</span><span class="s1">optimizer_memory_size</span><span class="s2">)</span><span class="s0">}</span><span class="s6">)&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s3"># Output captured summary for non-interactive logging.</span>
+    <span class="s0">if </span><span class="s1">print_fn</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">print_fn </span><span class="s0">is </span><span class="s1">io_utils</span><span class="s2">.</span><span class="s1">print_msg</span><span class="s2">:</span>
+            <span class="s1">print_fn</span><span class="s2">(</span><span class="s1">console</span><span class="s2">.</span><span class="s1">end_capture</span><span class="s2">(), </span><span class="s1">line_break</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">print_fn</span><span class="s2">(</span><span class="s1">console</span><span class="s2">.</span><span class="s1">end_capture</span><span class="s2">())</span>
+
+
+<span class="s0">def </span><span class="s1">get_layer_index_bound_by_layer_name</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">, </span><span class="s1">layer_range</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Get the layer indexes from the model based on layer names. 
+ 
+    The layer indexes can be used to slice the model into sub models for 
+    display. 
+ 
+    Args: 
+        model: `Model` instance. 
+        layer_names: a list or tuple of 2 strings, the starting layer name and 
+            ending layer name (both inclusive) for the result. All layers will 
+            be included when `None` is provided. 
+ 
+    Returns: 
+        The index value of layer based on its unique name (layer_names). 
+        Output will be [first_layer_index, last_layer_index + 1]. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">layer_range </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer_range</span><span class="s2">) != </span><span class="s4">2</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s6">&quot;layer_range must be a list or tuple of length 2. Received: &quot;</span>
+                <span class="s6">f&quot;layer_range = </span><span class="s0">{</span><span class="s1">layer_range</span><span class="s0">} </span><span class="s6">of length </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer_range</span><span class="s2">)</span><span class="s0">}</span><span class="s6">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layer_range</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">str</span><span class="s2">) </span><span class="s0">or not </span><span class="s1">isinstance</span><span class="s2">(</span>
+            <span class="s1">layer_range</span><span class="s2">[</span><span class="s4">1</span><span class="s2">], </span><span class="s1">str</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s6">&quot;layer_range should contain string type only. &quot;</span>
+                <span class="s6">f&quot;Received: </span><span class="s0">{</span><span class="s1">layer_range</span><span class="s0">}</span><span class="s6">&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s2">[</span><span class="s4">0</span><span class="s2">, </span><span class="s1">len</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">)]</span>
+
+    <span class="s1">lower_index </span><span class="s2">= [</span>
+        <span class="s1">idx</span>
+        <span class="s0">for </span><span class="s1">idx</span><span class="s2">, </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span><span class="s1">layer_range</span><span class="s2">[</span><span class="s4">0</span><span class="s2">], </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+    <span class="s2">]</span>
+    <span class="s1">upper_index </span><span class="s2">= [</span>
+        <span class="s1">idx</span>
+        <span class="s0">for </span><span class="s1">idx</span><span class="s2">, </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span><span class="s1">layer_range</span><span class="s2">[</span><span class="s4">1</span><span class="s2">], </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+    <span class="s2">]</span>
+
+    <span class="s0">if not </span><span class="s1">lower_index </span><span class="s0">or not </span><span class="s1">upper_index</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s6">&quot;Passed layer_names do not match the layer names in the model. &quot;</span>
+            <span class="s6">f&quot;Received: </span><span class="s0">{</span><span class="s1">layer_range</span><span class="s0">}</span><span class="s6">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">min</span><span class="s2">(</span><span class="s1">lower_index</span><span class="s2">) &gt; </span><span class="s1">max</span><span class="s2">(</span><span class="s1">upper_index</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">[</span><span class="s1">min</span><span class="s2">(</span><span class="s1">upper_index</span><span class="s2">), </span><span class="s1">max</span><span class="s2">(</span><span class="s1">lower_index</span><span class="s2">) + </span><span class="s4">1</span><span class="s2">]</span>
+    <span class="s0">return </span><span class="s2">[</span><span class="s1">min</span><span class="s2">(</span><span class="s1">lower_index</span><span class="s2">), </span><span class="s1">max</span><span class="s2">(</span><span class="s1">upper_index</span><span class="s2">) + </span><span class="s4">1</span><span class="s2">]</span>
+</pre>
+</body>
+</html>

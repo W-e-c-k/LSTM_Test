@@ -1,0 +1,500 @@
+<html>
+<head>
+<title>annotate_test.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+annotate_test.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># coding=utf-8</span>
+<span class="s2">&quot;&quot;&quot;Tests for annotate.&quot;&quot;&quot;</span>
+<span class="s0"># Copyright 2017 Google LLC</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     https://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">absolute_import</span>
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">division</span>
+<span class="s3">from </span><span class="s1">__future__ </span><span class="s3">import </span><span class="s1">print_function</span>
+
+<span class="s3">import </span><span class="s1">ast</span>
+<span class="s3">import </span><span class="s1">difflib</span>
+<span class="s3">import </span><span class="s1">itertools</span>
+<span class="s3">import </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span>
+<span class="s3">from </span><span class="s1">six </span><span class="s3">import </span><span class="s1">with_metaclass</span>
+<span class="s3">import </span><span class="s1">sys</span>
+<span class="s3">import </span><span class="s1">textwrap</span>
+<span class="s3">import </span><span class="s1">unittest</span>
+
+<span class="s3">import </span><span class="s1">pasta</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">annotate</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">ast_utils</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">codegen</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">formatting </span><span class="s3">as </span><span class="s1">fmt</span>
+<span class="s3">from </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">test_utils</span>
+
+<span class="s1">TESTDATA_DIR </span><span class="s4">= </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">realpath</span><span class="s4">(</span>
+    <span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">dirname</span><span class="s4">(</span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">__file__</span><span class="s4">), </span><span class="s5">'../testdata'</span><span class="s4">))</span>
+
+
+<span class="s3">class </span><span class="s1">PrefixSuffixTest</span><span class="s4">(</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">):</span>
+
+  <span class="s3">def </span><span class="s1">test_block_suffix</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src_tpl </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">{open_block} 
+          pass #a 
+          #b 
+            #c 
+ 
+          #d 
+        #e 
+        a 
+        '''</span><span class="s4">)</span>
+    <span class="s1">test_cases </span><span class="s4">= (</span>
+        <span class="s0"># first: attribute of the node with the last block</span>
+        <span class="s0"># second: code snippet to open a block</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'def x():'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'class X:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'if x:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'orelse'</span><span class="s4">, </span><span class="s5">'if x:</span><span class="s3">\n  </span><span class="s5">y</span><span class="s3">\n</span><span class="s5">else:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'if x:</span><span class="s3">\n  </span><span class="s5">y</span><span class="s3">\n</span><span class="s5">elif y:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'while x:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'orelse'</span><span class="s4">, </span><span class="s5">'while x:</span><span class="s3">\n  </span><span class="s5">y</span><span class="s3">\n</span><span class="s5">else:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'finalbody'</span><span class="s4">, </span><span class="s5">'try:</span><span class="s3">\n  </span><span class="s5">x</span><span class="s3">\n</span><span class="s5">finally:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'try:</span><span class="s3">\n  </span><span class="s5">x</span><span class="s3">\n</span><span class="s5">except:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'orelse'</span><span class="s4">, </span><span class="s5">'try:</span><span class="s3">\n  </span><span class="s5">x</span><span class="s3">\n</span><span class="s5">except:</span><span class="s3">\n  </span><span class="s5">y</span><span class="s3">\n</span><span class="s5">else:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'with x:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'with x, y:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'with x:</span><span class="s3">\n </span><span class="s5">with y:'</span><span class="s4">),</span>
+        <span class="s4">(</span><span class="s5">'body'</span><span class="s4">, </span><span class="s5">'for x in y:'</span><span class="s4">),</span>
+    <span class="s4">)</span>
+    <span class="s3">def </span><span class="s1">is_node_for_suffix</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">children_attr</span><span class="s4">):</span>
+      <span class="s0"># Return True if this node contains the 'pass' statement</span>
+      <span class="s1">val </span><span class="s4">= </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">children_attr</span><span class="s4">, </span><span class="s3">None</span><span class="s4">)</span>
+      <span class="s3">return </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">val</span><span class="s4">, </span><span class="s1">list</span><span class="s4">) </span><span class="s3">and </span><span class="s1">type</span><span class="s4">(</span><span class="s1">val</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]) == </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Pass</span>
+
+    <span class="s3">for </span><span class="s1">children_attr</span><span class="s4">, </span><span class="s1">open_block </span><span class="s3">in </span><span class="s1">test_cases</span><span class="s4">:</span>
+      <span class="s1">src </span><span class="s4">= </span><span class="s1">src_tpl</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">open_block</span><span class="s4">=</span><span class="s1">open_block</span><span class="s4">)</span>
+      <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+      <span class="s1">node_finder </span><span class="s4">= </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">FindNodeVisitor</span><span class="s4">(</span>
+          <span class="s3">lambda </span><span class="s1">node</span><span class="s4">: </span><span class="s1">is_node_for_suffix</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">children_attr</span><span class="s4">))</span>
+      <span class="s1">node_finder</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">t</span><span class="s4">)</span>
+      <span class="s1">node </span><span class="s4">= </span><span class="s1">node_finder</span><span class="s4">.</span><span class="s1">results</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+      <span class="s1">expected </span><span class="s4">= </span><span class="s5">'  #b</span><span class="s3">\n    </span><span class="s5">#c</span><span class="s3">\n\n  </span><span class="s5">#d</span><span class="s3">\n</span><span class="s5">'</span>
+      <span class="s1">actual </span><span class="s4">= </span><span class="s1">str</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s5">'block_suffix_%s' </span><span class="s4">% </span><span class="s1">children_attr</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertMultiLineEqual</span><span class="s4">(</span>
+          <span class="s1">expected</span><span class="s4">, </span><span class="s1">actual</span><span class="s4">,</span>
+          <span class="s5">'Incorrect suffix for code:</span><span class="s3">\n</span><span class="s5">%s</span><span class="s3">\n</span><span class="s5">Node: %s (line %d)</span><span class="s3">\n</span><span class="s5">Diff:</span><span class="s3">\n</span><span class="s5">%s' </span><span class="s4">% (</span>
+              <span class="s1">src</span><span class="s4">, </span><span class="s1">node</span><span class="s4">, </span><span class="s1">node</span><span class="s4">.</span><span class="s1">lineno</span><span class="s4">, </span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">_get_diff</span><span class="s4">(</span><span class="s1">actual</span><span class="s4">, </span><span class="s1">expected</span><span class="s4">))))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertMultiLineEqual</span><span class="s4">(</span><span class="s1">src</span><span class="s4">, </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">dump</span><span class="s4">(</span><span class="s1">t</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_module_suffix</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'foo</span><span class="s3">\n</span><span class="s5">#bar</span><span class="s3">\n\n</span><span class="s5">#baz</span><span class="s3">\n</span><span class="s5">'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">src</span><span class="s4">[</span><span class="s1">src</span><span class="s4">.</span><span class="s1">index</span><span class="s4">(</span><span class="s5">'#bar'</span><span class="s4">):], </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">t</span><span class="s4">, </span><span class="s5">'suffix'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_no_block_suffix_for_single_line_statement</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'if x:  return y</span><span class="s3">\n  </span><span class="s5">#a</span><span class="s3">\n</span><span class="s5">#b</span><span class="s3">\n</span><span class="s5">'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertIsNone</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s5">'block_suffix_body'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_expression_prefix_suffix</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'a</span><span class="s3">\n\n</span><span class="s5">foo</span><span class="s3">\n\n\n</span><span class="s5">b</span><span class="s3">\n</span><span class="s5">'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">1</span><span class="s4">], </span><span class="s5">'prefix'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">1</span><span class="s4">], </span><span class="s5">'suffix'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_statement_prefix_suffix</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'a</span><span class="s3">\n\n</span><span class="s5">def foo():</span><span class="s3">\n  </span><span class="s5">return bar</span><span class="s3">\n\n\n</span><span class="s5">b</span><span class="s3">\n</span><span class="s5">'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">1</span><span class="s4">], </span><span class="s5">'prefix'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">1</span><span class="s4">], </span><span class="s5">'suffix'</span><span class="s4">))</span>
+
+
+<span class="s3">class </span><span class="s1">IndentationTest</span><span class="s4">(</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">):</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_levels</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">foo('begin') 
+        if a: 
+          foo('a1') 
+          if b: 
+            foo('b1') 
+            if c: 
+              foo('c1') 
+            foo('b2') 
+          foo('a2') 
+        foo('end') 
+        '''</span><span class="s4">)</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">call_nodes </span><span class="s4">= </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">find_nodes_by_type</span><span class="s4">(</span><span class="s1">t</span><span class="s4">, (</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Call</span><span class="s4">,))</span>
+    <span class="s1">call_nodes</span><span class="s4">.</span><span class="s1">sort</span><span class="s4">(</span><span class="s1">key</span><span class="s4">=</span><span class="s3">lambda </span><span class="s1">node</span><span class="s4">: </span><span class="s1">node</span><span class="s4">.</span><span class="s1">lineno</span><span class="s4">)</span>
+    <span class="s1">begin</span><span class="s4">, </span><span class="s1">a1</span><span class="s4">, </span><span class="s1">b1</span><span class="s4">, </span><span class="s1">c1</span><span class="s4">, </span><span class="s1">b2</span><span class="s4">, </span><span class="s1">a2</span><span class="s4">, </span><span class="s1">end </span><span class="s4">= </span><span class="s1">call_nodes</span>
+
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">begin</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">a1</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'    '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">b1</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'      '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">c1</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'    '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">b2</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">a2</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">end</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_levels_same_line</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'if a: b; c</span><span class="s3">\n</span><span class="s5">'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">if_node </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">b</span><span class="s4">, </span><span class="s1">c </span><span class="s4">= </span><span class="s1">if_node</span><span class="s4">.</span><span class="s1">body</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertIsNone</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">b</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertIsNone</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">c</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_depths</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">template </span><span class="s4">= </span><span class="s5">'if a:</span><span class="s3">\n</span><span class="s5">{first}if b:</span><span class="s3">\n</span><span class="s5">{first}{second}foo()</span><span class="s3">\n</span><span class="s5">'</span>
+    <span class="s1">indents </span><span class="s4">= (</span><span class="s5">' '</span><span class="s4">, </span><span class="s5">' ' </span><span class="s4">* </span><span class="s6">2</span><span class="s4">, </span><span class="s5">' ' </span><span class="s4">* </span><span class="s6">4</span><span class="s4">, </span><span class="s5">' ' </span><span class="s4">* </span><span class="s6">8</span><span class="s4">, </span><span class="s5">'</span><span class="s3">\t</span><span class="s5">'</span><span class="s4">, </span><span class="s5">'</span><span class="s3">\t</span><span class="s5">' </span><span class="s4">* </span><span class="s6">2</span><span class="s4">)</span>
+
+    <span class="s3">for </span><span class="s1">first</span><span class="s4">, </span><span class="s1">second </span><span class="s3">in </span><span class="s1">itertools</span><span class="s4">.</span><span class="s1">product</span><span class="s4">(</span><span class="s1">indents</span><span class="s4">, </span><span class="s1">indents</span><span class="s4">):</span>
+      <span class="s1">src </span><span class="s4">= </span><span class="s1">template</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">first</span><span class="s4">=</span><span class="s1">first</span><span class="s4">, </span><span class="s1">second</span><span class="s4">=</span><span class="s1">second</span><span class="s4">)</span>
+      <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+      <span class="s1">outer_if_node </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+      <span class="s1">inner_if_node </span><span class="s4">= </span><span class="s1">outer_if_node</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+      <span class="s1">call_node </span><span class="s4">= </span><span class="s1">inner_if_node</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">outer_if_node</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">outer_if_node</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">first</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">inner_if_node</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">first</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">inner_if_node</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">first </span><span class="s4">+ </span><span class="s1">second</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">call_node</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">second</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">call_node</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_multiline_string</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">class A: 
+          &quot;&quot;&quot;Doc 
+             string.&quot;&quot;&quot; 
+          pass 
+        '''</span><span class="s4">)</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">docstring</span><span class="s4">, </span><span class="s1">pass_stmt </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">docstring</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">pass_stmt</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_multiline_string_with_newline</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">class A: 
+          &quot;&quot;&quot;Doc</span><span class="s3">\n</span>
+             <span class="s5">string.&quot;&quot;&quot; 
+          pass 
+        '''</span><span class="s4">)</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">docstring</span><span class="s4">, </span><span class="s1">pass_stmt </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">docstring</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">pass_stmt</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_scope_trailing_comma</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">template </span><span class="s4">= </span><span class="s5">'def foo(a, b{trailing_comma}): pass'</span>
+    <span class="s3">for </span><span class="s1">trailing_comma </span><span class="s3">in </span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s5">','</span><span class="s4">, </span><span class="s5">' , '</span><span class="s4">):</span>
+      <span class="s1">tree </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">template</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">trailing_comma</span><span class="s4">=</span><span class="s1">trailing_comma</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">trailing_comma</span><span class="s4">.</span><span class="s1">lstrip</span><span class="s4">(</span><span class="s5">' '</span><span class="s4">) + </span><span class="s5">')'</span><span class="s4">,</span>
+                       <span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s5">'args_suffix'</span><span class="s4">))</span>
+
+    <span class="s1">template </span><span class="s4">= </span><span class="s5">'class Foo(a, b{trailing_comma}): pass'</span>
+    <span class="s3">for </span><span class="s1">trailing_comma </span><span class="s3">in </span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s5">','</span><span class="s4">, </span><span class="s5">' , '</span><span class="s4">):</span>
+      <span class="s1">tree </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">template</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">trailing_comma</span><span class="s4">=</span><span class="s1">trailing_comma</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">trailing_comma</span><span class="s4">.</span><span class="s1">lstrip</span><span class="s4">(</span><span class="s5">' '</span><span class="s4">) + </span><span class="s5">')'</span><span class="s4">,</span>
+                       <span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s5">'bases_suffix'</span><span class="s4">))</span>
+
+    <span class="s1">template </span><span class="s4">= </span><span class="s5">'from mod import (a, b{trailing_comma})'</span>
+    <span class="s3">for </span><span class="s1">trailing_comma </span><span class="s3">in </span><span class="s4">(</span><span class="s5">''</span><span class="s4">, </span><span class="s5">','</span><span class="s4">, </span><span class="s5">' , '</span><span class="s4">):</span>
+      <span class="s1">tree </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">template</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">trailing_comma</span><span class="s4">=</span><span class="s1">trailing_comma</span><span class="s4">))</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">trailing_comma </span><span class="s4">+ </span><span class="s5">')'</span><span class="s4">,</span>
+                       <span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">tree</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">], </span><span class="s5">'names_suffix'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_extra_newlines</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">if a: 
+ 
+          b 
+        '''</span><span class="s4">)</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">if_node </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">b </span><span class="s4">= </span><span class="s1">if_node</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">b</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_indent_extra_newlines_with_comment</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">if a: 
+            #not here 
+ 
+          b 
+        '''</span><span class="s4">)</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">if_node </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">b </span><span class="s4">= </span><span class="s1">if_node</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'  '</span><span class="s4">, </span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">b</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_autoindent</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">def a(): 
+            b 
+            c 
+        '''</span><span class="s4">)</span>
+    <span class="s1">expected </span><span class="s4">= </span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">def a(): 
+            b 
+            new_node 
+        '''</span><span class="s4">)</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s0"># Repace the second node and make sure the indent level is corrected</span>
+    <span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span><span class="s4">[</span><span class="s6">1</span><span class="s4">] = </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Expr</span><span class="s4">(</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Name</span><span class="s4">(</span><span class="s1">id</span><span class="s4">=</span><span class="s5">'new_node'</span><span class="s4">))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertMultiLineEqual</span><span class="s4">(</span><span class="s1">expected</span><span class="s4">, </span><span class="s1">codegen</span><span class="s4">.</span><span class="s1">to_str</span><span class="s4">(</span><span class="s1">t</span><span class="s4">))</span>
+
+  <span class="s4">@</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">requires_features</span><span class="s4">(</span><span class="s5">'mixed_tabs_spaces'</span><span class="s4">)</span>
+  <span class="s3">def </span><span class="s1">test_mixed_tabs_spaces_indentation</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+        </span><span class="s5">if a: 
+                b 
+        {ONETAB}c 
+        '''</span><span class="s4">).</span><span class="s1">format</span><span class="s4">(</span><span class="s1">ONETAB</span><span class="s4">=</span><span class="s5">'</span><span class="s3">\t</span><span class="s5">'</span><span class="s4">))</span>
+
+  <span class="s4">@</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">requires_features</span><span class="s4">(</span><span class="s5">'mixed_tabs_spaces'</span><span class="s4">)</span>
+  <span class="s3">def </span><span class="s1">test_tab_below_spaces</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s3">for </span><span class="s1">num_spaces </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s6">1</span><span class="s4">, </span><span class="s6">8</span><span class="s4">):</span>
+      <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+          </span><span class="s5">if a: 
+          {WS}if b: 
+          {ONETAB}c 
+          '''</span><span class="s4">).</span><span class="s1">format</span><span class="s4">(</span><span class="s1">ONETAB</span><span class="s4">=</span><span class="s5">'</span><span class="s3">\t</span><span class="s5">'</span><span class="s4">, </span><span class="s1">WS</span><span class="s4">=</span><span class="s5">' ' </span><span class="s4">* </span><span class="s1">num_spaces</span><span class="s4">))</span>
+      <span class="s1">node_c </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">node_c</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">), </span><span class="s5">' ' </span><span class="s4">* (</span><span class="s6">8 </span><span class="s4">- </span><span class="s1">num_spaces</span><span class="s4">))</span>
+
+  <span class="s4">@</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">requires_features</span><span class="s4">(</span><span class="s5">'mixed_tabs_spaces'</span><span class="s4">)</span>
+  <span class="s3">def </span><span class="s1">test_tabs_below_spaces_and_tab</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s3">for </span><span class="s1">num_spaces </span><span class="s3">in </span><span class="s1">range</span><span class="s4">(</span><span class="s6">1</span><span class="s4">, </span><span class="s6">8</span><span class="s4">):</span>
+      <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">textwrap</span><span class="s4">.</span><span class="s1">dedent</span><span class="s4">(</span><span class="s5">'''</span><span class="s3">\ 
+          </span><span class="s5">if a: 
+          {WS}{ONETAB}if b: 
+          {ONETAB}{ONETAB}c 
+          '''</span><span class="s4">).</span><span class="s1">format</span><span class="s4">(</span><span class="s1">ONETAB</span><span class="s4">=</span><span class="s5">'</span><span class="s3">\t</span><span class="s5">'</span><span class="s4">, </span><span class="s1">WS</span><span class="s4">=</span><span class="s5">' ' </span><span class="s4">* </span><span class="s1">num_spaces</span><span class="s4">))</span>
+      <span class="s1">node_c </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">]</span>
+      <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">node_c</span><span class="s4">, </span><span class="s5">'indent_diff'</span><span class="s4">), </span><span class="s5">'</span><span class="s3">\t</span><span class="s5">'</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_is_syntax_valid</span><span class="s4">(</span><span class="s1">filepath</span><span class="s4">):</span>
+  <span class="s3">with </span><span class="s1">open</span><span class="s4">(</span><span class="s1">filepath</span><span class="s4">, </span><span class="s5">'r'</span><span class="s4">) </span><span class="s3">as </span><span class="s1">f</span><span class="s4">:</span>
+    <span class="s3">try</span><span class="s4">:</span>
+      <span class="s1">ast</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">f</span><span class="s4">.</span><span class="s1">read</span><span class="s4">())</span>
+    <span class="s3">except </span><span class="s1">SyntaxError</span><span class="s4">:</span>
+      <span class="s3">return False</span>
+  <span class="s3">return True</span>
+
+
+<span class="s3">class </span><span class="s1">SymmetricTestMeta</span><span class="s4">(</span><span class="s1">type</span><span class="s4">):</span>
+
+  <span class="s3">def </span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">mcs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">bases</span><span class="s4">, </span><span class="s1">inst_dict</span><span class="s4">):</span>
+    <span class="s0"># Helper function to generate a test method</span>
+    <span class="s3">def </span><span class="s1">symmetric_test_generator</span><span class="s4">(</span><span class="s1">filepath</span><span class="s4">):</span>
+      <span class="s3">def </span><span class="s1">test</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">with </span><span class="s1">open</span><span class="s4">(</span><span class="s1">filepath</span><span class="s4">, </span><span class="s5">'r'</span><span class="s4">) </span><span class="s3">as </span><span class="s1">handle</span><span class="s4">:</span>
+          <span class="s1">src </span><span class="s4">= </span><span class="s1">handle</span><span class="s4">.</span><span class="s1">read</span><span class="s4">()</span>
+        <span class="s1">t </span><span class="s4">= </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+        <span class="s1">annotator </span><span class="s4">= </span><span class="s1">annotate</span><span class="s4">.</span><span class="s1">AstAnnotator</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+        <span class="s1">annotator</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">t</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">assertMultiLineEqual</span><span class="s4">(</span><span class="s1">codegen</span><span class="s4">.</span><span class="s1">to_str</span><span class="s4">(</span><span class="s1">t</span><span class="s4">), </span><span class="s1">src</span><span class="s4">)</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">([], </span><span class="s1">annotator</span><span class="s4">.</span><span class="s1">tokens</span><span class="s4">.</span><span class="s1">_parens</span><span class="s4">, </span><span class="s5">'Unmatched parens'</span><span class="s4">)</span>
+      <span class="s3">return </span><span class="s1">test</span>
+
+    <span class="s0"># Add a test method for each input file</span>
+    <span class="s1">test_method_prefix </span><span class="s4">= </span><span class="s5">'test_symmetric_'</span>
+    <span class="s1">data_dir </span><span class="s4">= </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">TESTDATA_DIR</span><span class="s4">, </span><span class="s5">'ast'</span><span class="s4">)</span>
+    <span class="s3">for </span><span class="s1">dirpath</span><span class="s4">, </span><span class="s1">dirs</span><span class="s4">, </span><span class="s1">files </span><span class="s3">in </span><span class="s1">os</span><span class="s4">.</span><span class="s1">walk</span><span class="s4">(</span><span class="s1">data_dir</span><span class="s4">):</span>
+      <span class="s3">for </span><span class="s1">filename </span><span class="s3">in </span><span class="s1">files</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">filename</span><span class="s4">.</span><span class="s1">endswith</span><span class="s4">(</span><span class="s5">'.in'</span><span class="s4">):</span>
+          <span class="s1">full_path </span><span class="s4">= </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">dirpath</span><span class="s4">, </span><span class="s1">filename</span><span class="s4">)</span>
+          <span class="s1">inst_dict</span><span class="s4">[</span><span class="s1">test_method_prefix </span><span class="s4">+ </span><span class="s1">filename</span><span class="s4">[:-</span><span class="s6">3</span><span class="s4">]] = </span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">skipIf</span><span class="s4">(</span>
+                    <span class="s3">not </span><span class="s1">_is_syntax_valid</span><span class="s4">(</span><span class="s1">full_path</span><span class="s4">),</span>
+                    <span class="s5">'Test contains syntax not supported by this version.'</span><span class="s4">,</span>
+                  <span class="s4">)(</span><span class="s1">symmetric_test_generator</span><span class="s4">(</span><span class="s1">full_path</span><span class="s4">))</span>
+    <span class="s3">return </span><span class="s1">type</span><span class="s4">.</span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">mcs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">bases</span><span class="s4">, </span><span class="s1">inst_dict</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">SymmetricTest</span><span class="s4">(</span><span class="s1">with_metaclass</span><span class="s4">(</span><span class="s1">SymmetricTestMeta</span><span class="s4">, </span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">)):</span>
+  <span class="s2">&quot;&quot;&quot;Validates the symmetry property. 
+ 
+  After parsing + annotating a module, regenerating the source code for it 
+  should yield the same result. 
+  &quot;&quot;&quot;</span>
+
+
+<span class="s3">def </span><span class="s1">_get_node_identifier</span><span class="s4">(</span><span class="s1">node</span><span class="s4">):</span>
+  <span class="s3">for </span><span class="s1">attr </span><span class="s3">in </span><span class="s4">(</span><span class="s5">'id'</span><span class="s4">, </span><span class="s5">'name'</span><span class="s4">, </span><span class="s5">'attr'</span><span class="s4">, </span><span class="s5">'arg'</span><span class="s4">, </span><span class="s5">'module'</span><span class="s4">):</span>
+    <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">attr</span><span class="s4">, </span><span class="s3">None</span><span class="s4">), </span><span class="s1">str</span><span class="s4">):</span>
+      <span class="s3">return </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s1">attr</span><span class="s4">, </span><span class="s5">''</span><span class="s4">)</span>
+  <span class="s3">return </span><span class="s5">''</span>
+
+
+<span class="s3">class </span><span class="s1">PrefixSuffixGoldenTestMeta</span><span class="s4">(</span><span class="s1">type</span><span class="s4">):</span>
+
+  <span class="s3">def </span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">mcs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">bases</span><span class="s4">, </span><span class="s1">inst_dict</span><span class="s4">):</span>
+    <span class="s0"># Helper function to generate a test method</span>
+    <span class="s3">def </span><span class="s1">golden_test_generator</span><span class="s4">(</span><span class="s1">input_file</span><span class="s4">, </span><span class="s1">golden_file</span><span class="s4">):</span>
+      <span class="s3">def </span><span class="s1">test</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">with </span><span class="s1">open</span><span class="s4">(</span><span class="s1">input_file</span><span class="s4">, </span><span class="s5">'r'</span><span class="s4">) </span><span class="s3">as </span><span class="s1">handle</span><span class="s4">:</span>
+          <span class="s1">src </span><span class="s4">= </span><span class="s1">handle</span><span class="s4">.</span><span class="s1">read</span><span class="s4">()</span>
+        <span class="s1">t </span><span class="s4">= </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+        <span class="s1">annotator </span><span class="s4">= </span><span class="s1">annotate</span><span class="s4">.</span><span class="s1">AstAnnotator</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+        <span class="s1">annotator</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">t</span><span class="s4">)</span>
+
+        <span class="s3">def </span><span class="s1">escape</span><span class="s4">(</span><span class="s1">s</span><span class="s4">):</span>
+          <span class="s3">return </span><span class="s5">'' </span><span class="s3">if </span><span class="s1">s </span><span class="s3">is None else </span><span class="s1">s</span><span class="s4">.</span><span class="s1">replace</span><span class="s4">(</span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">, </span><span class="s5">'</span><span class="s3">\\</span><span class="s5">n'</span><span class="s4">)</span>
+
+        <span class="s1">result </span><span class="s4">= </span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span>
+            <span class="s5">&quot;{0:12} {1:20} </span><span class="s3">\t</span><span class="s5">prefix=|{2}|</span><span class="s3">\t</span><span class="s5">suffix=|{3}|</span><span class="s3">\t</span><span class="s5">indent=|{4}|&quot;</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span>
+                <span class="s1">str</span><span class="s4">((</span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">n</span><span class="s4">, </span><span class="s5">'lineno'</span><span class="s4">, -</span><span class="s6">1</span><span class="s4">), </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">n</span><span class="s4">, </span><span class="s5">'col_offset'</span><span class="s4">, -</span><span class="s6">1</span><span class="s4">))),</span>
+                <span class="s1">type</span><span class="s4">(</span><span class="s1">n</span><span class="s4">).</span><span class="s1">__name__ </span><span class="s4">+ </span><span class="s5">' ' </span><span class="s4">+ </span><span class="s1">_get_node_identifier</span><span class="s4">(</span><span class="s1">n</span><span class="s4">),</span>
+                <span class="s1">escape</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">n</span><span class="s4">, </span><span class="s5">'prefix'</span><span class="s4">)),</span>
+                <span class="s1">escape</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">n</span><span class="s4">, </span><span class="s5">'suffix'</span><span class="s4">)),</span>
+                <span class="s1">escape</span><span class="s4">(</span><span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">n</span><span class="s4">, </span><span class="s5">'indent'</span><span class="s4">)))</span>
+            <span class="s3">for </span><span class="s1">n </span><span class="s3">in </span><span class="s1">ast</span><span class="s4">.</span><span class="s1">walk</span><span class="s4">(</span><span class="s1">t</span><span class="s4">)) + </span><span class="s5">'</span><span class="s3">\n</span><span class="s5">'</span>
+
+        <span class="s0"># If specified, write the golden data instead of checking it</span>
+        <span class="s3">if </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s5">'generate_goldens'</span><span class="s4">, </span><span class="s3">False</span><span class="s4">):</span>
+          <span class="s3">if not </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">isdir</span><span class="s4">(</span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">dirname</span><span class="s4">(</span><span class="s1">golden_file</span><span class="s4">)):</span>
+            <span class="s1">os</span><span class="s4">.</span><span class="s1">makedirs</span><span class="s4">(</span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">dirname</span><span class="s4">(</span><span class="s1">golden_file</span><span class="s4">))</span>
+          <span class="s3">with </span><span class="s1">open</span><span class="s4">(</span><span class="s1">golden_file</span><span class="s4">, </span><span class="s5">'w'</span><span class="s4">) </span><span class="s3">as </span><span class="s1">f</span><span class="s4">:</span>
+            <span class="s1">f</span><span class="s4">.</span><span class="s1">write</span><span class="s4">(</span><span class="s1">result</span><span class="s4">)</span>
+          <span class="s1">print</span><span class="s4">(</span><span class="s5">'Wrote: ' </span><span class="s4">+ </span><span class="s1">golden_file</span><span class="s4">)</span>
+          <span class="s3">return</span>
+
+        <span class="s3">try</span><span class="s4">:</span>
+          <span class="s3">with </span><span class="s1">open</span><span class="s4">(</span><span class="s1">golden_file</span><span class="s4">, </span><span class="s5">'r'</span><span class="s4">) </span><span class="s3">as </span><span class="s1">f</span><span class="s4">:</span>
+            <span class="s1">golden </span><span class="s4">= </span><span class="s1">f</span><span class="s4">.</span><span class="s1">read</span><span class="s4">()</span>
+        <span class="s3">except </span><span class="s1">IOError</span><span class="s4">:</span>
+          <span class="s1">self</span><span class="s4">.</span><span class="s1">fail</span><span class="s4">(</span><span class="s5">'Missing golden data.'</span><span class="s4">)</span>
+
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">assertMultiLineEqual</span><span class="s4">(</span><span class="s1">golden</span><span class="s4">, </span><span class="s1">result</span><span class="s4">)</span>
+      <span class="s3">return </span><span class="s1">test</span>
+
+    <span class="s0"># Add a test method for each input file</span>
+    <span class="s1">test_method_prefix </span><span class="s4">= </span><span class="s5">'test_golden_prefix_suffix_'</span>
+    <span class="s1">data_dir </span><span class="s4">= </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">TESTDATA_DIR</span><span class="s4">, </span><span class="s5">'ast'</span><span class="s4">)</span>
+    <span class="s1">python_version </span><span class="s4">= </span><span class="s5">'%d.%d' </span><span class="s4">% </span><span class="s1">sys</span><span class="s4">.</span><span class="s1">version_info</span><span class="s4">[:</span><span class="s6">2</span><span class="s4">]</span>
+    <span class="s3">for </span><span class="s1">dirpath</span><span class="s4">, </span><span class="s1">dirs</span><span class="s4">, </span><span class="s1">files </span><span class="s3">in </span><span class="s1">os</span><span class="s4">.</span><span class="s1">walk</span><span class="s4">(</span><span class="s1">data_dir</span><span class="s4">):</span>
+      <span class="s3">for </span><span class="s1">filename </span><span class="s3">in </span><span class="s1">files</span><span class="s4">:</span>
+        <span class="s3">if </span><span class="s1">filename</span><span class="s4">.</span><span class="s1">endswith</span><span class="s4">(</span><span class="s5">'.in'</span><span class="s4">):</span>
+          <span class="s1">full_path </span><span class="s4">= </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">dirpath</span><span class="s4">, </span><span class="s1">filename</span><span class="s4">)</span>
+          <span class="s1">golden_path </span><span class="s4">= </span><span class="s1">os</span><span class="s4">.</span><span class="s1">path</span><span class="s4">.</span><span class="s1">join</span><span class="s4">(</span><span class="s1">dirpath</span><span class="s4">, </span><span class="s5">'golden'</span><span class="s4">, </span><span class="s1">python_version</span><span class="s4">,</span>
+                                     <span class="s1">filename</span><span class="s4">[:-</span><span class="s6">3</span><span class="s4">] + </span><span class="s5">'.out'</span><span class="s4">)</span>
+          <span class="s1">inst_dict</span><span class="s4">[</span><span class="s1">test_method_prefix </span><span class="s4">+ </span><span class="s1">filename</span><span class="s4">[:-</span><span class="s6">3</span><span class="s4">]] = </span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">skipIf</span><span class="s4">(</span>
+                    <span class="s3">not </span><span class="s1">_is_syntax_valid</span><span class="s4">(</span><span class="s1">full_path</span><span class="s4">),</span>
+                    <span class="s5">'Test contains syntax not supported by this version.'</span><span class="s4">,</span>
+                  <span class="s4">)(</span><span class="s1">golden_test_generator</span><span class="s4">(</span><span class="s1">full_path</span><span class="s4">, </span><span class="s1">golden_path</span><span class="s4">))</span>
+    <span class="s3">return </span><span class="s1">type</span><span class="s4">.</span><span class="s1">__new__</span><span class="s4">(</span><span class="s1">mcs</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">bases</span><span class="s4">, </span><span class="s1">inst_dict</span><span class="s4">)</span>
+
+
+<span class="s3">class </span><span class="s1">PrefixSuffixGoldenTest</span><span class="s4">(</span><span class="s1">with_metaclass</span><span class="s4">(</span><span class="s1">PrefixSuffixGoldenTestMeta</span><span class="s4">,</span>
+                                            <span class="s1">test_utils</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">)):</span>
+  <span class="s2">&quot;&quot;&quot;Checks the prefix and suffix on each node in the AST. 
+ 
+  This uses golden files in testdata/ast/golden. To regenerate these files, run 
+  python setup.py test -s pasta.base.annotate_test.generate_goldens 
+  &quot;&quot;&quot;</span>
+
+  <span class="s1">maxDiff </span><span class="s4">= </span><span class="s3">None</span>
+
+
+<span class="s3">class </span><span class="s1">ManualEditsTest</span><span class="s4">(</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Tests that we can handle ASTs that have been modified. 
+ 
+  Such ASTs may lack position information (lineno/col_offset) on some nodes. 
+  &quot;&quot;&quot;</span>
+
+  <span class="s3">def </span><span class="s1">test_call_no_pos</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Tests that Call node traversal works without position information.&quot;&quot;&quot;</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'f(a)'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">node </span><span class="s4">= </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">find_nodes_by_type</span><span class="s4">(</span><span class="s1">t</span><span class="s4">, (</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Call</span><span class="s4">,))[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">node</span><span class="s4">.</span><span class="s1">keywords</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">keyword</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">=</span><span class="s5">'b'</span><span class="s4">, </span><span class="s1">value</span><span class="s4">=</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Num</span><span class="s4">(</span><span class="s1">n</span><span class="s4">=</span><span class="s6">0</span><span class="s4">)))</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'f(a, b=0)'</span><span class="s4">, </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">dump</span><span class="s4">(</span><span class="s1">t</span><span class="s4">))</span>
+
+  <span class="s3">def </span><span class="s1">test_call_illegal_pos</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Tests that Call node traversal works even with illegal positions.&quot;&quot;&quot;</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'f(a)'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">node </span><span class="s4">= </span><span class="s1">ast_utils</span><span class="s4">.</span><span class="s1">find_nodes_by_type</span><span class="s4">(</span><span class="s1">t</span><span class="s4">, (</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Call</span><span class="s4">,))[</span><span class="s6">0</span><span class="s4">]</span>
+    <span class="s1">node</span><span class="s4">.</span><span class="s1">keywords</span><span class="s4">.</span><span class="s1">append</span><span class="s4">(</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">keyword</span><span class="s4">(</span><span class="s1">arg</span><span class="s4">=</span><span class="s5">'b'</span><span class="s4">, </span><span class="s1">value</span><span class="s4">=</span><span class="s1">ast</span><span class="s4">.</span><span class="s1">Num</span><span class="s4">(</span><span class="s1">n</span><span class="s4">=</span><span class="s6">0</span><span class="s4">)))</span>
+
+    <span class="s0"># This position would put b=0 before a, so it should be ignored.</span>
+    <span class="s1">node</span><span class="s4">.</span><span class="s1">keywords</span><span class="s4">[-</span><span class="s6">1</span><span class="s4">].</span><span class="s1">value</span><span class="s4">.</span><span class="s1">lineno </span><span class="s4">= </span><span class="s6">0</span>
+    <span class="s1">node</span><span class="s4">.</span><span class="s1">keywords</span><span class="s4">[-</span><span class="s6">1</span><span class="s4">].</span><span class="s1">value</span><span class="s4">.</span><span class="s1">col_offset </span><span class="s4">= </span><span class="s6">0</span>
+
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span><span class="s5">'f(a, b=0)'</span><span class="s4">, </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">dump</span><span class="s4">(</span><span class="s1">t</span><span class="s4">))</span>
+
+
+<span class="s3">class </span><span class="s1">FstringTest</span><span class="s4">(</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">TestCase</span><span class="s4">):</span>
+  <span class="s2">&quot;&quot;&quot;Tests fstring support more in-depth.&quot;&quot;&quot;</span>
+
+  <span class="s4">@</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">requires_features</span><span class="s4">(</span><span class="s5">'fstring'</span><span class="s4">)</span>
+  <span class="s3">def </span><span class="s1">test_fstring</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'f&quot;a {b} c d {e}&quot;'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">node </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">value</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span>
+        <span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s5">'content'</span><span class="s4">),</span>
+        <span class="s5">'f&quot;a {__pasta_fstring_val_0__} c d {__pasta_fstring_val_1__}&quot;'</span><span class="s4">)</span>
+
+  <span class="s4">@</span><span class="s1">test_utils</span><span class="s4">.</span><span class="s1">requires_features</span><span class="s4">(</span><span class="s5">'fstring'</span><span class="s4">)</span>
+  <span class="s3">def </span><span class="s1">test_fstring_escaping</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+    <span class="s1">src </span><span class="s4">= </span><span class="s5">'f&quot;a {{{b} {{c}}&quot;'</span>
+    <span class="s1">t </span><span class="s4">= </span><span class="s1">pasta</span><span class="s4">.</span><span class="s1">parse</span><span class="s4">(</span><span class="s1">src</span><span class="s4">)</span>
+    <span class="s1">node </span><span class="s4">= </span><span class="s1">t</span><span class="s4">.</span><span class="s1">body</span><span class="s4">[</span><span class="s6">0</span><span class="s4">].</span><span class="s1">value</span>
+    <span class="s1">self</span><span class="s4">.</span><span class="s1">assertEqual</span><span class="s4">(</span>
+        <span class="s1">fmt</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">node</span><span class="s4">, </span><span class="s5">'content'</span><span class="s4">),</span>
+        <span class="s5">'f&quot;a {{{__pasta_fstring_val_0__} {{c}}&quot;'</span><span class="s4">)</span>
+
+
+<span class="s3">def </span><span class="s1">_get_diff</span><span class="s4">(</span><span class="s1">before</span><span class="s4">, </span><span class="s1">after</span><span class="s4">):</span>
+  <span class="s3">return </span><span class="s1">difflib</span><span class="s4">.</span><span class="s1">ndiff</span><span class="s4">(</span><span class="s1">after</span><span class="s4">.</span><span class="s1">splitlines</span><span class="s4">(), </span><span class="s1">before</span><span class="s4">.</span><span class="s1">splitlines</span><span class="s4">())</span>
+
+
+<span class="s3">def </span><span class="s1">suite</span><span class="s4">():</span>
+  <span class="s1">result </span><span class="s4">= </span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">TestSuite</span><span class="s4">()</span>
+  <span class="s1">result</span><span class="s4">.</span><span class="s1">addTests</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">makeSuite</span><span class="s4">(</span><span class="s1">ManualEditsTest</span><span class="s4">))</span>
+  <span class="s1">result</span><span class="s4">.</span><span class="s1">addTests</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">makeSuite</span><span class="s4">(</span><span class="s1">SymmetricTest</span><span class="s4">))</span>
+  <span class="s1">result</span><span class="s4">.</span><span class="s1">addTests</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">makeSuite</span><span class="s4">(</span><span class="s1">PrefixSuffixTest</span><span class="s4">))</span>
+  <span class="s1">result</span><span class="s4">.</span><span class="s1">addTests</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">makeSuite</span><span class="s4">(</span><span class="s1">PrefixSuffixGoldenTest</span><span class="s4">))</span>
+  <span class="s1">result</span><span class="s4">.</span><span class="s1">addTests</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">makeSuite</span><span class="s4">(</span><span class="s1">FstringTest</span><span class="s4">))</span>
+  <span class="s3">return </span><span class="s1">result</span>
+
+
+<span class="s3">def </span><span class="s1">generate_goldens</span><span class="s4">():</span>
+  <span class="s1">result </span><span class="s4">= </span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">TestSuite</span><span class="s4">()</span>
+  <span class="s1">result</span><span class="s4">.</span><span class="s1">addTests</span><span class="s4">(</span><span class="s1">unittest</span><span class="s4">.</span><span class="s1">makeSuite</span><span class="s4">(</span><span class="s1">PrefixSuffixGoldenTest</span><span class="s4">))</span>
+  <span class="s1">setattr</span><span class="s4">(</span><span class="s1">PrefixSuffixGoldenTest</span><span class="s4">, </span><span class="s5">'generate_goldens'</span><span class="s4">, </span><span class="s3">True</span><span class="s4">)</span>
+  <span class="s3">return </span><span class="s1">result</span>
+
+
+<span class="s3">if </span><span class="s1">__name__ </span><span class="s4">== </span><span class="s5">'__main__'</span><span class="s4">:</span>
+  <span class="s1">unittest</span><span class="s4">.</span><span class="s1">main</span><span class="s4">()</span>
+</pre>
+</body>
+</html>

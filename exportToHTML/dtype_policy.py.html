@@ -1,0 +1,381 @@
+<html>
+<head>
+<title>dtype_policy.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #7a7e85;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+dtype_policy.py</font>
+</center></td></tr></table>
+<pre><span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">common </span><span class="s0">import </span><span class="s1">global_state</span>
+
+<span class="s1">QUANTIZATION_MODES </span><span class="s2">= (</span><span class="s3">&quot;int8&quot;</span><span class="s2">, </span><span class="s3">&quot;float8&quot;</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span>
+        <span class="s3">&quot;keras.DTypePolicy&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.dtype_policies.DTypePolicy&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.mixed_precision.DTypePolicy&quot;</span><span class="s2">,  </span><span class="s4"># Legacy</span>
+        <span class="s3">&quot;keras.mixed_precision.Policy&quot;</span><span class="s2">,  </span><span class="s4"># Legacy</span>
+    <span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">class </span><span class="s1">DTypePolicy</span><span class="s2">:</span>
+    <span class="s5">&quot;&quot;&quot;A dtype policy for a Keras layer. 
+ 
+    A dtype policy determines a layer's computation and variable dtypes. Each 
+    layer has a policy. Policies can be passed to the `dtype` argument of layer 
+    constructors, or a global policy can be set with 
+    `keras.config.set_dtype_policy`. 
+ 
+    Args: 
+        name: The policy name, which determines the compute and variable dtypes. 
+            Can be any dtype name, such as `&quot;float32&quot;` or `&quot;float64&quot;`, 
+            which causes both the compute and variable dtypes 
+            will be that dtype. 
+            Can also be the string `&quot;mixed_float16&quot;` or `&quot;mixed_bfloat16&quot;`, 
+            which causes the compute dtype to be `float16` or `bfloat16` 
+            and the variable dtype to be `float32`. 
+ 
+    Typically you only need to interact with dtype policies when using mixed 
+    precision, which is the use of float16 or bfloat16 for computations and 
+    float32 for variables. This is why the term `mixed_precision` appears in the 
+    API name. Mixed precision can be enabled by passing `&quot;mixed_float16&quot;` or 
+    `&quot;mixed_bfloat16&quot;` to `keras.mixed_precision.set_dtype_policy()`. 
+ 
+    &gt;&gt;&gt; keras.config.set_dtype_policy(&quot;mixed_float16&quot;) 
+    &gt;&gt;&gt; layer1 = keras.layers.Dense(10) 
+    &gt;&gt;&gt; layer1.dtype_policy  # layer1 will automatically use mixed precision 
+    &lt;DTypePolicy &quot;mixed_float16&quot;&gt; 
+    &gt;&gt;&gt; # Can optionally override layer to use float32 
+    &gt;&gt;&gt; # instead of mixed precision. 
+    &gt;&gt;&gt; layer2 = keras.layers.Dense(10, dtype=&quot;float32&quot;) 
+    &gt;&gt;&gt; layer2.dtype_policy 
+    &lt;DTypePolicy &quot;float32&quot;&gt; 
+    &gt;&gt;&gt; # Set policy back to initial float32. 
+    &gt;&gt;&gt; keras.config.set_dtype_policy('float32') 
+ 
+    In the example above, passing `dtype=&quot;float32&quot;` to the layer is 
+    equivalent to passing 
+    `dtype=keras.config.DTypePolicy(&quot;float32&quot;)`. 
+    In general, passing a dtype policy name to a layer is equivalent 
+    to passing the corresponding policy, so it is never necessary 
+    to explicitly construct a `DTypePolicy` object. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4"># Use the global dtype policy if `name` is not specified</span>
+        <span class="s0">if </span><span class="s1">name </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">name </span><span class="s2">= </span><span class="s1">dtype_policy</span><span class="s2">().</span><span class="s1">name</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_name </span><span class="s2">= </span><span class="s1">name</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_dtype</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variable_dtype </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_parse_name</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">_parse_name</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;Parses a `DTypePolicy` name into a compute and variable dtype. 
+ 
+        Args: 
+            name: The name of the policy. 
+ 
+        Returns: 
+            The `(compute_dtype, variable_dtype)` pair. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+                <span class="s3">&quot;'name' must be a string, such as 'mixed_float16'. &quot;</span>
+                <span class="s3">f&quot;Received: name=</span><span class="s0">{</span><span class="s1">name</span><span class="s0">} </span><span class="s3">(of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span><span class="s0">}</span><span class="s3">)&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">name </span><span class="s2">== </span><span class="s3">&quot;mixed_float16&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s3">&quot;float16&quot;</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span>
+        <span class="s0">elif </span><span class="s1">name </span><span class="s2">== </span><span class="s3">&quot;mixed_bfloat16&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s3">&quot;bfloat16&quot;</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">dtype</span><span class="s2">, </span><span class="s1">dtype</span>
+        <span class="s0">except </span><span class="s1">ValueError</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Cannot convert '</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' to a mixed precision &quot;</span>
+                <span class="s3">&quot;DTypePolicy. Valid policies include 'mixed_float16', &quot;</span>
+                <span class="s3">&quot;'mixed_bfloat16', and the name of any float dtype such as &quot;</span>
+                <span class="s3">&quot;'float32'.&quot;</span>
+            <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">variable_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;The variable dtype of this policy. 
+ 
+        This is the dtype layers will create their variables in, unless a layer 
+        explicitly chooses a different dtype. If this is different than 
+        `DTypePolicy.compute_dtype`, Layers will cast variables to 
+        the compute dtype to avoid type errors. 
+ 
+        Variable regularizers are run in the variable dtype, not the compute 
+        dtype. 
+ 
+        Returns: 
+            The variable dtype of this policy, as a string. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variable_dtype</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">compute_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;The compute dtype of this policy. 
+ 
+        This is the dtype layers will do their computations in. Typically layers 
+        output tensors with the compute dtype as well. 
+ 
+        Note that even if the compute dtype is float16 or bfloat16, hardware 
+        devices may not do individual adds, multiplies, and other fundamental 
+        operations in float16 or bfloat16, but instead may do some of them in 
+        float32 for numeric stability. The compute dtype is the dtype of the 
+        inputs and outputs of the ops that the layer executes. 
+        Internally, many ops will do certain internal calculations in 
+        float32 or some other device-internal intermediate format with higher 
+        precision than float16/bfloat16, to increase numeric stability. 
+ 
+        Returns: 
+            The compute dtype of this policy, as a string. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_dtype</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">name</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;Returns the name of this policy.&quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_name</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">quantization_mode</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;The quantization mode of this policy. 
+ 
+        Returns: 
+            The quantization mode of this policy, as a string. If this policy is 
+            not quantized, it will return `None`. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode</span>
+
+    <span class="s0">def </span><span class="s1">convert_input</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">autocast</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;Converts the input dtype based on `autocast` and `dtype`. 
+ 
+        Note that `x` can be a tensor, symbolic tensor or numpy array, and this 
+        method will keep integer inputs untouched and only apply casting to 
+        floats. 
+        &quot;&quot;&quot;</span>
+
+        <span class="s1">dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">autocast</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">x</span>
+        <span class="s0">elif </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_keras_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">autocast</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">x</span>
+        <span class="s0">elif </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s3">&quot;__array__&quot;</span><span class="s2">):</span>
+            <span class="s0">try</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s0">except </span><span class="s1">TypeError</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">autocast</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s0">return </span><span class="s1">x</span>
+        <span class="s0">return </span><span class="s1">x</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span><span class="s3">&quot;name&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">__repr__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">class_name </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span>
+        <span class="s0">if </span><span class="s1">class_name </span><span class="s2">== </span><span class="s3">&quot;FloatDTypePolicy&quot;</span><span class="s2">:</span>
+            <span class="s1">class_name </span><span class="s2">= </span><span class="s3">&quot;DTypePolicy&quot;</span>
+        <span class="s0">return </span><span class="s3">f'&lt;</span><span class="s0">{</span><span class="s1">class_name</span><span class="s0">} </span><span class="s3">&quot;</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_name</span><span class="s0">}</span><span class="s3">&quot;&gt;'</span>
+
+    <span class="s0">def </span><span class="s1">__eq__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">other</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__ </span><span class="s0">in </span><span class="s2">(</span><span class="s1">DTypePolicy</span><span class="s2">, </span><span class="s1">FloatDTypePolicy</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">type</span><span class="s2">(</span><span class="s1">other</span><span class="s2">) </span><span class="s0">not in </span><span class="s2">(</span><span class="s1">DTypePolicy</span><span class="s2">, </span><span class="s1">FloatDTypePolicy</span><span class="s2">):</span>
+                <span class="s0">return False</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">type</span><span class="s2">(</span><span class="s1">other</span><span class="s2">) </span><span class="s0">is not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">:</span>
+                <span class="s0">return False</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_name </span><span class="s2">== </span><span class="s1">other</span><span class="s2">.</span><span class="s1">_name</span>
+
+    <span class="s0">def </span><span class="s1">_should_cast</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">autocast</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">):</span>
+        <span class="s1">x_dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">standardize_dtype</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">autocast </span><span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_float_dtype</span><span class="s2">(</span><span class="s1">x_dtype</span><span class="s2">) </span><span class="s0">and </span><span class="s1">x_dtype </span><span class="s2">!= </span><span class="s1">dtype</span><span class="s2">:</span>
+            <span class="s0">return True</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">return False</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span><span class="s3">&quot;keras.FloatDTypePolicy&quot;</span><span class="s2">, </span><span class="s3">&quot;keras.dtype_policies.FloatDTypePolicy&quot;</span><span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">class </span><span class="s1">FloatDTypePolicy</span><span class="s2">(</span><span class="s1">DTypePolicy</span><span class="s2">):</span>
+    <span class="s4"># An alias for `DTypePolicy`</span>
+    <span class="s0">pass</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.dtype_policies.QuantizedDTypePolicy&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">QuantizedDTypePolicy</span><span class="s2">(</span><span class="s1">DTypePolicy</span><span class="s2">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">, </span><span class="s1">source_name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4"># Use the global dtype policy if `source_name` is not specified</span>
+        <span class="s0">if </span><span class="s1">source_name </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">source_name </span><span class="s2">= </span><span class="s1">dtype_policy</span><span class="s2">().</span><span class="s1">name</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">mode</span><span class="s0">}</span><span class="s3">_from_</span><span class="s0">{</span><span class="s1">source_name</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_dtype</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_variable_dtype </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_parse_name</span><span class="s2">(</span>
+            <span class="s1">source_name</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_check_quantization_mode</span><span class="s2">(</span><span class="s1">mode</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_dtype</span><span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_name </span><span class="s2">= </span><span class="s1">name</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_source_name </span><span class="s2">= </span><span class="s1">source_name</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode </span><span class="s2">= </span><span class="s1">mode</span>
+
+    <span class="s0">def </span><span class="s1">__eq__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">other</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">super</span><span class="s2">().</span><span class="s1">__eq__</span><span class="s2">(</span><span class="s1">other</span><span class="s2">) </span><span class="s0">is False</span><span class="s2">:</span>
+            <span class="s0">return False</span>
+        <span class="s0">return </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode </span><span class="s2">== </span><span class="s1">other</span><span class="s2">.</span><span class="s1">_quantization_mode</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_source_name </span><span class="s2">== </span><span class="s1">other</span><span class="s2">.</span><span class="s1">_source_name</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s2">{</span>
+            <span class="s3">&quot;mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_quantization_mode</span><span class="s2">,</span>
+            <span class="s3">&quot;source_name&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_source_name</span><span class="s2">,</span>
+        <span class="s2">}</span>
+
+    <span class="s0">def </span><span class="s1">_check_quantization_mode</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">, </span><span class="s1">compute_dtype</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">mode </span><span class="s0">not in </span><span class="s1">QUANTIZATION_MODES</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Invalid quantization mode. &quot;</span>
+                <span class="s3">f&quot;Expected one of </span><span class="s0">{</span><span class="s1">QUANTIZATION_MODES</span><span class="s0">}</span><span class="s3">. &quot;</span>
+                <span class="s3">f&quot;Received: mode=</span><span class="s0">{</span><span class="s1">mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">compute_dtype </span><span class="s2">== </span><span class="s3">&quot;float16&quot; </span><span class="s0">and </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;int8&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Quantization mode='</span><span class="s0">{</span><span class="s1">mode</span><span class="s0">}</span><span class="s3">' doesn't work well with &quot;</span>
+                <span class="s3">&quot;compute_dtype='float16'.&quot;</span>
+            <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.dtype_policies.QuantizedFloat8DTypePolicy&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">QuantizedFloat8DTypePolicy</span><span class="s2">(</span><span class="s1">QuantizedDTypePolicy</span><span class="s2">):</span>
+    <span class="s1">default_amax_history_length </span><span class="s2">= </span><span class="s6">1024</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">, </span><span class="s1">source_name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">amax_history_length</span><span class="s2">=</span><span class="s6">1024</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">mode</span><span class="s2">=</span><span class="s1">mode</span><span class="s2">, </span><span class="s1">source_name</span><span class="s2">=</span><span class="s1">source_name</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">amax_history_length</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span>
+                <span class="s3">&quot;`amax_history_length` must be an integer. &quot;</span>
+                <span class="s3">f&quot;Received: amax_history_length=</span><span class="s0">{</span><span class="s1">amax_history_length</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_amax_history_length </span><span class="s2">= </span><span class="s1">amax_history_length</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">amax_history_length</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;The length of the amax history window. 
+ 
+        This property is used for scaling factor computation in float8 training. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_amax_history_length</span>
+
+    <span class="s0">def </span><span class="s1">__eq__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">other</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">super</span><span class="s2">().</span><span class="s1">__eq__</span><span class="s2">(</span><span class="s1">other</span><span class="s2">) </span><span class="s0">is False</span><span class="s2">:</span>
+            <span class="s0">return False</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_amax_history_length </span><span class="s2">== </span><span class="s1">other</span><span class="s2">.</span><span class="s1">_amax_history_length</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s1">config</span><span class="s2">.</span><span class="s1">update</span><span class="s2">({</span><span class="s3">&quot;amax_history_length&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">amax_history_length</span><span class="s2">})</span>
+        <span class="s0">return </span><span class="s1">config</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span>
+        <span class="s3">&quot;keras.config.set_dtype_policy&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.mixed_precision.set_dtype_policy&quot;</span><span class="s2">,  </span><span class="s4"># Legacy</span>
+        <span class="s3">&quot;keras.mixed_precision.set_global_policy&quot;</span><span class="s2">,  </span><span class="s4"># Legacy</span>
+    <span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">def </span><span class="s1">set_dtype_policy</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Sets the default dtype policy globally. 
+ 
+    Example: 
+ 
+    &gt;&gt;&gt; keras.config.set_dtype_policy(&quot;mixed_float16&quot;) 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">, </span><span class="s1">DTypePolicy</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">policy</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s1">QUANTIZATION_MODES</span><span class="s2">):</span>
+                <span class="s1">policy </span><span class="s2">= </span><span class="s1">_get_quantized_dtype_policy_by_str</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">policy </span><span class="s2">= </span><span class="s1">DTypePolicy</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Invalid `policy` argument. &quot;</span>
+                <span class="s3">&quot;Expected the string name of a policy &quot;</span>
+                <span class="s3">&quot;(such as 'mixed_float16') or a `DTypePolicy` &quot;</span>
+                <span class="s3">f&quot;instance. Received: policy=</span><span class="s0">{</span><span class="s1">policy</span><span class="s0">} </span><span class="s3">&quot;</span>
+                <span class="s3">f&quot;(of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">)</span><span class="s0">}</span><span class="s3">)&quot;</span>
+            <span class="s2">)</span>
+    <span class="s1">global_state</span><span class="s2">.</span><span class="s1">set_global_attribute</span><span class="s2">(</span><span class="s3">&quot;dtype_policy&quot;</span><span class="s2">, </span><span class="s1">policy</span><span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span>
+        <span class="s3">&quot;keras.config.dtype_policy&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.mixed_precision.dtype_policy&quot;</span><span class="s2">,  </span><span class="s4"># Legacy</span>
+        <span class="s3">&quot;keras.mixed_precision.global_policy&quot;</span><span class="s2">,  </span><span class="s4"># Legacy</span>
+    <span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">def </span><span class="s1">dtype_policy</span><span class="s2">():</span>
+    <span class="s5">&quot;&quot;&quot;Returns the current default dtype policy object.&quot;&quot;&quot;</span>
+    <span class="s1">policy </span><span class="s2">= </span><span class="s1">global_state</span><span class="s2">.</span><span class="s1">get_global_attribute</span><span class="s2">(</span><span class="s3">&quot;dtype_policy&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">policy </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">policy </span><span class="s2">= </span><span class="s1">DTypePolicy</span><span class="s2">(</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">())</span>
+        <span class="s1">set_dtype_policy</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">policy</span>
+
+
+<span class="s0">def </span><span class="s1">_get_quantized_dtype_policy_by_str</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">):</span>
+    <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">policy</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">TypeError</span><span class="s2">(</span><span class="s3">f&quot;`policy` must be a string. Received: policy=</span><span class="s0">{</span><span class="s1">policy</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">policy</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s1">QUANTIZATION_MODES</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;`policy` is incompatible with the current supported quantization.&quot;</span>
+        <span class="s2">)</span>
+    <span class="s1">split_name </span><span class="s2">= </span><span class="s1">policy</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s3">&quot;_from_&quot;</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">split_name</span><span class="s2">) != </span><span class="s6">2</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Cannot convert `policy` into a valid pair (`mode`, `source_name`) &quot;</span>
+            <span class="s3">&quot;to instantiate `QuantizedDTypePolicy`. &quot;</span>
+            <span class="s3">f&quot;Received: policy=</span><span class="s0">{</span><span class="s1">policy</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s1">mode</span><span class="s2">, </span><span class="s1">source_name </span><span class="s2">= </span><span class="s1">split_name</span>
+    <span class="s0">if </span><span class="s1">policy</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;int8&quot;</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">QuantizedDTypePolicy</span><span class="s2">(</span><span class="s1">mode</span><span class="s2">, </span><span class="s1">source_name</span><span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">policy</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;float8&quot;</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">QuantizedFloat8DTypePolicy</span><span class="s2">(</span><span class="s1">mode</span><span class="s2">, </span><span class="s1">source_name</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">NotImplementedError</span>
+</pre>
+</body>
+</html>

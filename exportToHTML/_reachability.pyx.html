@@ -1,0 +1,229 @@
+<html>
+<head>
+<title>_reachability.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_reachability.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># mutual reachability distance computations</span>
+<span class="s0"># Authors: Leland McInnes &lt;leland.mcinnes@gmail.com&gt;</span>
+<span class="s0">#          Meekail Zain &lt;zainmeekail@gmail.com&gt;</span>
+<span class="s0">#          Guillaume Lemaitre &lt;g.lemaitre58@gmail.com&gt;</span>
+<span class="s0"># Copyright (c) 2015, Leland McInnes</span>
+<span class="s0"># All rights reserved.</span>
+
+<span class="s0"># Redistribution and use in source and binary forms, with or without</span>
+<span class="s0"># modification, are permitted provided that the following conditions are met:</span>
+
+<span class="s0"># 1. Redistributions of source code must retain the above copyright notice,</span>
+<span class="s0"># this list of conditions and the following disclaimer.</span>
+
+<span class="s0"># 2. Redistributions in binary form must reproduce the above copyright notice,</span>
+<span class="s0"># this list of conditions and the following disclaimer in the documentation</span>
+<span class="s0"># and/or other materials provided with the distribution.</span>
+
+<span class="s0"># 3. Neither the name of the copyright holder nor the names of its contributors</span>
+<span class="s0"># may be used to endorse or promote products derived from this software without</span>
+<span class="s0"># specific prior written permission.</span>
+
+<span class="s0"># THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="s0"># AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="s0"># IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="s0"># ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE</span>
+<span class="s0"># LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="s0"># CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="s0"># SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="s0"># INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="s0"># CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="s0"># ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="s0"># POSSIBILITY OF SUCH DAMAGE.</span>
+
+<span class="s0">cimport numpy as cnp</span>
+
+<span class="s0">import numpy as np</span>
+<span class="s0">from scipy.sparse import issparse</span>
+<span class="s0">from cython cimport floating, integral</span>
+<span class="s0">from libc.math cimport isfinite, INFINITY</span>
+<span class="s0">from ...utils._typedefs cimport intp_t</span>
+<span class="s0">cnp.import_array()</span>
+
+
+<span class="s0">def mutual_reachability_graph(</span>
+    <span class="s0">distance_matrix, min_samples=5, max_distance=0.0</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Compute the weighted adjacency matrix of the mutual reachability graph.</span>
+
+    <span class="s0">The mutual reachability distance used to build the graph is defined as::</span>
+
+        <span class="s0">max(d_core(x_p), d_core(x_q), d(x_p, x_q))</span>
+
+    <span class="s0">and the core distance `d_core` is defined as the distance between a point</span>
+    <span class="s0">`x_p` and its k-th nearest neighbor.</span>
+
+    <span class="s0">Note that all computations are done in-place.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">distance_matrix : {ndarray, sparse matrix} of shape (n_samples, n_samples)</span>
+        <span class="s0">Array of distances between samples. If sparse, the array must be in</span>
+        <span class="s0">`CSR` format.</span>
+
+    <span class="s0">min_samples : int, default=5</span>
+        <span class="s0">The parameter `k` used to calculate the distance between a point</span>
+        <span class="s0">`x_p` and its k-th nearest neighbor.</span>
+
+    <span class="s0">max_distance : float, default=0.0</span>
+        <span class="s0">The distance which `np.inf` is replaced with. When the true mutual-</span>
+        <span class="s0">reachability distance is measured to be infinite, it is instead</span>
+        <span class="s0">truncated to `max_dist`. Only used when `distance_matrix` is a sparse</span>
+        <span class="s0">matrix.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">mututal_reachability_graph: {ndarray, sparse matrix} of shape \</span>
+            <span class="s0">(n_samples, n_samples)</span>
+        <span class="s0">Weighted adjacency matrix of the mutual reachability graph.</span>
+
+    <span class="s0">References</span>
+    <span class="s0">----------</span>
+    <span class="s0">.. [1] Campello, R. J., Moulavi, D., &amp; Sander, J. (2013, April).</span>
+       <span class="s0">Density-based clustering based on hierarchical density estimates.</span>
+       <span class="s0">In Pacific-Asia Conference on Knowledge Discovery and Data Mining</span>
+       <span class="s0">(pp. 160-172). Springer Berlin Heidelberg.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">further_neighbor_idx = min_samples - 1</span>
+    <span class="s0">if issparse(distance_matrix):</span>
+        <span class="s0">if distance_matrix.format != &quot;csr&quot;:</span>
+            <span class="s0">raise ValueError(</span>
+                <span class="s0">&quot;Only sparse CSR matrices are supported for `distance_matrix`.&quot;</span>
+            <span class="s0">)</span>
+        <span class="s0">_sparse_mutual_reachability_graph(</span>
+            <span class="s0">distance_matrix.data,</span>
+            <span class="s0">distance_matrix.indices,</span>
+            <span class="s0">distance_matrix.indptr,</span>
+            <span class="s0">distance_matrix.shape[0],</span>
+            <span class="s0">further_neighbor_idx=further_neighbor_idx,</span>
+            <span class="s0">max_distance=max_distance,</span>
+        <span class="s0">)</span>
+    <span class="s0">else:</span>
+        <span class="s0">_dense_mutual_reachability_graph(</span>
+            <span class="s0">distance_matrix, further_neighbor_idx=further_neighbor_idx</span>
+        <span class="s0">)</span>
+    <span class="s0">return distance_matrix</span>
+
+
+<span class="s0">def _dense_mutual_reachability_graph(</span>
+    <span class="s0">floating[:, :] distance_matrix,</span>
+    <span class="s0">intp_t further_neighbor_idx,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Dense implementation of mutual reachability graph.</span>
+
+    <span class="s0">The computation is done in-place, i.e. the distance matrix is modified</span>
+    <span class="s0">directly.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">distance_matrix : ndarray of shape (n_samples, n_samples)</span>
+        <span class="s0">Array of distances between samples.</span>
+
+    <span class="s0">further_neighbor_idx : int</span>
+        <span class="s0">The index of the furthest neighbor to use to define the core distances.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">intp_t i, j, n_samples = distance_matrix.shape[0]</span>
+        <span class="s0">floating mutual_reachibility_distance</span>
+        <span class="s0">floating[::1] core_distances</span>
+
+    <span class="s0"># We assume that the distance matrix is symmetric. We choose to sort every</span>
+    <span class="s0"># row to have the same implementation than the sparse case that requires</span>
+    <span class="s0"># CSR matrix.</span>
+    <span class="s0">core_distances = np.ascontiguousarray(</span>
+        <span class="s0">np.partition(</span>
+            <span class="s0">distance_matrix, further_neighbor_idx, axis=1</span>
+        <span class="s0">)[:, further_neighbor_idx]</span>
+    <span class="s0">)</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0"># TODO: Update w/ prange with thread count based on</span>
+        <span class="s0"># _openmp_effective_n_threads</span>
+        <span class="s0">for i in range(n_samples):</span>
+            <span class="s0">for j in range(n_samples):</span>
+                <span class="s0">mutual_reachibility_distance = max(</span>
+                    <span class="s0">core_distances[i],</span>
+                    <span class="s0">core_distances[j],</span>
+                    <span class="s0">distance_matrix[i, j],</span>
+                <span class="s0">)</span>
+                <span class="s0">distance_matrix[i, j] = mutual_reachibility_distance</span>
+
+
+<span class="s0">def _sparse_mutual_reachability_graph(</span>
+    <span class="s0">cnp.ndarray[floating, ndim=1, mode=&quot;c&quot;] data,</span>
+    <span class="s0">cnp.ndarray[integral, ndim=1, mode=&quot;c&quot;] indices,</span>
+    <span class="s0">cnp.ndarray[integral, ndim=1, mode=&quot;c&quot;] indptr,</span>
+    <span class="s0">intp_t n_samples,</span>
+    <span class="s0">intp_t further_neighbor_idx,</span>
+    <span class="s0">floating max_distance,</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Sparse implementation of mutual reachability graph.</span>
+
+    <span class="s0">The computation is done in-place, i.e. the distance matrix is modified</span>
+    <span class="s0">directly. This implementation only accepts `CSR` format sparse matrices.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">distance_matrix : sparse matrix of shape (n_samples, n_samples)</span>
+        <span class="s0">Sparse matrix of distances between samples. The sparse format should</span>
+        <span class="s0">be `CSR`.</span>
+
+    <span class="s0">further_neighbor_idx : int</span>
+        <span class="s0">The index of the furthest neighbor to use to define the core distances.</span>
+
+    <span class="s0">max_distance : float</span>
+        <span class="s0">The distance which `np.inf` is replaced with. When the true mutual-</span>
+        <span class="s0">reachability distance is measured to be infinite, it is instead</span>
+        <span class="s0">truncated to `max_dist`. Only used when `distance_matrix` is a sparse</span>
+        <span class="s0">matrix.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">integral i, col_ind, row_ind</span>
+        <span class="s0">floating mutual_reachibility_distance</span>
+        <span class="s0">floating[:] core_distances</span>
+        <span class="s0">floating[:] row_data</span>
+
+    <span class="s0">if floating is float:</span>
+        <span class="s0">dtype = np.float32</span>
+    <span class="s0">else:</span>
+        <span class="s0">dtype = np.float64</span>
+
+    <span class="s0">core_distances = np.empty(n_samples, dtype=dtype)</span>
+
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">row_data = data[indptr[i]:indptr[i + 1]]</span>
+        <span class="s0">if further_neighbor_idx &lt; row_data.size:</span>
+            <span class="s0">core_distances[i] = np.partition(</span>
+                <span class="s0">row_data, further_neighbor_idx</span>
+            <span class="s0">)[further_neighbor_idx]</span>
+        <span class="s0">else:</span>
+            <span class="s0">core_distances[i] = INFINITY</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0">for row_ind in range(n_samples):</span>
+            <span class="s0">for i in range(indptr[row_ind], indptr[row_ind + 1]):</span>
+                <span class="s0">col_ind = indices[i]</span>
+                <span class="s0">mutual_reachibility_distance = max(</span>
+                    <span class="s0">core_distances[row_ind], core_distances[col_ind], data[i]</span>
+                <span class="s0">)</span>
+                <span class="s0">if isfinite(mutual_reachibility_distance):</span>
+                    <span class="s0">data[i] = mutual_reachibility_distance</span>
+                <span class="s0">elif max_distance &gt; 0:</span>
+                    <span class="s0">data[i] = max_distance</span>
+</pre>
+</body>
+</html>

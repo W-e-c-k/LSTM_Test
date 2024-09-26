@@ -1,0 +1,485 @@
+<html>
+<head>
+<title>imagenet_utils.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+imagenet_utils.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">activations</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">file_utils</span>
+
+<span class="s1">CLASS_INDEX </span><span class="s2">= </span><span class="s0">None</span>
+<span class="s1">CLASS_INDEX_PATH </span><span class="s2">= (</span>
+    <span class="s3">&quot;https://storage.googleapis.com/download.tensorflow.org/&quot;</span>
+    <span class="s3">&quot;data/imagenet_class_index.json&quot;</span>
+<span class="s2">)</span>
+
+
+<span class="s1">PREPROCESS_INPUT_DOC </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+  Preprocesses a tensor or Numpy array encoding a batch of images. 
+ 
+  Usage example with `applications.MobileNet`: 
+ 
+  ```python 
+  i = keras.layers.Input([None, None, 3], dtype=&quot;uint8&quot;) 
+  x = ops.cast(i, &quot;float32&quot;) 
+  x = keras.applications.mobilenet.preprocess_input(x) 
+  core = keras.applications.MobileNet() 
+  x = core(x) 
+  model = keras.Model(inputs=[i], outputs=[x]) 
+  result = model(image) 
+  ``` 
+ 
+  Args: 
+        x: A floating point `numpy.array` or a backend-native tensor, 
+            3D or 4D with 3 color 
+            channels, with values in the range [0, 255]. 
+            The preprocessed data are written over the input data 
+        if the data types are compatible. To avoid this 
+        behaviour, `numpy.copy(x)` can be used. 
+        data_format: Optional data format of the image tensor/array. None, means 
+        the global setting `keras.backend.image_data_format()` is used 
+        (unless you changed it, it uses &quot;channels_last&quot;).{mode} 
+        Defaults to `None`. 
+ 
+  Returns: 
+      Preprocessed array with type `float32`. 
+      {ret} 
+ 
+  Raises: 
+      {error} 
+  &quot;&quot;&quot;</span>
+
+<span class="s1">PREPROCESS_INPUT_MODE_DOC </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+    mode: One of &quot;caffe&quot;, &quot;tf&quot; or &quot;torch&quot;. 
+      - caffe: will convert the images from RGB to BGR, 
+          then will zero-center each color channel with 
+          respect to the ImageNet dataset, 
+          without scaling. 
+      - tf: will scale pixels between -1 and 1, 
+          sample-wise. 
+      - torch: will scale pixels between 0 and 1 and then 
+          will normalize each channel with respect to the 
+          ImageNet dataset. 
+      Defaults to `&quot;caffe&quot;`. 
+  &quot;&quot;&quot;</span>
+
+<span class="s1">PREPROCESS_INPUT_DEFAULT_ERROR_DOC </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+    ValueError: In case of unknown `mode` or `data_format` argument.&quot;&quot;&quot;</span>
+
+<span class="s1">PREPROCESS_INPUT_ERROR_DOC </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+    ValueError: In case of unknown `data_format` argument.&quot;&quot;&quot;</span>
+
+<span class="s1">PREPROCESS_INPUT_RET_DOC_TF </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+      The inputs pixel values are scaled between -1 and 1, sample-wise.&quot;&quot;&quot;</span>
+
+<span class="s1">PREPROCESS_INPUT_RET_DOC_TORCH </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+      The input pixels values are scaled between 0 and 1 and each channel is 
+      normalized with respect to the ImageNet dataset.&quot;&quot;&quot;</span>
+
+<span class="s1">PREPROCESS_INPUT_RET_DOC_CAFFE </span><span class="s2">= </span><span class="s3">&quot;&quot;&quot; 
+      The images are converted from RGB to BGR, then each color channel is 
+      zero-centered with respect to the ImageNet dataset, without scaling.&quot;&quot;&quot;</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.applications.imagenet_utils.preprocess_input&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">preprocess_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s3">&quot;caffe&quot;</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Preprocesses a tensor or Numpy array encoding a batch of images.&quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">mode </span><span class="s0">not in </span><span class="s2">{</span><span class="s3">&quot;caffe&quot;</span><span class="s2">, </span><span class="s3">&quot;tf&quot;</span><span class="s2">, </span><span class="s3">&quot;torch&quot;</span><span class="s2">}:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Expected mode to be one of `caffe`, `tf` or `torch`. &quot;</span>
+            <span class="s3">f&quot;Received: mode=</span><span class="s0">{</span><span class="s1">mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">data_format </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">data_format </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">()</span>
+    <span class="s0">elif </span><span class="s1">data_format </span><span class="s0">not in </span><span class="s2">{</span><span class="s3">&quot;channels_first&quot;</span><span class="s2">, </span><span class="s3">&quot;channels_last&quot;</span><span class="s2">}:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Expected data_format to be one of `channels_first` or &quot;</span>
+            <span class="s3">f&quot;`channels_last`. Received: data_format=</span><span class="s0">{</span><span class="s1">data_format</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">_preprocess_numpy_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">=</span><span class="s1">data_format</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s1">mode</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">return </span><span class="s1">_preprocess_tensor_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">=</span><span class="s1">data_format</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s1">mode</span><span class="s2">)</span>
+
+
+<span class="s1">preprocess_input</span><span class="s2">.</span><span class="s1">__doc__ </span><span class="s2">= </span><span class="s1">PREPROCESS_INPUT_DOC</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span>
+    <span class="s1">mode</span><span class="s2">=</span><span class="s1">PREPROCESS_INPUT_MODE_DOC</span><span class="s2">,</span>
+    <span class="s1">ret</span><span class="s2">=</span><span class="s3">&quot;&quot;</span><span class="s2">,</span>
+    <span class="s1">error</span><span class="s2">=</span><span class="s1">PREPROCESS_INPUT_DEFAULT_ERROR_DOC</span><span class="s2">,</span>
+<span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.applications.imagenet_utils.decode_predictions&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">decode_predictions</span><span class="s2">(</span><span class="s1">preds</span><span class="s2">, </span><span class="s1">top</span><span class="s2">=</span><span class="s5">5</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Decodes the prediction of an ImageNet model. 
+ 
+    Args: 
+        preds: NumPy array encoding a batch of predictions. 
+        top: Integer, how many top-guesses to return. Defaults to `5`. 
+ 
+    Returns: 
+        A list of lists of top class prediction tuples 
+        `(class_name, class_description, score)`. 
+        One list of tuples per sample in batch input. 
+ 
+    Raises: 
+        ValueError: In case of invalid shape of the `pred` array 
+            (must be 2D). 
+    &quot;&quot;&quot;</span>
+    <span class="s0">global </span><span class="s1">CLASS_INDEX</span>
+
+    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">preds</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) != </span><span class="s5">2 </span><span class="s0">or </span><span class="s1">preds</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] != </span><span class="s5">1000</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;`decode_predictions` expects &quot;</span>
+            <span class="s3">&quot;a batch of predictions &quot;</span>
+            <span class="s3">&quot;(i.e. a 2D array of shape (samples, 1000)). &quot;</span>
+            <span class="s3">f&quot;Received array with shape: </span><span class="s0">{</span><span class="s1">preds</span><span class="s2">.</span><span class="s1">shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">CLASS_INDEX </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">fpath </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">get_file</span><span class="s2">(</span>
+            <span class="s3">&quot;imagenet_class_index.json&quot;</span><span class="s2">,</span>
+            <span class="s1">CLASS_INDEX_PATH</span><span class="s2">,</span>
+            <span class="s1">cache_subdir</span><span class="s2">=</span><span class="s3">&quot;models&quot;</span><span class="s2">,</span>
+            <span class="s1">file_hash</span><span class="s2">=</span><span class="s3">&quot;c2c37ea517e94d9795004a39431a14cb&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">with </span><span class="s1">open</span><span class="s2">(</span><span class="s1">fpath</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+            <span class="s1">CLASS_INDEX </span><span class="s2">= </span><span class="s1">json</span><span class="s2">.</span><span class="s1">load</span><span class="s2">(</span><span class="s1">f</span><span class="s2">)</span>
+    <span class="s1">results </span><span class="s2">= []</span>
+    <span class="s1">preds </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">preds</span><span class="s2">)</span>
+    <span class="s0">for </span><span class="s1">pred </span><span class="s0">in </span><span class="s1">preds</span><span class="s2">:</span>
+        <span class="s1">top_indices </span><span class="s2">= </span><span class="s1">pred</span><span class="s2">.</span><span class="s1">argsort</span><span class="s2">()[-</span><span class="s1">top</span><span class="s2">:][::-</span><span class="s5">1</span><span class="s2">]</span>
+        <span class="s1">result </span><span class="s2">= [</span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">CLASS_INDEX</span><span class="s2">[</span><span class="s1">str</span><span class="s2">(</span><span class="s1">i</span><span class="s2">)]) + (</span><span class="s1">pred</span><span class="s2">[</span><span class="s1">i</span><span class="s2">],) </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">top_indices</span><span class="s2">]</span>
+        <span class="s1">result</span><span class="s2">.</span><span class="s1">sort</span><span class="s2">(</span><span class="s1">key</span><span class="s2">=</span><span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">x</span><span class="s2">[</span><span class="s5">2</span><span class="s2">], </span><span class="s1">reverse</span><span class="s2">=</span><span class="s0">True</span><span class="s2">)</span>
+        <span class="s1">results</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">result</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">results</span>
+
+
+<span class="s0">def </span><span class="s1">_preprocess_numpy_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Preprocesses a NumPy array encoding a batch of images. 
+ 
+    Args: 
+      x: Input array, 3D or 4D. 
+      data_format: Data format of the image array. 
+      mode: One of &quot;caffe&quot;, &quot;tf&quot; or &quot;torch&quot;. 
+        - caffe: will convert the images from RGB to BGR, 
+            then will zero-center each color channel with 
+            respect to the ImageNet dataset, 
+            without scaling. 
+        - tf: will scale pixels between -1 and 1, 
+            sample-wise. 
+        - torch: will scale pixels between 0 and 1 and then 
+            will normalize each channel with respect to the 
+            ImageNet dataset. 
+ 
+    Returns: 
+        Preprocessed Numpy array. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if not </span><span class="s1">issubclass</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">.</span><span class="s1">type</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">floating</span><span class="s2">):</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">x</span><span class="s2">.</span><span class="s1">astype</span><span class="s2">(</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">(), </span><span class="s1">copy</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;tf&quot;</span><span class="s2">:</span>
+        <span class="s1">x </span><span class="s2">/= </span><span class="s5">127.5</span>
+        <span class="s1">x </span><span class="s2">-= </span><span class="s5">1.0</span>
+        <span class="s0">return </span><span class="s1">x</span>
+    <span class="s0">elif </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;torch&quot;</span><span class="s2">:</span>
+        <span class="s1">x </span><span class="s2">/= </span><span class="s5">255.0</span>
+        <span class="s1">mean </span><span class="s2">= [</span><span class="s5">0.485</span><span class="s2">, </span><span class="s5">0.456</span><span class="s2">, </span><span class="s5">0.406</span><span class="s2">]</span>
+        <span class="s1">std </span><span class="s2">= [</span><span class="s5">0.229</span><span class="s2">, </span><span class="s5">0.224</span><span class="s2">, </span><span class="s5">0.225</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s6"># 'RGB'-&gt;'BGR'</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">3</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">x</span><span class="s2">[::-</span><span class="s5">1</span><span class="s2">, ...]</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">x</span><span class="s2">[:, ::-</span><span class="s5">1</span><span class="s2">, ...]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s6"># 'RGB'-&gt;'BGR'</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">x</span><span class="s2">[..., ::-</span><span class="s5">1</span><span class="s2">]</span>
+        <span class="s1">mean </span><span class="s2">= [</span><span class="s5">103.939</span><span class="s2">, </span><span class="s5">116.779</span><span class="s2">, </span><span class="s5">123.68</span><span class="s2">]</span>
+        <span class="s1">std </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s6"># Zero-center by mean pixel</span>
+    <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">3</span><span class="s2">:</span>
+            <span class="s1">x</span><span class="s2">[</span><span class="s5">0</span><span class="s2">, :, :] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+            <span class="s1">x</span><span class="s2">[</span><span class="s5">1</span><span class="s2">, :, :] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+            <span class="s1">x</span><span class="s2">[</span><span class="s5">2</span><span class="s2">, :, :] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">2</span><span class="s2">]</span>
+            <span class="s0">if </span><span class="s1">std </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">x</span><span class="s2">[</span><span class="s5">0</span><span class="s2">, :, :] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+                <span class="s1">x</span><span class="s2">[</span><span class="s5">1</span><span class="s2">, :, :] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+                <span class="s1">x</span><span class="s2">[</span><span class="s5">2</span><span class="s2">, :, :] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">2</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">x</span><span class="s2">[:, </span><span class="s5">0</span><span class="s2">, :, :] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+            <span class="s1">x</span><span class="s2">[:, </span><span class="s5">1</span><span class="s2">, :, :] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+            <span class="s1">x</span><span class="s2">[:, </span><span class="s5">2</span><span class="s2">, :, :] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">2</span><span class="s2">]</span>
+            <span class="s0">if </span><span class="s1">std </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">x</span><span class="s2">[:, </span><span class="s5">0</span><span class="s2">, :, :] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+                <span class="s1">x</span><span class="s2">[:, </span><span class="s5">1</span><span class="s2">, :, :] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+                <span class="s1">x</span><span class="s2">[:, </span><span class="s5">2</span><span class="s2">, :, :] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">2</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">x</span><span class="s2">[..., </span><span class="s5">0</span><span class="s2">] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+        <span class="s1">x</span><span class="s2">[..., </span><span class="s5">1</span><span class="s2">] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+        <span class="s1">x</span><span class="s2">[..., </span><span class="s5">2</span><span class="s2">] -= </span><span class="s1">mean</span><span class="s2">[</span><span class="s5">2</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">std </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">x</span><span class="s2">[..., </span><span class="s5">0</span><span class="s2">] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span>
+            <span class="s1">x</span><span class="s2">[..., </span><span class="s5">1</span><span class="s2">] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]</span>
+            <span class="s1">x</span><span class="s2">[..., </span><span class="s5">2</span><span class="s2">] /= </span><span class="s1">std</span><span class="s2">[</span><span class="s5">2</span><span class="s2">]</span>
+    <span class="s0">return </span><span class="s1">x</span>
+
+
+<span class="s0">def </span><span class="s1">_preprocess_tensor_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Preprocesses a tensor encoding a batch of images. 
+ 
+    Args: 
+      x: Input tensor, 3D or 4D. 
+      data_format: Data format of the image tensor. 
+      mode: One of &quot;caffe&quot;, &quot;tf&quot; or &quot;torch&quot;. 
+        - caffe: will convert the images from RGB to BGR, 
+            then will zero-center each color channel with 
+            respect to the ImageNet dataset, 
+            without scaling. 
+        - tf: will scale pixels between -1 and 1, 
+            sample-wise. 
+        - torch: will scale pixels between 0 and 1 and then 
+            will normalize each channel with respect to the 
+            ImageNet dataset. 
+ 
+    Returns: 
+        Preprocessed tensor. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">ndim </span><span class="s2">= </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;tf&quot;</span><span class="s2">:</span>
+        <span class="s1">x </span><span class="s2">/= </span><span class="s5">127.5</span>
+        <span class="s1">x </span><span class="s2">-= </span><span class="s5">1.0</span>
+        <span class="s0">return </span><span class="s1">x</span>
+    <span class="s0">elif </span><span class="s1">mode </span><span class="s2">== </span><span class="s3">&quot;torch&quot;</span><span class="s2">:</span>
+        <span class="s1">x </span><span class="s2">/= </span><span class="s5">255.0</span>
+        <span class="s1">mean </span><span class="s2">= [</span><span class="s5">0.485</span><span class="s2">, </span><span class="s5">0.456</span><span class="s2">, </span><span class="s5">0.406</span><span class="s2">]</span>
+        <span class="s1">std </span><span class="s2">= [</span><span class="s5">0.229</span><span class="s2">, </span><span class="s5">0.224</span><span class="s2">, </span><span class="s5">0.225</span><span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s6"># 'RGB'-&gt;'BGR'</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">3</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">([</span><span class="s1">x</span><span class="s2">[</span><span class="s1">i</span><span class="s2">, ...] </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s2">(</span><span class="s5">2</span><span class="s2">, </span><span class="s5">1</span><span class="s2">, </span><span class="s5">0</span><span class="s2">)], </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">0</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">([</span><span class="s1">x</span><span class="s2">[:, </span><span class="s1">i</span><span class="s2">, :] </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s2">(</span><span class="s5">2</span><span class="s2">, </span><span class="s5">1</span><span class="s2">, </span><span class="s5">0</span><span class="s2">)], </span><span class="s1">axis</span><span class="s2">=</span><span class="s5">1</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s6"># 'RGB'-&gt;'BGR'</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">stack</span><span class="s2">([</span><span class="s1">x</span><span class="s2">[..., </span><span class="s1">i</span><span class="s2">] </span><span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s2">(</span><span class="s5">2</span><span class="s2">, </span><span class="s5">1</span><span class="s2">, </span><span class="s5">0</span><span class="s2">)], </span><span class="s1">axis</span><span class="s2">=-</span><span class="s5">1</span><span class="s2">)</span>
+        <span class="s1">mean </span><span class="s2">= [</span><span class="s5">103.939</span><span class="s2">, </span><span class="s5">116.779</span><span class="s2">, </span><span class="s5">123.68</span><span class="s2">]</span>
+        <span class="s1">std </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s1">mean_tensor </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(-</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">mean</span><span class="s2">), </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+
+    <span class="s6"># Zero-center by mean pixel</span>
+    <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+        <span class="s1">mean_tensor </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">mean_tensor</span><span class="s2">, (</span><span class="s5">1</span><span class="s2">, </span><span class="s5">3</span><span class="s2">) + (</span><span class="s5">1</span><span class="s2">,) * (</span><span class="s1">ndim </span><span class="s2">- </span><span class="s5">2</span><span class="s2">))</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">mean_tensor </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">mean_tensor</span><span class="s2">, (</span><span class="s5">1</span><span class="s2">,) * (</span><span class="s1">ndim </span><span class="s2">- </span><span class="s5">1</span><span class="s2">) + (</span><span class="s5">3</span><span class="s2">,))</span>
+    <span class="s1">x </span><span class="s2">+= </span><span class="s1">mean_tensor</span>
+    <span class="s0">if </span><span class="s1">std </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">std_tensor </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">np</span><span class="s2">.</span><span class="s1">array</span><span class="s2">(</span><span class="s1">std</span><span class="s2">), </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">x</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s1">std_tensor </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">std_tensor</span><span class="s2">, (-</span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">))</span>
+        <span class="s1">x </span><span class="s2">/= </span><span class="s1">std_tensor</span>
+    <span class="s0">return </span><span class="s1">x</span>
+
+
+<span class="s0">def </span><span class="s1">obtain_input_shape</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">,</span>
+    <span class="s1">default_size</span><span class="s2">,</span>
+    <span class="s1">min_size</span><span class="s2">,</span>
+    <span class="s1">data_format</span><span class="s2">,</span>
+    <span class="s1">require_flatten</span><span class="s2">,</span>
+    <span class="s1">weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Internal utility to compute/validate a model's input shape. 
+ 
+    Args: 
+      input_shape: Either None (will return the default network input shape), 
+        or a user-provided shape to be validated. 
+      default_size: Default input width/height for the model. 
+      min_size: Minimum input width/height accepted by the model. 
+      data_format: Image data format to use. 
+      require_flatten: Whether the model is expected to 
+        be linked to a classifier via a Flatten layer. 
+      weights: One of `None` (random initialization) 
+        or 'imagenet' (pre-training on ImageNet). 
+        If weights='imagenet' input channels must be equal to 3. 
+ 
+    Returns: 
+      An integer shape tuple (may include None entries). 
+ 
+    Raises: 
+      ValueError: In case of invalid argument values. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">weights </span><span class="s2">!= </span><span class="s3">&quot;imagenet&quot; </span><span class="s0">and </span><span class="s1">input_shape </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) == </span><span class="s5">3</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s1">correct_channel_axis </span><span class="s2">= </span><span class="s5">1 </span><span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) == </span><span class="s5">4 </span><span class="s0">else </span><span class="s5">0</span>
+            <span class="s0">if </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s1">correct_channel_axis</span><span class="s2">] </span><span class="s0">not in </span><span class="s2">{</span><span class="s5">1</span><span class="s2">, </span><span class="s5">3</span><span class="s2">}:</span>
+                <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                    <span class="s3">&quot;This model usually expects 1 or 3 input channels. &quot;</span>
+                    <span class="s3">&quot;However, it was passed an input_shape &quot;</span>
+                    <span class="s3">f&quot;with </span><span class="s0">{</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]</span><span class="s0">} </span><span class="s3">input channels.&quot;</span><span class="s2">,</span>
+                    <span class="s1">stacklevel</span><span class="s2">=</span><span class="s5">2</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s1">default_shape </span><span class="s2">= (</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">], </span><span class="s1">default_size</span><span class="s2">, </span><span class="s1">default_size</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">input_shape</span><span class="s2">[-</span><span class="s5">1</span><span class="s2">] </span><span class="s0">not in </span><span class="s2">{</span><span class="s5">1</span><span class="s2">, </span><span class="s5">3</span><span class="s2">}:</span>
+                <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                    <span class="s3">&quot;This model usually expects 1 or 3 input channels. &quot;</span>
+                    <span class="s3">&quot;However, it was passed an input_shape &quot;</span>
+                    <span class="s3">f&quot;with </span><span class="s0">{</span><span class="s1">input_shape</span><span class="s2">[-</span><span class="s5">1</span><span class="s2">]</span><span class="s0">} </span><span class="s3">input channels.&quot;</span><span class="s2">,</span>
+                    <span class="s1">stacklevel</span><span class="s2">=</span><span class="s5">2</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s1">default_shape </span><span class="s2">= (</span><span class="s1">default_size</span><span class="s2">, </span><span class="s1">default_size</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">[-</span><span class="s5">1</span><span class="s2">])</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s1">default_shape </span><span class="s2">= (</span><span class="s5">3</span><span class="s2">, </span><span class="s1">default_size</span><span class="s2">, </span><span class="s1">default_size</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">default_shape </span><span class="s2">= (</span><span class="s1">default_size</span><span class="s2">, </span><span class="s1">default_size</span><span class="s2">, </span><span class="s5">3</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">weights </span><span class="s2">== </span><span class="s3">&quot;imagenet&quot; </span><span class="s0">and </span><span class="s1">require_flatten</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">input_shape </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">input_shape </span><span class="s2">!= </span><span class="s1">default_shape</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">&quot;When setting `include_top=True` &quot;</span>
+                    <span class="s3">&quot;and loading `imagenet` weights, &quot;</span>
+                    <span class="s3">f&quot;`input_shape` should be </span><span class="s0">{</span><span class="s1">default_shape</span><span class="s0">}</span><span class="s3">.  &quot;</span>
+                    <span class="s3">f&quot;Received: input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+                <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">default_shape</span>
+    <span class="s0">if </span><span class="s1">input_shape</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">input_shape </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) != </span><span class="s5">3</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;`input_shape` must be a tuple of three integers.&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] != </span><span class="s5">3 </span><span class="s0">and </span><span class="s1">weights </span><span class="s2">== </span><span class="s3">&quot;imagenet&quot;</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;The input must have 3 channels; Received &quot;</span>
+                        <span class="s3">f&quot;`input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">`&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s2">(</span>
+                    <span class="s1">input_shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] </span><span class="s0">is not None and </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] &lt; </span><span class="s1">min_size</span>
+                <span class="s2">) </span><span class="s0">or </span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">2</span><span class="s2">] </span><span class="s0">is not None and </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">2</span><span class="s2">] &lt; </span><span class="s1">min_size</span><span class="s2">):</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">f&quot;Input size must be at least </span><span class="s0">{</span><span class="s1">min_size</span><span class="s0">}</span><span class="s3">&quot;</span>
+                        <span class="s3">f&quot;x</span><span class="s0">{</span><span class="s1">min_size</span><span class="s0">}</span><span class="s3">; Received: &quot;</span>
+                        <span class="s3">f&quot;input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+                    <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">input_shape </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) != </span><span class="s5">3</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;`input_shape` must be a tuple of three integers.&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s1">input_shape</span><span class="s2">[-</span><span class="s5">1</span><span class="s2">] != </span><span class="s5">3 </span><span class="s0">and </span><span class="s1">weights </span><span class="s2">== </span><span class="s3">&quot;imagenet&quot;</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;The input must have 3 channels; Received &quot;</span>
+                        <span class="s3">f&quot;`input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">`&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">if </span><span class="s2">(</span>
+                    <span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] </span><span class="s0">is not None and </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] &lt; </span><span class="s1">min_size</span>
+                <span class="s2">) </span><span class="s0">or </span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] </span><span class="s0">is not None and </span><span class="s1">input_shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] &lt; </span><span class="s1">min_size</span><span class="s2">):</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;Input size must be at least &quot;</span>
+                        <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">min_size</span><span class="s0">}</span><span class="s3">x</span><span class="s0">{</span><span class="s1">min_size</span><span class="s0">}</span><span class="s3">; Received: &quot;</span>
+                        <span class="s3">f&quot;input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+                    <span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">require_flatten</span><span class="s2">:</span>
+            <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">default_shape</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">data_format </span><span class="s2">== </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+                <span class="s1">input_shape </span><span class="s2">= (</span><span class="s5">3</span><span class="s2">, </span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">input_shape </span><span class="s2">= (</span><span class="s0">None</span><span class="s2">, </span><span class="s0">None</span><span class="s2">, </span><span class="s5">3</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">require_flatten</span><span class="s2">:</span>
+        <span class="s0">if None in </span><span class="s1">input_shape</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;If `include_top` is True, &quot;</span>
+                <span class="s3">&quot;you should specify a static `input_shape`. &quot;</span>
+                <span class="s3">f&quot;Received: input_shape=</span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">input_shape</span>
+
+
+<span class="s0">def </span><span class="s1">correct_pad</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">kernel_size</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Returns a tuple for zero-padding for 2D convolution with downsampling. 
+ 
+    Args: 
+      inputs: Input tensor. 
+      kernel_size: An integer or tuple/list of 2 integers. 
+ 
+    Returns: 
+      A tuple. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">img_dim </span><span class="s2">= </span><span class="s5">2 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s5">1</span>
+    <span class="s1">input_size </span><span class="s2">= </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s1">img_dim </span><span class="s2">: (</span><span class="s1">img_dim </span><span class="s2">+ </span><span class="s5">2</span><span class="s2">)]</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+        <span class="s1">kernel_size </span><span class="s2">= (</span><span class="s1">kernel_size</span><span class="s2">, </span><span class="s1">kernel_size</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">input_size</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">adjust </span><span class="s2">= (</span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">adjust </span><span class="s2">= (</span><span class="s5">1 </span><span class="s2">- </span><span class="s1">input_size</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] % </span><span class="s5">2</span><span class="s2">, </span><span class="s5">1 </span><span class="s2">- </span><span class="s1">input_size</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] % </span><span class="s5">2</span><span class="s2">)</span>
+    <span class="s1">correct </span><span class="s2">= (</span><span class="s1">kernel_size</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] // </span><span class="s5">2</span><span class="s2">, </span><span class="s1">kernel_size</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] // </span><span class="s5">2</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s2">(</span>
+        <span class="s2">(</span><span class="s1">correct</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] - </span><span class="s1">adjust</span><span class="s2">[</span><span class="s5">0</span><span class="s2">], </span><span class="s1">correct</span><span class="s2">[</span><span class="s5">0</span><span class="s2">]),</span>
+        <span class="s2">(</span><span class="s1">correct</span><span class="s2">[</span><span class="s5">1</span><span class="s2">] - </span><span class="s1">adjust</span><span class="s2">[</span><span class="s5">1</span><span class="s2">], </span><span class="s1">correct</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]),</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">validate_activation</span><span class="s2">(</span><span class="s1">classifier_activation</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;validates that the classifer_activation is compatible with the weights. 
+ 
+    Args: 
+      classifier_activation: str or callable activation function 
+      weights: The pretrained weights to load. 
+ 
+    Raises: 
+      ValueError: if an activation other than `None` or `softmax` are used with 
+        pretrained weights. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">weights </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">return</span>
+
+    <span class="s1">classifier_activation </span><span class="s2">= </span><span class="s1">activations</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">classifier_activation</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">classifier_activation </span><span class="s0">not in </span><span class="s2">{</span>
+        <span class="s1">activations</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s3">&quot;softmax&quot;</span><span class="s2">),</span>
+        <span class="s1">activations</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s0">None</span><span class="s2">),</span>
+    <span class="s2">}:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;Only `None` and `softmax` activations are allowed &quot;</span>
+            <span class="s3">&quot;for the `classifier_activation` argument when using &quot;</span>
+            <span class="s3">&quot;pretrained weights, with `include_top=True`; Received: &quot;</span>
+            <span class="s3">f&quot;classifier_activation=</span><span class="s0">{</span><span class="s1">classifier_activation</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+</pre>
+</body>
+</html>

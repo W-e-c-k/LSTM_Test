@@ -1,0 +1,384 @@
+<html>
+<head>
+<title>sequential.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+sequential.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">copy</span>
+<span class="s0">import </span><span class="s1">inspect</span>
+<span class="s0">import </span><span class="s1">typing</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">common </span><span class="s0">import </span><span class="s1">global_state</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">common </span><span class="s0">import </span><span class="s1">standardize_shape</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">core</span><span class="s2">.</span><span class="s1">input_layer </span><span class="s0">import </span><span class="s1">InputLayer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">saving_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization </span><span class="s0">as </span><span class="s1">legacy_serialization</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models</span><span class="s2">.</span><span class="s1">functional </span><span class="s0">import </span><span class="s1">Functional</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models</span><span class="s2">.</span><span class="s1">model </span><span class="s0">import </span><span class="s1">Model</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">([</span><span class="s3">&quot;keras.Sequential&quot;</span><span class="s2">, </span><span class="s3">&quot;keras.models.Sequential&quot;</span><span class="s2">])</span>
+<span class="s0">class </span><span class="s1">Sequential</span><span class="s2">(</span><span class="s1">Model</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;`Sequential` groups a linear stack of layers into a `Model`. 
+ 
+    Examples: 
+ 
+    ```python 
+    model = keras.Sequential() 
+    model.add(keras.Input(shape=(16,))) 
+    model.add(keras.layers.Dense(8)) 
+ 
+    # Note that you can also omit the initial `Input`. 
+    # In that case the model doesn't have any weights until the first call 
+    # to a training/evaluation method (since it isn't yet built): 
+    model = keras.Sequential() 
+    model.add(keras.layers.Dense(8)) 
+    model.add(keras.layers.Dense(4)) 
+    # model.weights not created yet 
+ 
+    # Whereas if you specify an `Input`, the model gets built 
+    # continuously as you are adding layers: 
+    model = keras.Sequential() 
+    model.add(keras.Input(shape=(16,))) 
+    model.add(keras.layers.Dense(8)) 
+    len(model.weights)  # Returns &quot;2&quot; 
+ 
+    # When using the delayed-build pattern (no input shape specified), you can 
+    # choose to manually build your model by calling 
+    # `build(batch_input_shape)`: 
+    model = keras.Sequential() 
+    model.add(keras.layers.Dense(8)) 
+    model.add(keras.layers.Dense(4)) 
+    model.build((None, 16)) 
+    len(model.weights)  # Returns &quot;4&quot; 
+ 
+    # Note that when using the delayed-build pattern (no input shape specified), 
+    # the model gets built the first time you call `fit`, `eval`, or `predict`, 
+    # or the first time you call the model on some input data. 
+    model = keras.Sequential() 
+    model.add(keras.layers.Dense(8)) 
+    model.add(keras.layers.Dense(1)) 
+    model.compile(optimizer='sgd', loss='mse') 
+    # This builds the model for the first time: 
+    model.fit(x, y, batch_size=32, epochs=10) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__new__</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, *</span><span class="s1">args</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">typing</span><span class="s2">.</span><span class="s1">cast</span><span class="s2">(</span><span class="s1">Sequential</span><span class="s2">, </span><span class="s1">super</span><span class="s2">().</span><span class="s1">__new__</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">layers</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">trainable</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">trainable</span><span class="s2">=</span><span class="s1">trainable</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_functional </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_layers </span><span class="s2">= []</span>
+        <span class="s0">if </span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">layers</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">rebuild</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_maybe_rebuild</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">add</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">layer</span><span class="s2">, </span><span class="s1">rebuild</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Adds a layer instance on top of the layer stack. 
+ 
+        Args: 
+            layer: layer instance. 
+        &quot;&quot;&quot;</span>
+        <span class="s5"># Legacy case: if the first layer has an input_shape arg,</span>
+        <span class="s5"># use it to build an InputLayer.</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s3">&quot;_input_shape_arg&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">) </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">InputLayer</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">=</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_input_shape_arg</span><span class="s2">))</span>
+
+        <span class="s5"># If we are passed a Keras tensor created by keras.Input(), we</span>
+        <span class="s5"># extract the input layer from its keras history and use that.</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s3">&quot;_keras_history&quot;</span><span class="s2">):</span>
+            <span class="s1">origin_layer </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_keras_history</span><span class="s2">[</span><span class="s6">0</span><span class="s2">]</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">origin_layer</span><span class="s2">, </span><span class="s1">InputLayer</span><span class="s2">):</span>
+                <span class="s1">layer </span><span class="s2">= </span><span class="s1">origin_layer</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">Layer</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Only instances of `keras.Layer` can be &quot;</span>
+                <span class="s3">f&quot;added to a Sequential model. Received: </span><span class="s0">{</span><span class="s1">layer</span><span class="s0">} </span><span class="s3">&quot;</span>
+                <span class="s3">f&quot;(of type </span><span class="s0">{</span><span class="s1">type</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span><span class="s0">}</span><span class="s3">)&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_is_layer_name_unique</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;All layers added to a Sequential model &quot;</span>
+                <span class="s3">f&quot;should have unique names. Name '</span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' is already &quot;</span>
+                <span class="s3">&quot;the name of a layer in this model. Update the `name` argument &quot;</span>
+                <span class="s3">&quot;to pass a unique name.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">InputLayer</span><span class="s2">)</span>
+            <span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span>
+            <span class="s0">and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">InputLayer</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Sequential model '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has already been configured &quot;</span>
+                <span class="s3">f&quot;to use input shape </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">batch_shape</span><span class="s0">}</span><span class="s3">. You cannot &quot;</span>
+                <span class="s3">f&quot;add a different Input layer to it.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">rebuild</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_maybe_rebuild</span><span class="s2">()</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">False</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_functional </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s0">def </span><span class="s1">pop</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">rebuild</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Removes the last layer in the model.&quot;&quot;&quot;</span>
+        <span class="s1">layer </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_functional </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">rebuild</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_maybe_rebuild</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">layer</span>
+
+    <span class="s0">def </span><span class="s1">_maybe_rebuild</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_functional </span><span class="s2">= </span><span class="s0">None</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">InputLayer</span><span class="s2">) </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">) &gt; </span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">batch_shape</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s3">&quot;input_shape&quot;</span><span class="s2">) </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">) &gt; </span><span class="s6">1</span><span class="s2">:</span>
+            <span class="s5"># We can build the Sequential model if the first layer has the</span>
+            <span class="s5"># `input_shape` property. This is most commonly found in Functional</span>
+            <span class="s5"># model.</span>
+            <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">input_shape</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_lock_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5"># Unlike other layers, Sequential is mutable after build.</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">_obj_type</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s3">&quot;Sequential&quot;</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">standardize_shape</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+        <span class="s0">except</span><span class="s2">:</span>
+            <span class="s5"># Do not attempt to build if the model does not have a single</span>
+            <span class="s5"># input tensor.</span>
+            <span class="s0">return</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">f&quot;Sequential model </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">} </span><span class="s3">cannot be built because it has &quot;</span>
+                <span class="s3">&quot;no layers. Call `model.add(layer)`.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">InputLayer</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">batch_shape </span><span class="s2">!= </span><span class="s1">input_shape</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s3">f&quot;Sequential model '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has already been &quot;</span>
+                    <span class="s3">&quot;configured to use input shape &quot;</span>
+                    <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">batch_shape</span><span class="s0">}</span><span class="s3">. You cannot build it &quot;</span>
+                    <span class="s3">f&quot;with input_shape </span><span class="s0">{</span><span class="s1">input_shape</span><span class="s0">}</span><span class="s3">&quot;</span>
+                <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">dtype </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">compute_dtype</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_layers </span><span class="s2">= [</span>
+                <span class="s1">InputLayer</span><span class="s2">(</span><span class="s1">batch_shape</span><span class="s2">=</span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">dtype</span><span class="s2">)</span>
+            <span class="s2">] + </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span>
+
+        <span class="s5"># Build functional model</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">output</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">inputs</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">1</span><span class="s2">:]:</span>
+            <span class="s0">try</span><span class="s2">:</span>
+                <span class="s1">x </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s0">except </span><span class="s1">NotImplementedError</span><span class="s2">:</span>
+                <span class="s5"># Can happen if shape inference is not implemented.</span>
+                <span class="s5"># TODO: consider reverting inbound nodes on layers processed.</span>
+                <span class="s0">return</span>
+            <span class="s0">except </span><span class="s1">TypeError </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+                <span class="s1">signature </span><span class="s2">= </span><span class="s1">inspect</span><span class="s2">.</span><span class="s1">signature</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">call</span><span class="s2">)</span>
+                <span class="s1">positional_args </span><span class="s2">= [</span>
+                    <span class="s1">param</span>
+                    <span class="s0">for </span><span class="s1">param </span><span class="s0">in </span><span class="s1">signature</span><span class="s2">.</span><span class="s1">parameters</span><span class="s2">.</span><span class="s1">values</span><span class="s2">()</span>
+                    <span class="s0">if </span><span class="s1">param</span><span class="s2">.</span><span class="s1">default </span><span class="s2">== </span><span class="s1">inspect</span><span class="s2">.</span><span class="s1">Parameter</span><span class="s2">.</span><span class="s1">empty</span>
+                <span class="s2">]</span>
+                <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">positional_args</span><span class="s2">) != </span><span class="s6">1</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;Layers added to a Sequential model &quot;</span>
+                        <span class="s3">&quot;can only have a single positional argument, &quot;</span>
+                        <span class="s3">f&quot;the input tensor. Layer </span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s0">} </span><span class="s3">&quot;</span>
+                        <span class="s3">f&quot;has multiple positional arguments: </span><span class="s0">{</span><span class="s1">positional_args</span><span class="s0">}</span><span class="s3">&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">raise </span><span class="s1">e</span>
+        <span class="s1">outputs </span><span class="s2">= </span><span class="s1">x</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_functional </span><span class="s2">= </span><span class="s1">Functional</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">=</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">=</span><span class="s1">outputs</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">built </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">call</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s1">training</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s1">mask</span><span class="s2">)</span>
+
+        <span class="s5"># Fallback: Just apply the layer sequence.</span>
+        <span class="s5"># This typically happens if `inputs` is a nested struct.</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s5"># During each iteration, `inputs` are the inputs to `layer`, and</span>
+            <span class="s5"># `outputs` are the outputs of `layer` applied to `inputs`. At the</span>
+            <span class="s5"># end of each iteration `inputs` is set to `outputs` to prepare for</span>
+            <span class="s5"># the next layer.</span>
+            <span class="s1">kwargs </span><span class="s2">= {}</span>
+            <span class="s0">if </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_call_has_mask_arg</span><span class="s2">:</span>
+                <span class="s1">kwargs</span><span class="s2">[</span><span class="s3">&quot;mask&quot;</span><span class="s2">] = </span><span class="s1">mask</span>
+            <span class="s0">if </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">_call_has_training_arg </span><span class="s0">and </span><span class="s1">training </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">kwargs</span><span class="s2">[</span><span class="s3">&quot;training&quot;</span><span class="s2">] = </span><span class="s1">training</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">outputs</span>
+
+            <span class="s0">def </span><span class="s1">_get_mask_from_keras_tensor</span><span class="s2">(</span><span class="s1">kt</span><span class="s2">):</span>
+                <span class="s0">return </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">kt</span><span class="s2">, </span><span class="s3">&quot;_keras_mask&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+
+            <span class="s1">mask </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">_get_mask_from_keras_tensor</span><span class="s2">, </span><span class="s1">outputs</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">outputs</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">layers</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5"># Historically, `sequential.layers` only returns layers that were added</span>
+        <span class="s5"># via `add`, and omits the auto-generated `InputLayer` that comes at the</span>
+        <span class="s5"># bottom of the stack.</span>
+        <span class="s1">layers </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span>
+        <span class="s0">if </span><span class="s1">layers </span><span class="s0">and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">InputLayer</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">layers</span><span class="s2">[</span><span class="s6">1</span><span class="s2">:]</span>
+        <span class="s0">return </span><span class="s1">layers</span><span class="s2">[:]</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_spec</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">compute_output_spec</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s1">training</span><span class="s2">, </span><span class="s1">mask</span><span class="s2">=</span><span class="s1">mask</span>
+            <span class="s2">)</span>
+        <span class="s5"># Direct application</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">compute_output_spec</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">, </span><span class="s1">training</span><span class="s2">=</span><span class="s1">training</span>
+            <span class="s2">)  </span><span class="s5"># Ignore mask</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">outputs</span>
+        <span class="s0">return </span><span class="s1">outputs</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+        <span class="s5"># Direct application</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+            <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">output_shape</span>
+        <span class="s0">return </span><span class="s1">output_shape</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">input_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">input_shape</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;Sequential model '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has no defined input shape yet.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">output_shape</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;Sequential model '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has no defined output shape yet.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">inputs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">inputs</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;Sequential model '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has no defined inputs yet.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">outputs</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional</span><span class="s2">.</span><span class="s1">outputs</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">f&quot;Sequential model '</span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s3">' has no defined outputs yet.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">input_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s5"># Sequential.__call__ will try to convert its inputs</span>
+        <span class="s5"># to the dtype expected by its input layer, if any.</span>
+        <span class="s1">layers </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span>
+        <span class="s0">if </span><span class="s1">layers </span><span class="s0">and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">InputLayer</span><span class="s2">):</span>
+            <span class="s0">return </span><span class="s1">layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">dtype</span>
+        <span class="s0">return </span><span class="s1">super</span><span class="s2">().</span><span class="s1">input_dtype</span>
+
+    <span class="s0">def </span><span class="s1">_is_layer_name_unique</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">layer</span><span class="s2">):</span>
+        <span class="s0">for </span><span class="s1">ref_layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name </span><span class="s2">== </span><span class="s1">ref_layer</span><span class="s2">.</span><span class="s1">name </span><span class="s0">and </span><span class="s1">ref_layer </span><span class="s0">is not </span><span class="s1">layer</span><span class="s2">:</span>
+                <span class="s0">return False</span>
+        <span class="s0">return True</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">serialize_fn </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">serialize_keras_object</span>
+        <span class="s0">if </span><span class="s1">global_state</span><span class="s2">.</span><span class="s1">get_global_attribute</span><span class="s2">(</span><span class="s3">&quot;use_legacy_config&quot;</span><span class="s2">, </span><span class="s0">False</span><span class="s2">):</span>
+            <span class="s5"># Legacy format serialization used for H5 and SavedModel formats</span>
+            <span class="s1">serialize_fn </span><span class="s2">= </span><span class="s1">legacy_serialization</span><span class="s2">.</span><span class="s1">serialize_keras_object</span>
+        <span class="s1">layer_configs </span><span class="s2">= []</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">super</span><span class="s2">().</span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s5"># `super().layers` include the InputLayer if available (it is</span>
+            <span class="s5"># filtered out of `self.layers`).</span>
+            <span class="s1">layer_configs</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">serialize_fn</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">))</span>
+        <span class="s1">config </span><span class="s2">= </span><span class="s1">Model</span><span class="s2">.</span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">)</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;name&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span>
+        <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;layers&quot;</span><span class="s2">] = </span><span class="s1">copy</span><span class="s2">.</span><span class="s1">deepcopy</span><span class="s2">(</span><span class="s1">layer_configs</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_functional </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;build_input_shape&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_layers</span><span class="s2">[</span><span class="s6">0</span><span class="s2">].</span><span class="s1">batch_shape</span>
+        <span class="s0">return </span><span class="s1">config</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s3">&quot;name&quot; </span><span class="s0">in </span><span class="s1">config</span><span class="s2">:</span>
+            <span class="s1">name </span><span class="s2">= </span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;name&quot;</span><span class="s2">]</span>
+            <span class="s1">build_input_shape </span><span class="s2">= </span><span class="s1">config</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s3">&quot;build_input_shape&quot;</span><span class="s2">)</span>
+            <span class="s1">layer_configs </span><span class="s2">= </span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;layers&quot;</span><span class="s2">]</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">name </span><span class="s2">= </span><span class="s0">None</span>
+            <span class="s1">layer_configs </span><span class="s2">= </span><span class="s1">config</span>
+        <span class="s1">model </span><span class="s2">= </span><span class="s1">cls</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">layer_config </span><span class="s0">in </span><span class="s1">layer_configs</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s3">&quot;module&quot; </span><span class="s0">not in </span><span class="s1">layer_config</span><span class="s2">:</span>
+                <span class="s5"># Legacy format deserialization (no &quot;module&quot; key)</span>
+                <span class="s5"># used for H5 and SavedModel formats</span>
+                <span class="s1">layer </span><span class="s2">= </span><span class="s1">saving_utils</span><span class="s2">.</span><span class="s1">model_from_config</span><span class="s2">(</span>
+                    <span class="s1">layer_config</span><span class="s2">,</span>
+                    <span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">layer </span><span class="s2">= </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+                    <span class="s1">layer_config</span><span class="s2">,</span>
+                    <span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">add</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s2">(</span>
+            <span class="s0">not </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_functional</span>
+            <span class="s0">and </span><span class="s1">build_input_shape</span>
+            <span class="s0">and </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">build_input_shape</span><span class="s2">, (</span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">))</span>
+        <span class="s2">):</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">build_input_shape</span><span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">model</span>
+</pre>
+</body>
+</html>

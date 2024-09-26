@@ -1,0 +1,699 @@
+<html>
+<head>
+<title>tensorboard.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #2aacb8;}
+.s6 { color: #7a7e85;}
+.s7 { color: #a5c261;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+tensorboard.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">logging</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">sys</span>
+<span class="s0">import </span><span class="s1">time</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">ops</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">tree</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">callbacks</span><span class="s2">.</span><span class="s1">callback </span><span class="s0">import </span><span class="s1">Callback</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers </span><span class="s0">import </span><span class="s1">Embedding</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">optimizers </span><span class="s0">import </span><span class="s1">Optimizer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">file_utils</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.callbacks.TensorBoard&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">TensorBoard</span><span class="s2">(</span><span class="s1">Callback</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Enable visualizations for TensorBoard. 
+ 
+    TensorBoard is a visualization tool provided with TensorFlow. A TensorFlow 
+    installation is required to use this callback. 
+ 
+    This callback logs events for TensorBoard, including: 
+ 
+    * Metrics summary plots 
+    * Training graph visualization 
+    * Weight histograms 
+    * Sampled profiling 
+ 
+    When used in `model.evaluate()` or regular validation 
+    in addition to epoch summaries, there will be a summary that records 
+    evaluation metrics vs `model.optimizer.iterations` written. The metric names 
+    will be prepended with `evaluation`, with `model.optimizer.iterations` being 
+    the step in the visualized TensorBoard. 
+ 
+    If you have installed TensorFlow with pip, you should be able 
+    to launch TensorBoard from the command line: 
+ 
+    ``` 
+    tensorboard --logdir=path_to_your_logs 
+    ``` 
+ 
+    You can find more information about TensorBoard 
+    [here](https://www.tensorflow.org/get_started/summaries_and_tensorboard). 
+ 
+    Args: 
+        log_dir: the path of the directory where to save the log files to be 
+            parsed by TensorBoard. e.g., 
+            `log_dir = os.path.join(working_dir, 'logs')`. 
+            This directory should not be reused by any other callbacks. 
+        histogram_freq: frequency (in epochs) at which to compute 
+            weight histograms for the layers of the model. If set to 0, 
+            histograms won't be computed. Validation data (or split) must be 
+            specified for histogram visualizations. 
+        write_graph:  (Not supported at this time) 
+            Whether to visualize the graph in TensorBoard. 
+            Note that the log file can become quite large 
+            when `write_graph` is set to `True`. 
+        write_images: whether to write model weights to visualize as image in 
+            TensorBoard. 
+        write_steps_per_second: whether to log the training steps per second 
+            into TensorBoard. This supports both epoch and batch frequency 
+            logging. 
+        update_freq: `&quot;batch&quot;` or `&quot;epoch&quot;` or integer. When using `&quot;epoch&quot;`, 
+            writes the losses and metrics to TensorBoard after every epoch. 
+            If using an integer, let's say `1000`, all metrics and losses 
+            (including custom ones added by `Model.compile`) will be logged to 
+            TensorBoard every 1000 batches. `&quot;batch&quot;` is a synonym for 1, 
+            meaning that they will be written every batch. 
+            Note however that writing too frequently to TensorBoard can slow 
+            down your training, especially when used with distribution 
+            strategies as it will incur additional synchronization overhead. 
+            Batch-level summary writing is also available via `train_step` 
+            override. Please see 
+            [TensorBoard Scalars tutorial]( 
+                https://www.tensorflow.org/tensorboard/scalars_and_keras#batch-level_logging)  # noqa: E501 
+            for more details. 
+        profile_batch: (Not supported at this time) 
+            Profile the batch(es) to sample compute characteristics. 
+            profile_batch must be a non-negative integer or a tuple of integers. 
+            A pair of positive integers signify a range of batches to profile. 
+            By default, profiling is disabled. 
+        embeddings_freq: frequency (in epochs) at which embedding layers will be 
+            visualized. If set to 0, embeddings won't be visualized. 
+        embeddings_metadata: Dictionary which maps embedding layer names to the 
+            filename of a file in which to save metadata for the embedding layer. 
+            In case the same metadata file is to be 
+            used for all embedding layers, a single filename can be passed. 
+ 
+    Examples: 
+ 
+    ```python 
+    tensorboard_callback = keras.callbacks.TensorBoard(log_dir=&quot;./logs&quot;) 
+    model.fit(x_train, y_train, epochs=2, callbacks=[tensorboard_callback]) 
+    # Then run the tensorboard command to view the visualizations. 
+    ``` 
+ 
+    Custom batch-level summaries in a subclassed Model: 
+ 
+    ```python 
+    class MyModel(keras.Model): 
+ 
+        def build(self, _): 
+            self.dense = keras.layers.Dense(10) 
+ 
+        def call(self, x): 
+            outputs = self.dense(x) 
+            tf.summary.histogram('outputs', outputs) 
+            return outputs 
+ 
+    model = MyModel() 
+    model.compile('sgd', 'mse') 
+ 
+    # Make sure to set `update_freq=N` to log a batch-level summary every N 
+    # batches.  In addition to any `tf.summary` contained in `model.call()`, 
+    # metrics added in `Model.compile` will be logged every N batches. 
+    tb_callback = keras.callbacks.TensorBoard('./logs', update_freq=1) 
+    model.fit(x_train, y_train, callbacks=[tb_callback]) 
+    ``` 
+ 
+    Custom batch-level summaries in a Functional API Model: 
+ 
+    ```python 
+    def my_summary(x): 
+        tf.summary.histogram('x', x) 
+        return x 
+ 
+    inputs = keras.Input(10) 
+    x = keras.layers.Dense(10)(inputs) 
+    outputs = keras.layers.Lambda(my_summary)(x) 
+    model = keras.Model(inputs, outputs) 
+    model.compile('sgd', 'mse') 
+ 
+    # Make sure to set `update_freq=N` to log a batch-level summary every N 
+    # batches. In addition to any `tf.summary` contained in `Model.call`, 
+    # metrics added in `Model.compile` will be logged every N batches. 
+    tb_callback = keras.callbacks.TensorBoard('./logs', update_freq=1) 
+    model.fit(x_train, y_train, callbacks=[tb_callback]) 
+    ``` 
+ 
+    Profiling: 
+ 
+    ```python 
+    # Profile a single batch, e.g. the 5th batch. 
+    tensorboard_callback = keras.callbacks.TensorBoard( 
+        log_dir='./logs', profile_batch=5) 
+    model.fit(x_train, y_train, epochs=2, callbacks=[tensorboard_callback]) 
+ 
+    # Profile a range of batches, e.g. from 10 to 20. 
+    tensorboard_callback = keras.callbacks.TensorBoard( 
+        log_dir='./logs', profile_batch=(10,20)) 
+    model.fit(x_train, y_train, epochs=2, callbacks=[tensorboard_callback]) 
+    ``` 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">log_dir</span><span class="s2">=</span><span class="s3">&quot;logs&quot;</span><span class="s2">,</span>
+        <span class="s1">histogram_freq</span><span class="s2">=</span><span class="s5">0</span><span class="s2">,</span>
+        <span class="s1">write_graph</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">write_images</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">write_steps_per_second</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">update_freq</span><span class="s2">=</span><span class="s3">&quot;epoch&quot;</span><span class="s2">,</span>
+        <span class="s1">profile_batch</span><span class="s2">=</span><span class="s5">0</span><span class="s2">,</span>
+        <span class="s1">embeddings_freq</span><span class="s2">=</span><span class="s5">0</span><span class="s2">,</span>
+        <span class="s1">embeddings_metadata</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">()</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">log_dir </span><span class="s2">= </span><span class="s1">str</span><span class="s2">(</span><span class="s1">log_dir</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">histogram_freq </span><span class="s2">= </span><span class="s1">histogram_freq</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">write_graph </span><span class="s2">= </span><span class="s1">write_graph</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">write_images </span><span class="s2">= </span><span class="s1">write_images</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">write_steps_per_second </span><span class="s2">= </span><span class="s1">write_steps_per_second</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">update_freq </span><span class="s2">= </span><span class="s5">1 </span><span class="s0">if </span><span class="s1">update_freq </span><span class="s2">== </span><span class="s3">&quot;batch&quot; </span><span class="s0">else </span><span class="s1">update_freq</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_freq </span><span class="s2">= </span><span class="s1">embeddings_freq</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata </span><span class="s2">= </span><span class="s1">embeddings_metadata</span>
+        <span class="s0">if </span><span class="s1">profile_batch </span><span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s6"># TODO: profiling not available in JAX/torch</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Profiling is not yet available with the &quot;</span>
+                <span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">()</span><span class="s0">} </span><span class="s3">backend. Please open a PR &quot;</span>
+                <span class="s3">&quot;if you'd like to add this feature. Received: &quot;</span>
+                <span class="s3">f&quot;profile_batch=</span><span class="s0">{</span><span class="s1">profile_batch</span><span class="s0">} </span><span class="s3">(must be 0)&quot;</span>
+            <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_init_profile_batch</span><span class="s2">(</span><span class="s1">profile_batch</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_global_train_batch </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_previous_epoch_iterations </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_train_accumulated_time </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_start_time </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_summary_module </span><span class="s2">= </span><span class="s0">None</span>
+
+        <span class="s6"># Lazily initialized in order to avoid creating event files when</span>
+        <span class="s6"># not needed.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_writers </span><span class="s2">= {}</span>
+
+        <span class="s6"># Used to restore any existing `SummaryWriter` after training ends.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_prev_summary_state </span><span class="s2">= []</span>
+
+    <span class="s0">def </span><span class="s1">set_model</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">model</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Sets Keras model and writes graph if specified.&quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_model </span><span class="s2">= </span><span class="s1">model</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_log_write_dir </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">log_dir</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_train_dir </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_log_write_dir</span><span class="s2">, </span><span class="s3">&quot;train&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_train_step </span><span class="s2">= </span><span class="s5">0</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_val_dir </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_log_write_dir</span><span class="s2">, </span><span class="s3">&quot;validation&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_val_step </span><span class="s2">= </span><span class="s5">0</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_writers </span><span class="s2">= {}  </span><span class="s6"># Resets writers.</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_should_write_train_graph </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_graph</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_write_keras_model_summary</span><span class="s2">()</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_should_write_train_graph </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_freq</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_configure_embeddings</span><span class="s2">()</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">summary</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_summary_module </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">import </span><span class="s1">tensorflow</span><span class="s2">.</span><span class="s1">summary </span><span class="s0">as </span><span class="s1">summary</span>
+
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_summary_module </span><span class="s2">= </span><span class="s1">summary</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_summary_module</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">_train_writer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s3">&quot;train&quot; </span><span class="s0">not in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">[</span><span class="s3">&quot;train&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">create_file_writer</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_train_dir</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">[</span><span class="s3">&quot;train&quot;</span><span class="s2">]</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">_val_writer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s3">&quot;val&quot; </span><span class="s0">not in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">[</span><span class="s3">&quot;val&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">create_file_writer</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_val_dir</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">[</span><span class="s3">&quot;val&quot;</span><span class="s2">]</span>
+
+    <span class="s0">def </span><span class="s1">_write_keras_model_train_graph</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Writes Keras model train_function graph to TensorBoard.&quot;&quot;&quot;</span>
+        <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+            <span class="s1">train_fn </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">train_function</span>
+            <span class="s6"># If the train_function is a `tf.function`, we can write out a</span>
+            <span class="s6"># graph</span>
+            <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">train_fn</span><span class="s2">, </span><span class="s3">&quot;function_spec&quot;</span><span class="s2">):</span>
+                <span class="s6"># TODO(b/243822285): Use _variable_creation_fn directly.</span>
+                <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">train_fn</span><span class="s2">, </span><span class="s3">&quot;_concrete_stateful_fn&quot;</span><span class="s2">):</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">graph</span><span class="s2">(</span><span class="s1">train_fn</span><span class="s2">.</span><span class="s1">_concrete_stateful_fn</span><span class="s2">.</span><span class="s1">graph</span><span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">graph</span><span class="s2">(</span>
+                        <span class="s1">train_fn</span><span class="s2">.</span><span class="s1">_concrete_variable_creation_fn</span><span class="s2">.</span><span class="s1">graph</span>
+                    <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_write_keras_model_summary</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Writes Keras graph network summary to TensorBoard.&quot;&quot;&quot;</span>
+        <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+            <span class="s0">if </span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__ </span><span class="s2">== </span><span class="s3">&quot;Functional&quot;</span>
+                <span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__ </span><span class="s2">== </span><span class="s3">&quot;Sequential&quot;</span>
+            <span class="s2">):</span>
+                <span class="s1">keras_model_summary</span><span class="s2">(</span><span class="s3">&quot;keras&quot;</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s5">0</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_configure_embeddings</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Configure the Projector for embeddings.&quot;&quot;&quot;</span>
+        <span class="s0">from </span><span class="s1">google</span><span class="s2">.</span><span class="s1">protobuf </span><span class="s0">import </span><span class="s1">text_format</span>
+        <span class="s0">from </span><span class="s1">tensorboard</span><span class="s2">.</span><span class="s1">plugins </span><span class="s0">import </span><span class="s1">projector</span>
+
+        <span class="s1">config </span><span class="s2">= </span><span class="s1">projector</span><span class="s2">.</span><span class="s1">ProjectorConfig</span><span class="s2">()</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">, </span><span class="s1">Embedding</span><span class="s2">):</span>
+                <span class="s1">embedding </span><span class="s2">= </span><span class="s1">config</span><span class="s2">.</span><span class="s1">embeddings</span><span class="s2">.</span><span class="s1">add</span><span class="s2">()</span>
+                <span class="s6"># Embeddings are always the first layer, so this naming should</span>
+                <span class="s6"># be consistent in any keras models checkpoints.</span>
+                <span class="s1">name </span><span class="s2">= (</span>
+                    <span class="s3">&quot;layer_with_weights-0/embeddings/.ATTRIBUTES/VARIABLE_VALUE&quot;</span>
+                <span class="s2">)</span>
+                <span class="s1">embedding</span><span class="s2">.</span><span class="s1">tensor_name </span><span class="s2">= </span><span class="s1">name</span>
+
+                <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata </span><span class="s0">is not None</span><span class="s2">:</span>
+                    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+                        <span class="s1">embedding</span><span class="s2">.</span><span class="s1">metadata_path </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata</span>
+                    <span class="s0">else</span><span class="s2">:</span>
+                        <span class="s0">if </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">():</span>
+                            <span class="s1">embedding</span><span class="s2">.</span><span class="s1">metadata_path </span><span class="s2">= (</span>
+                                <span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+                            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata </span><span class="s0">and not </span><span class="s1">isinstance</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata</span><span class="s2">, </span><span class="s1">str</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;Unrecognized `Embedding` layer names passed to &quot;</span>
+                <span class="s3">&quot;`keras.callbacks.TensorBoard` `embeddings_metadata` &quot;</span>
+                <span class="s3">f&quot;argument: </span><span class="s0">{</span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_metadata</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">()</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">config_pbtxt </span><span class="s2">= </span><span class="s1">text_format</span><span class="s2">.</span><span class="s1">MessageToString</span><span class="s2">(</span><span class="s1">config</span><span class="s2">)</span>
+        <span class="s1">path </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_log_write_dir</span><span class="s2">, </span><span class="s3">&quot;projector_config.pbtxt&quot;</span><span class="s2">)</span>
+        <span class="s0">with </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">File</span><span class="s2">(</span><span class="s1">path</span><span class="s2">, </span><span class="s3">&quot;w&quot;</span><span class="s2">) </span><span class="s0">as </span><span class="s1">f</span><span class="s2">:</span>
+            <span class="s1">f</span><span class="s2">.</span><span class="s1">write</span><span class="s2">(</span><span class="s1">config_pbtxt</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_push_writer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">writer</span><span class="s2">, </span><span class="s1">step</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Sets the default writer for custom batch-level summaries.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">update_freq </span><span class="s2">== </span><span class="s3">&quot;epoch&quot;</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s0">def </span><span class="s1">should_record</span><span class="s2">():</span>
+            <span class="s0">return </span><span class="s1">step </span><span class="s2">% </span><span class="s1">self</span><span class="s2">.</span><span class="s1">update_freq </span><span class="s2">== </span><span class="s5">0</span>
+
+        <span class="s1">summary_context </span><span class="s2">= (</span>
+            <span class="s1">writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">(</span><span class="s1">step</span><span class="s2">),</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">record_if</span><span class="s2">(</span><span class="s1">should_record</span><span class="s2">),</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_prev_summary_state</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">summary_context</span><span class="s2">)</span>
+        <span class="s1">summary_context</span><span class="s2">[</span><span class="s5">0</span><span class="s2">].</span><span class="s1">__enter__</span><span class="s2">()</span>
+        <span class="s1">summary_context</span><span class="s2">[</span><span class="s5">1</span><span class="s2">].</span><span class="s1">__enter__</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_pop_writer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Pops the current writer.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">update_freq </span><span class="s2">== </span><span class="s3">&quot;epoch&quot;</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s6"># See _push_writer for the content of the previous_context, which is</span>
+        <span class="s6"># pair of context.</span>
+        <span class="s1">previous_context </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_prev_summary_state</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">()</span>
+        <span class="s1">previous_context</span><span class="s2">[</span><span class="s5">1</span><span class="s2">].</span><span class="s1">__exit__</span><span class="s2">(*</span><span class="s1">sys</span><span class="s2">.</span><span class="s1">exc_info</span><span class="s2">())</span>
+        <span class="s1">previous_context</span><span class="s2">[</span><span class="s5">0</span><span class="s2">].</span><span class="s1">__exit__</span><span class="s2">(*</span><span class="s1">sys</span><span class="s2">.</span><span class="s1">exc_info</span><span class="s2">())</span>
+
+    <span class="s0">def </span><span class="s1">_close_writers</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">for </span><span class="s1">writer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_writers</span><span class="s2">.</span><span class="s1">values</span><span class="s2">():</span>
+            <span class="s1">writer</span><span class="s2">.</span><span class="s1">close</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_init_profile_batch</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">profile_batch</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Validate profile_batch value and set the range of batches to profile. 
+ 
+        Sets values of _start_batch and _stop_batch attributes, 
+        specifying the start and stop batch to profile. 
+        Setting `profile_batch=0` disables profiling. 
+ 
+        Args: 
+          profile_batch: The range of batches to profile. Should be a 
+            non-negative integer or a comma separated string of pair of positive 
+            integers. A pair of positive integers signify a range of batches to 
+            profile. 
+ 
+        Raises: 
+          ValueError: If profile_batch is not an integer or a comma separated 
+            pair of positive integers. 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s1">profile_batch_error_message </span><span class="s2">= (</span>
+            <span class="s3">&quot;profile_batch must be a non-negative integer or &quot;</span>
+            <span class="s3">&quot;2-tuple of positive &quot;</span>
+            <span class="s3">&quot;integers. A pair of positive integers &quot;</span>
+            <span class="s3">&quot;signifies a range of batches &quot;</span>
+            <span class="s3">f&quot;to profile. Found: </span><span class="s0">{</span><span class="s1">profile_batch</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+        <span class="s6"># Support legacy way of specifying &quot;start,stop&quot; or &quot;start&quot; as str.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">profile_batch</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s1">profile_batch </span><span class="s2">= </span><span class="s1">str</span><span class="s2">(</span><span class="s1">profile_batch</span><span class="s2">).</span><span class="s1">split</span><span class="s2">(</span><span class="s3">&quot;,&quot;</span><span class="s2">)</span>
+            <span class="s1">profile_batch </span><span class="s2">= </span><span class="s1">tree</span><span class="s2">.</span><span class="s1">map_structure</span><span class="s2">(</span><span class="s1">int</span><span class="s2">, </span><span class="s1">profile_batch</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">profile_batch</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch </span><span class="s2">= </span><span class="s1">profile_batch</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_batch </span><span class="s2">= </span><span class="s1">profile_batch</span>
+        <span class="s0">elif </span><span class="s2">(</span>
+            <span class="s1">isinstance</span><span class="s2">(</span><span class="s1">profile_batch</span><span class="s2">, (</span><span class="s1">tuple</span><span class="s2">, </span><span class="s1">list</span><span class="s2">)) </span><span class="s0">and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">profile_batch</span><span class="s2">) == </span><span class="s5">2</span>
+        <span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_batch </span><span class="s2">= </span><span class="s1">profile_batch</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s1">profile_batch_error_message</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch </span><span class="s2">&lt; </span><span class="s5">0 </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_batch </span><span class="s2">&lt; </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span><span class="s1">profile_batch_error_message</span><span class="s2">)</span>
+
+        <span class="s6"># True when the profiler was successfully started by this callback.</span>
+        <span class="s6"># We track the status here to make sure callbacks do not interfere with</span>
+        <span class="s6"># each other. The callback will only stop the profiler it started.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_profiler_started </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch </span><span class="s2">&gt; </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s6"># Warm up and improve the profiling accuracy.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_start_profiler</span><span class="s2">(</span><span class="s1">logdir</span><span class="s2">=</span><span class="s3">&quot;&quot;</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_profiler</span><span class="s2">(</span><span class="s1">save</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+        <span class="s6"># True when a trace is running.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_tracing </span><span class="s2">= </span><span class="s0">False</span>
+
+        <span class="s6"># Setting `profile_batch=0` disables profiling.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_should_trace </span><span class="s2">= </span><span class="s0">not </span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch </span><span class="s2">== </span><span class="s5">0 </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_batch </span><span class="s2">== </span><span class="s5">0</span>
+        <span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">on_train_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_global_train_batch </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_previous_epoch_iterations </span><span class="s2">= </span><span class="s5">0</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_push_writer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_step</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">on_train_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_pop_writer</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_is_tracing</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_trace</span><span class="s2">()</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_close_writers</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">on_test_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_push_writer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_val_writer</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_val_step</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">on_test_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer </span><span class="s0">and </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s3">&quot;iterations&quot;</span><span class="s2">):</span>
+            <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_val_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+                <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">scalar</span><span class="s2">(</span>
+                        <span class="s3">&quot;evaluation_&quot; </span><span class="s2">+ </span><span class="s1">name </span><span class="s2">+ </span><span class="s3">&quot;_vs_iterations&quot;</span><span class="s2">,</span>
+                        <span class="s1">value</span><span class="s2">,</span>
+                        <span class="s1">step</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">iterations</span><span class="s2">,</span>
+                    <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_pop_writer</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_implements_train_batch_hooks</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s6"># Only call batch hooks when tracing or write_steps_per_second are</span>
+        <span class="s6"># enabled</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_trace </span><span class="s0">or </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_steps_per_second</span>
+
+    <span class="s0">def </span><span class="s1">on_train_batch_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_global_train_batch </span><span class="s2">+= </span><span class="s5">1</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_steps_per_second</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_start_time </span><span class="s2">= </span><span class="s1">time</span><span class="s2">.</span><span class="s1">time</span><span class="s2">()</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_trace</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_global_train_batch </span><span class="s2">== </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_start_batch</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_start_trace</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">on_train_batch_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_write_train_graph</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_write_keras_model_train_graph</span><span class="s2">()</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_should_write_train_graph </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_steps_per_second</span><span class="s2">:</span>
+            <span class="s1">batch_run_time </span><span class="s2">= </span><span class="s1">time</span><span class="s2">.</span><span class="s1">time</span><span class="s2">() - </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_batch_start_time</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">scalar</span><span class="s2">(</span>
+                <span class="s3">&quot;batch_steps_per_second&quot;</span><span class="s2">,</span>
+                <span class="s5">1.0 </span><span class="s2">/ </span><span class="s1">batch_run_time</span><span class="s2">,</span>
+                <span class="s1">step</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_step</span><span class="s2">,</span>
+            <span class="s2">)</span>
+
+        <span class="s6"># `logs` isn't necessarily always a dict</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">logs</span><span class="s2">, </span><span class="s1">dict</span><span class="s2">):</span>
+            <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">scalar</span><span class="s2">(</span>
+                    <span class="s3">&quot;batch_&quot; </span><span class="s2">+ </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_step</span>
+                <span class="s2">)</span>
+
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_should_trace</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_is_tracing </span><span class="s0">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_global_train_batch </span><span class="s2">&gt;= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_batch</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_trace</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_begin</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s6"># Keeps track of epoch for profiling.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_steps_per_second</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_previous_epoch_iterations </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">iterations</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_epoch_start_time </span><span class="s2">= </span><span class="s1">time</span><span class="s2">.</span><span class="s1">time</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">on_epoch_end</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Runs metrics and histogram summaries at epoch end.&quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_log_epoch_metrics</span><span class="s2">(</span><span class="s1">epoch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">histogram_freq </span><span class="s0">and </span><span class="s1">epoch </span><span class="s2">% </span><span class="s1">self</span><span class="s2">.</span><span class="s1">histogram_freq </span><span class="s2">== </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_log_weights</span><span class="s2">(</span><span class="s1">epoch</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_freq </span><span class="s0">and </span><span class="s1">epoch </span><span class="s2">% </span><span class="s1">self</span><span class="s2">.</span><span class="s1">embeddings_freq </span><span class="s2">== </span><span class="s5">0</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_log_embeddings</span><span class="s2">(</span><span class="s1">epoch</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_start_trace</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">trace_on</span><span class="s2">(</span><span class="s1">graph</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">profiler</span><span class="s2">=</span><span class="s0">False</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_start_profiler</span><span class="s2">(</span><span class="s1">logdir</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">log_dir</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_tracing </span><span class="s2">= </span><span class="s0">True</span>
+
+    <span class="s0">def </span><span class="s1">_stop_trace</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">batch</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Logs the trace graph to TensorBoard.&quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">batch </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">batch </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_batch</span>
+        <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+            <span class="s6"># TODO(b/126388999): Remove step info in the summary name.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">trace_export</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;batch_%d&quot; </span><span class="s2">% </span><span class="s1">batch</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">batch</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_stop_profiler</span><span class="s2">()</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_is_tracing </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s0">def </span><span class="s1">_collect_learning_rate</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s1">Optimizer</span><span class="s2">):</span>
+            <span class="s1">logs</span><span class="s2">[</span><span class="s3">&quot;learning_rate&quot;</span><span class="s2">] = </span><span class="s1">float</span><span class="s2">(</span>
+                <span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">learning_rate</span><span class="s2">)</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">logs</span>
+
+    <span class="s0">def </span><span class="s1">_compute_steps_per_second</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">current_iteration </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">iterations</span>
+        <span class="s1">time_since_epoch_begin </span><span class="s2">= </span><span class="s1">time</span><span class="s2">.</span><span class="s1">time</span><span class="s2">() - </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_epoch_start_time</span>
+        <span class="s1">current_iteration </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">current_iteration</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span><span class="s2">)</span>
+        <span class="s1">time_since_epoch_begin </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span>
+            <span class="s1">time_since_epoch_begin</span><span class="s2">, </span><span class="s3">&quot;float32&quot;</span>
+        <span class="s2">)</span>
+
+        <span class="s1">steps_per_second </span><span class="s2">= (</span>
+            <span class="s1">current_iteration </span><span class="s2">- </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_previous_epoch_iterations</span>
+        <span class="s2">) / </span><span class="s1">time_since_epoch_begin</span>
+        <span class="s0">return </span><span class="s1">float</span><span class="s2">(</span><span class="s1">steps_per_second</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_log_epoch_metrics</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">, </span><span class="s1">logs</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Writes epoch metrics out as scalar summaries. 
+ 
+        Args: 
+            epoch: Int. The global step to use for TensorBoard. 
+            logs: Dict. Keys are scalar summary names, values are scalars. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">logs</span><span class="s2">:</span>
+            <span class="s0">return</span>
+
+        <span class="s1">train_logs </span><span class="s2">= {</span><span class="s1">k</span><span class="s2">: </span><span class="s1">v </span><span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">() </span><span class="s0">if not </span><span class="s1">k</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;val_&quot;</span><span class="s2">)}</span>
+        <span class="s1">val_logs </span><span class="s2">= {</span><span class="s1">k</span><span class="s2">: </span><span class="s1">v </span><span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">() </span><span class="s0">if </span><span class="s1">k</span><span class="s2">.</span><span class="s1">startswith</span><span class="s2">(</span><span class="s3">&quot;val_&quot;</span><span class="s2">)}</span>
+        <span class="s1">train_logs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_collect_learning_rate</span><span class="s2">(</span><span class="s1">train_logs</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_steps_per_second</span><span class="s2">:</span>
+            <span class="s1">train_logs</span><span class="s2">[</span><span class="s3">&quot;steps_per_second&quot;</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_compute_steps_per_second</span><span class="s2">()</span>
+
+        <span class="s0">if </span><span class="s1">train_logs</span><span class="s2">:</span>
+            <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+                <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">train_logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">scalar</span><span class="s2">(</span><span class="s3">&quot;epoch_&quot; </span><span class="s2">+ </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">epoch</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">val_logs</span><span class="s2">:</span>
+            <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_val_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+                <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s0">in </span><span class="s1">val_logs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+                    <span class="s1">name </span><span class="s2">= </span><span class="s1">name</span><span class="s2">[</span><span class="s5">4</span><span class="s2">:]  </span><span class="s6"># Remove 'val_' prefix.</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">scalar</span><span class="s2">(</span><span class="s3">&quot;epoch_&quot; </span><span class="s2">+ </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">epoch</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_log_weights</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Logs the weights of the Model to TensorBoard.&quot;&quot;&quot;</span>
+        <span class="s0">with </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">.</span><span class="s1">as_default</span><span class="s2">():</span>
+            <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+                <span class="s0">for </span><span class="s1">weight </span><span class="s0">in </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">weights</span><span class="s2">:</span>
+                    <span class="s1">weight_name </span><span class="s2">= </span><span class="s1">weight</span><span class="s2">.</span><span class="s1">name</span><span class="s2">.</span><span class="s1">replace</span><span class="s2">(</span><span class="s3">&quot;:&quot;</span><span class="s2">, </span><span class="s3">&quot;_&quot;</span><span class="s2">)</span>
+                    <span class="s6"># Add a suffix to prevent summary tag name collision.</span>
+                    <span class="s1">histogram_weight_name </span><span class="s2">= </span><span class="s1">weight_name </span><span class="s2">+ </span><span class="s3">&quot;/histogram&quot;</span>
+                    <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">histogram</span><span class="s2">(</span>
+                        <span class="s1">histogram_weight_name</span><span class="s2">, </span><span class="s1">weight</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">epoch</span>
+                    <span class="s2">)</span>
+                    <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">write_images</span><span class="s2">:</span>
+                        <span class="s6"># Add a suffix to prevent summary tag name</span>
+                        <span class="s6"># collision.</span>
+                        <span class="s1">image_weight_name </span><span class="s2">= </span><span class="s1">weight_name </span><span class="s2">+ </span><span class="s3">&quot;/image&quot;</span>
+                        <span class="s1">self</span><span class="s2">.</span><span class="s1">_log_weight_as_image</span><span class="s2">(</span>
+                            <span class="s1">weight</span><span class="s2">, </span><span class="s1">image_weight_name</span><span class="s2">, </span><span class="s1">epoch</span>
+                        <span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_train_writer</span><span class="s2">.</span><span class="s1">flush</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">_log_weight_as_image</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">weight</span><span class="s2">, </span><span class="s1">weight_name</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Logs a weight as a TensorBoard image.&quot;&quot;&quot;</span>
+        <span class="s1">w_img </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">weight</span><span class="s2">)</span>
+        <span class="s1">shape </span><span class="s2">= </span><span class="s1">w_img</span><span class="s2">.</span><span class="s1">shape</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">1</span><span class="s2">:  </span><span class="s6"># Bias case</span>
+            <span class="s1">w_img </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">w_img</span><span class="s2">, [</span><span class="s5">1</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">], </span><span class="s5">1</span><span class="s2">, </span><span class="s5">1</span><span class="s2">])</span>
+        <span class="s0">elif </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">2</span><span class="s2">:  </span><span class="s6"># Dense layer kernel case</span>
+            <span class="s0">if </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">] &gt; </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">]:</span>
+                <span class="s1">w_img </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">w_img</span><span class="s2">)</span>
+                <span class="s1">shape </span><span class="s2">= </span><span class="s1">w_img</span><span class="s2">.</span><span class="s1">shape</span>
+            <span class="s1">w_img </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">w_img</span><span class="s2">, [</span><span class="s5">1</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">], </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">], </span><span class="s5">1</span><span class="s2">])</span>
+        <span class="s0">elif </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">3</span><span class="s2">:  </span><span class="s6"># ConvNet case</span>
+            <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_last&quot;</span><span class="s2">:</span>
+                <span class="s6"># Switch to channels_first to display every kernel as a separate</span>
+                <span class="s6"># image.</span>
+                <span class="s1">w_img </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">transpose</span><span class="s2">(</span><span class="s1">w_img</span><span class="s2">, [</span><span class="s5">2</span><span class="s2">, </span><span class="s5">0</span><span class="s2">, </span><span class="s5">1</span><span class="s2">])</span>
+                <span class="s1">shape </span><span class="s2">= </span><span class="s1">w_img</span><span class="s2">.</span><span class="s1">shape</span>
+            <span class="s1">w_img </span><span class="s2">= </span><span class="s1">ops</span><span class="s2">.</span><span class="s1">reshape</span><span class="s2">(</span><span class="s1">w_img</span><span class="s2">, [</span><span class="s1">shape</span><span class="s2">[</span><span class="s5">0</span><span class="s2">], </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">1</span><span class="s2">], </span><span class="s1">shape</span><span class="s2">[</span><span class="s5">2</span><span class="s2">], </span><span class="s5">1</span><span class="s2">])</span>
+
+        <span class="s1">w_img </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">w_img</span><span class="s2">)</span>
+        <span class="s1">shape </span><span class="s2">= </span><span class="s1">w_img</span><span class="s2">.</span><span class="s1">shape</span>
+        <span class="s6"># Not possible to handle 3D convnets etc.</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">) == </span><span class="s5">4 </span><span class="s0">and </span><span class="s1">shape</span><span class="s2">[-</span><span class="s5">1</span><span class="s2">] </span><span class="s0">in </span><span class="s2">[</span><span class="s5">1</span><span class="s2">, </span><span class="s5">3</span><span class="s2">, </span><span class="s5">4</span><span class="s2">]:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">summary</span><span class="s2">.</span><span class="s1">image</span><span class="s2">(</span><span class="s1">weight_name</span><span class="s2">, </span><span class="s1">w_img</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">epoch</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_log_embeddings</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">epoch</span><span class="s2">):</span>
+        <span class="s1">embeddings_ckpt </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_log_write_dir</span><span class="s2">,</span>
+            <span class="s3">&quot;train&quot;</span><span class="s2">,</span>
+            <span class="s3">f&quot;keras_embedding.ckpt-</span><span class="s0">{</span><span class="s1">epoch</span><span class="s0">}</span><span class="s3">.weights.h5&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">model</span><span class="s2">.</span><span class="s1">save_weights</span><span class="s2">(</span><span class="s1">embeddings_ckpt</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_start_profiler</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">logdir</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Starts the profiler if currently inactive. 
+ 
+        Args: 
+          logdir: Directory where profiler results will be saved. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_profiler_started</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorboard</span><span class="s2">.</span><span class="s1">start_trace</span><span class="s2">(</span><span class="s1">logdir</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_profiler_started </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+            <span class="s6"># Profiler errors should not be fatal.</span>
+            <span class="s1">logging</span><span class="s2">.</span><span class="s1">error</span><span class="s2">(</span><span class="s3">&quot;Failed to start profiler: %s&quot;</span><span class="s2">, </span><span class="s1">e</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_stop_profiler</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">save</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Stops the profiler if currently active. 
+ 
+        Args: 
+          save: Whether to save the profiler results to TensorBoard. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_profiler_started</span><span class="s2">:</span>
+            <span class="s0">return</span>
+        <span class="s0">try</span><span class="s2">:</span>
+            <span class="s1">backend</span><span class="s2">.</span><span class="s1">tensorboard</span><span class="s2">.</span><span class="s1">stop_trace</span><span class="s2">(</span><span class="s1">save</span><span class="s2">=</span><span class="s1">save</span><span class="s2">)</span>
+        <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">e</span><span class="s2">:</span>
+            <span class="s6"># Profiler errors should not be fatal.</span>
+            <span class="s1">logging</span><span class="s2">.</span><span class="s1">error</span><span class="s2">(</span><span class="s3">&quot;Failed to stop profiler: %s&quot;</span><span class="s2">, </span><span class="s1">e</span><span class="s2">)</span>
+        <span class="s0">finally</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_profiler_started </span><span class="s2">= </span><span class="s0">False</span>
+
+
+<span class="s0">def </span><span class="s1">keras_model_summary</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;Writes a Keras model as JSON to as a Summary. 
+ 
+    Writing the Keras model configuration allows the TensorBoard graph plugin to 
+    render a conceptual graph, as opposed to graph of ops. In case the model 
+    fails to serialize as JSON, it ignores and returns False. 
+ 
+    Args: 
+        name: A name for this summary. The summary tag used for TensorBoard will 
+            be this name prefixed by any active name scopes. 
+        data: A Keras Model to write. 
+        step: Explicit `int64`-castable monotonic step value for this summary. 
+            If omitted, this defaults to `tf.summary.experimental.get_step()`, 
+            which must not be `None`. 
+ 
+    Returns: 
+        True on success, or False if no summary was written because no default 
+        summary writer was available. 
+ 
+    Raises: 
+        ValueError: if a default writer exists, but no step was provided and 
+            `tf.summary.experimental.get_step()` is `None`. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">import </span><span class="s1">tensorflow</span><span class="s2">.</span><span class="s1">summary </span><span class="s0">as </span><span class="s1">summary</span>
+    <span class="s0">from </span><span class="s1">tensorflow</span><span class="s2">.</span><span class="s1">compat</span><span class="s2">.</span><span class="s1">v1 </span><span class="s0">import </span><span class="s1">SummaryMetadata</span>
+
+    <span class="s1">summary_metadata </span><span class="s2">= </span><span class="s1">SummaryMetadata</span><span class="s2">()</span>
+    <span class="s6"># Hard coding a plugin name. Please refer to go/tb-plugin-name-hardcode for</span>
+    <span class="s6"># the rationale.</span>
+    <span class="s1">summary_metadata</span><span class="s2">.</span><span class="s1">plugin_data</span><span class="s2">.</span><span class="s1">plugin_name </span><span class="s2">= </span><span class="s3">&quot;graph_keras_model&quot;</span>
+    <span class="s6"># version number = 1</span>
+    <span class="s1">summary_metadata</span><span class="s2">.</span><span class="s1">plugin_data</span><span class="s2">.</span><span class="s1">content </span><span class="s2">= </span><span class="s7">b&quot;1&quot;</span>
+
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s1">json_string </span><span class="s2">= </span><span class="s1">data</span><span class="s2">.</span><span class="s1">to_json</span><span class="s2">()</span>
+    <span class="s0">except </span><span class="s1">Exception </span><span class="s0">as </span><span class="s1">exc</span><span class="s2">:</span>
+        <span class="s6"># An exception should not break a model code.</span>
+        <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span><span class="s3">f&quot;Model failed to serialize as JSON. Ignoring... </span><span class="s0">{</span><span class="s1">exc</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+        <span class="s0">return False</span>
+
+    <span class="s0">with </span><span class="s1">summary</span><span class="s2">.</span><span class="s1">experimental</span><span class="s2">.</span><span class="s1">summary_scope</span><span class="s2">(</span>
+        <span class="s1">name</span><span class="s2">, </span><span class="s3">&quot;graph_keras_model&quot;</span><span class="s2">, [</span><span class="s1">data</span><span class="s2">, </span><span class="s1">step</span><span class="s2">]</span>
+    <span class="s2">) </span><span class="s0">as </span><span class="s2">(</span><span class="s1">tag</span><span class="s2">, </span><span class="s1">_</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s1">summary</span><span class="s2">.</span><span class="s1">write</span><span class="s2">(</span>
+            <span class="s1">tag</span><span class="s2">=</span><span class="s1">tag</span><span class="s2">, </span><span class="s1">tensor</span><span class="s2">=</span><span class="s1">json_string</span><span class="s2">, </span><span class="s1">step</span><span class="s2">=</span><span class="s1">step</span><span class="s2">, </span><span class="s1">metadata</span><span class="s2">=</span><span class="s1">summary_metadata</span>
+        <span class="s2">)</span>
+</pre>
+</body>
+</html>

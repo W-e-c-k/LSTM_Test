@@ -1,0 +1,326 @@
+<html>
+<head>
+<title>_parse.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_parse.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright Joyent, Inc. and other Node contributors.</span>
+<span class="s0">#</span>
+<span class="s0"># Permission is hereby granted, free of charge, to any person obtaining a</span>
+<span class="s0"># copy of this software and associated documentation files (the</span>
+<span class="s0"># &quot;Software&quot;), to deal in the Software without restriction, including</span>
+<span class="s0"># without limitation the rights to use, copy, modify, merge, publish,</span>
+<span class="s0"># distribute, sublicense, and/or sell copies of the Software, and to permit</span>
+<span class="s0"># persons to whom the Software is furnished to do so, subject to the</span>
+<span class="s0"># following conditions:</span>
+<span class="s0">#</span>
+<span class="s0"># The above copyright notice and this permission notice shall be included</span>
+<span class="s0"># in all copies or substantial portions of the Software.</span>
+<span class="s0">#</span>
+<span class="s0"># THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS</span>
+<span class="s0"># OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF</span>
+<span class="s0"># MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN</span>
+<span class="s0"># NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,</span>
+<span class="s0"># DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR</span>
+<span class="s0"># OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE</span>
+<span class="s0"># USE OR OTHER DEALINGS IN THE SOFTWARE.</span>
+
+
+<span class="s0"># Changes from joyent/node:</span>
+<span class="s0">#</span>
+<span class="s0"># 1. No leading slash in paths,</span>
+<span class="s0">#    e.g. in `url.parse('http://foo?bar')` pathname is ``, not `/`</span>
+<span class="s0">#</span>
+<span class="s0"># 2. Backslashes are not replaced with slashes,</span>
+<span class="s0">#    so `http:\\example.org\` is treated like a relative path</span>
+<span class="s0">#</span>
+<span class="s0"># 3. Trailing colon is treated like a part of the path,</span>
+<span class="s0">#    i.e. in `http://example.org:foo` pathname is `:foo`</span>
+<span class="s0">#</span>
+<span class="s0"># 4. Nothing is URL-encoded in the resulting object,</span>
+<span class="s0">#    (in joyent/node some chars in auth and paths are encoded)</span>
+<span class="s0">#</span>
+<span class="s0"># 5. `url.parse()` does not have `parseQueryString` argument</span>
+<span class="s0">#</span>
+<span class="s0"># 6. Removed extraneous result properties: `host`, `path`, `query`, etc.,</span>
+<span class="s0">#    which can be constructed using other parts of the url.</span>
+
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">annotations</span>
+
+<span class="s2">from </span><span class="s1">collections </span><span class="s2">import </span><span class="s1">defaultdict</span>
+<span class="s2">import </span><span class="s1">re</span>
+
+<span class="s2">from </span><span class="s1">mdurl</span><span class="s3">.</span><span class="s1">_url </span><span class="s2">import </span><span class="s1">URL</span>
+
+<span class="s0"># Reference: RFC 3986, RFC 1808, RFC 2396</span>
+
+<span class="s0"># define these here so at least they only have to be</span>
+<span class="s0"># compiled once on the first module load.</span>
+<span class="s1">PROTOCOL_PATTERN </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">r&quot;^([a-z0-9.+-]+:)&quot;</span><span class="s3">, </span><span class="s1">flags</span><span class="s3">=</span><span class="s1">re</span><span class="s3">.</span><span class="s1">IGNORECASE</span><span class="s3">)</span>
+<span class="s1">PORT_PATTERN </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">r&quot;:[0-9]*$&quot;</span><span class="s3">)</span>
+
+<span class="s0"># Special case for a simple path URL</span>
+<span class="s1">SIMPLE_PATH_PATTERN </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">r&quot;^(//?(?!/)[^?\s]*)(\?[^\s]*)?$&quot;</span><span class="s3">)</span>
+
+<span class="s0"># RFC 2396: characters reserved for delimiting URLs.</span>
+<span class="s0"># We actually just auto-escape these.</span>
+<span class="s1">DELIMS </span><span class="s3">= (</span><span class="s4">&quot;&lt;&quot;</span><span class="s3">, </span><span class="s4">&quot;&gt;&quot;</span><span class="s3">, </span><span class="s4">'&quot;'</span><span class="s3">, </span><span class="s4">&quot;`&quot;</span><span class="s3">, </span><span class="s4">&quot; &quot;</span><span class="s3">, </span><span class="s4">&quot;</span><span class="s2">\r</span><span class="s4">&quot;</span><span class="s3">, </span><span class="s4">&quot;</span><span class="s2">\n</span><span class="s4">&quot;</span><span class="s3">, </span><span class="s4">&quot;</span><span class="s2">\t</span><span class="s4">&quot;</span><span class="s3">)</span>
+
+<span class="s0"># RFC 2396: characters not allowed for various reasons.</span>
+<span class="s1">UNWISE </span><span class="s3">= (</span><span class="s4">&quot;{&quot;</span><span class="s3">, </span><span class="s4">&quot;}&quot;</span><span class="s3">, </span><span class="s4">&quot;|&quot;</span><span class="s3">, </span><span class="s4">&quot;</span><span class="s2">\\</span><span class="s4">&quot;</span><span class="s3">, </span><span class="s4">&quot;^&quot;</span><span class="s3">, </span><span class="s4">&quot;`&quot;</span><span class="s3">) + </span><span class="s1">DELIMS</span>
+
+<span class="s0"># Allowed by RFCs, but cause of XSS attacks.  Always escape these.</span>
+<span class="s1">AUTO_ESCAPE </span><span class="s3">= (</span><span class="s4">&quot;'&quot;</span><span class="s3">,) + </span><span class="s1">UNWISE</span>
+<span class="s0"># Characters that are never ever allowed in a hostname.</span>
+<span class="s0"># Note that any invalid chars are also handled, but these</span>
+<span class="s0"># are the ones that are *expected* to be seen, so we fast-path</span>
+<span class="s0"># them.</span>
+<span class="s1">NON_HOST_CHARS </span><span class="s3">= (</span><span class="s4">&quot;%&quot;</span><span class="s3">, </span><span class="s4">&quot;/&quot;</span><span class="s3">, </span><span class="s4">&quot;?&quot;</span><span class="s3">, </span><span class="s4">&quot;;&quot;</span><span class="s3">, </span><span class="s4">&quot;#&quot;</span><span class="s3">) + </span><span class="s1">AUTO_ESCAPE</span>
+<span class="s1">HOST_ENDING_CHARS </span><span class="s3">= (</span><span class="s4">&quot;/&quot;</span><span class="s3">, </span><span class="s4">&quot;?&quot;</span><span class="s3">, </span><span class="s4">&quot;#&quot;</span><span class="s3">)</span>
+<span class="s1">HOSTNAME_MAX_LEN </span><span class="s3">= </span><span class="s5">255</span>
+<span class="s1">HOSTNAME_PART_PATTERN </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">r&quot;^[+a-z0-9A-Z_-]{0,63}$&quot;</span><span class="s3">)</span>
+<span class="s1">HOSTNAME_PART_START </span><span class="s3">= </span><span class="s1">re</span><span class="s3">.</span><span class="s1">compile</span><span class="s3">(</span><span class="s4">r&quot;^([+a-z0-9A-Z_-]{0,63})(.*)$&quot;</span><span class="s3">)</span>
+<span class="s0"># protocols that can allow &quot;unsafe&quot; and &quot;unwise&quot; chars.</span>
+
+<span class="s0"># protocols that never have a hostname.</span>
+<span class="s1">HOSTLESS_PROTOCOL </span><span class="s3">= </span><span class="s1">defaultdict</span><span class="s3">(</span>
+    <span class="s1">bool</span><span class="s3">,</span>
+    <span class="s3">{</span>
+        <span class="s4">&quot;javascript&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;javascript:&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+    <span class="s3">},</span>
+<span class="s3">)</span>
+<span class="s0"># protocols that always contain a // bit.</span>
+<span class="s1">SLASHED_PROTOCOL </span><span class="s3">= </span><span class="s1">defaultdict</span><span class="s3">(</span>
+    <span class="s1">bool</span><span class="s3">,</span>
+    <span class="s3">{</span>
+        <span class="s4">&quot;http&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;https&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;ftp&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;gopher&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;file&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;http:&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;https:&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;ftp:&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;gopher:&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s4">&quot;file:&quot;</span><span class="s3">: </span><span class="s2">True</span><span class="s3">,</span>
+    <span class="s3">},</span>
+<span class="s3">)</span>
+
+
+<span class="s2">class </span><span class="s1">MutableURL</span><span class="s3">:</span>
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">protocol</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">slashes</span><span class="s3">: </span><span class="s1">bool </span><span class="s3">= </span><span class="s2">False</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">auth</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">port</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">hash</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">search</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">pathname</span><span class="s3">: </span><span class="s1">str </span><span class="s3">| </span><span class="s2">None </span><span class="s3">= </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">parse</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">url</span><span class="s3">: </span><span class="s1">str</span><span class="s3">, </span><span class="s1">slashes_denote_host</span><span class="s3">: </span><span class="s1">bool</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s4">&quot;MutableURL&quot;</span><span class="s3">:</span>
+        <span class="s1">lower_proto </span><span class="s3">= </span><span class="s4">&quot;&quot;</span>
+        <span class="s1">slashes </span><span class="s3">= </span><span class="s2">False</span>
+        <span class="s1">rest </span><span class="s3">= </span><span class="s1">url</span>
+
+        <span class="s0"># trim before proceeding.</span>
+        <span class="s0"># This is to support parse stuff like &quot;  http://foo.com  \n&quot;</span>
+        <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">strip</span><span class="s3">()</span>
+
+        <span class="s2">if not </span><span class="s1">slashes_denote_host </span><span class="s2">and </span><span class="s1">len</span><span class="s3">(</span><span class="s1">url</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s4">&quot;#&quot;</span><span class="s3">)) == </span><span class="s5">1</span><span class="s3">:</span>
+            <span class="s0"># Try fast path regexp</span>
+            <span class="s1">simple_path </span><span class="s3">= </span><span class="s1">SIMPLE_PATH_PATTERN</span><span class="s3">.</span><span class="s1">match</span><span class="s3">(</span><span class="s1">rest</span><span class="s3">)</span>
+            <span class="s2">if </span><span class="s1">simple_path</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">pathname </span><span class="s3">= </span><span class="s1">simple_path</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s5">1</span><span class="s3">)</span>
+                <span class="s2">if </span><span class="s1">simple_path</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s5">2</span><span class="s3">):</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">search </span><span class="s3">= </span><span class="s1">simple_path</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s5">2</span><span class="s3">)</span>
+                <span class="s2">return </span><span class="s1">self</span>
+
+        <span class="s1">proto </span><span class="s3">= </span><span class="s4">&quot;&quot;</span>
+        <span class="s1">proto_match </span><span class="s3">= </span><span class="s1">PROTOCOL_PATTERN</span><span class="s3">.</span><span class="s1">match</span><span class="s3">(</span><span class="s1">rest</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">proto_match</span><span class="s3">:</span>
+            <span class="s1">proto </span><span class="s3">= </span><span class="s1">proto_match</span><span class="s3">.</span><span class="s1">group</span><span class="s3">()</span>
+            <span class="s1">lower_proto </span><span class="s3">= </span><span class="s1">proto</span><span class="s3">.</span><span class="s1">lower</span><span class="s3">()</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">protocol </span><span class="s3">= </span><span class="s1">proto</span>
+            <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[</span><span class="s1">len</span><span class="s3">(</span><span class="s1">proto</span><span class="s3">) :]</span>
+
+        <span class="s0"># figure out if it's got a host</span>
+        <span class="s0"># user@server is *always* interpreted as a hostname, and url</span>
+        <span class="s0"># resolution will treat //foo/bar as host=foo,path=bar because that's</span>
+        <span class="s0"># how the browser resolves relative URLs.</span>
+        <span class="s2">if </span><span class="s1">slashes_denote_host </span><span class="s2">or </span><span class="s1">proto </span><span class="s2">or </span><span class="s1">re</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s4">r&quot;^//[^@/]+@[^@/]+&quot;</span><span class="s3">, </span><span class="s1">rest</span><span class="s3">):</span>
+            <span class="s1">slashes </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">startswith</span><span class="s3">(</span><span class="s4">&quot;//&quot;</span><span class="s3">)</span>
+            <span class="s2">if </span><span class="s1">slashes </span><span class="s2">and not </span><span class="s3">(</span><span class="s1">proto </span><span class="s2">and </span><span class="s1">HOSTLESS_PROTOCOL</span><span class="s3">[</span><span class="s1">proto</span><span class="s3">]):</span>
+                <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[</span><span class="s5">2</span><span class="s3">:]</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">slashes </span><span class="s3">= </span><span class="s2">True</span>
+
+        <span class="s2">if not </span><span class="s1">HOSTLESS_PROTOCOL</span><span class="s3">[</span><span class="s1">proto</span><span class="s3">] </span><span class="s2">and </span><span class="s3">(</span>
+            <span class="s1">slashes </span><span class="s2">or </span><span class="s3">(</span><span class="s1">proto </span><span class="s2">and not </span><span class="s1">SLASHED_PROTOCOL</span><span class="s3">[</span><span class="s1">proto</span><span class="s3">])</span>
+        <span class="s3">):</span>
+
+            <span class="s0"># there's a hostname.</span>
+            <span class="s0"># the first instance of /, ?, ;, or # ends the host.</span>
+            <span class="s0">#</span>
+            <span class="s0"># If there is an @ in the hostname, then non-host chars *are* allowed</span>
+            <span class="s0"># to the left of the last @ sign, unless some host-ending character</span>
+            <span class="s0"># comes *before* the @-sign.</span>
+            <span class="s0"># URLs are obnoxious.</span>
+            <span class="s0">#</span>
+            <span class="s0"># ex:</span>
+            <span class="s0"># http://a@b@c/ =&gt; user:a@b host:c</span>
+            <span class="s0"># http://a@b?@c =&gt; user:a host:c path:/?@c</span>
+
+            <span class="s0"># v0.12 TODO(isaacs): This is not quite how Chrome does things.</span>
+            <span class="s0"># Review our test case against browsers more comprehensively.</span>
+
+            <span class="s0"># find the first instance of any hostEndingChars</span>
+            <span class="s1">host_end </span><span class="s3">= -</span><span class="s5">1</span>
+            <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range</span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">HOST_ENDING_CHARS</span><span class="s3">)):</span>
+                <span class="s1">hec </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">find</span><span class="s3">(</span><span class="s1">HOST_ENDING_CHARS</span><span class="s3">[</span><span class="s1">i</span><span class="s3">])</span>
+                <span class="s2">if </span><span class="s1">hec </span><span class="s3">!= -</span><span class="s5">1 </span><span class="s2">and </span><span class="s3">(</span><span class="s1">host_end </span><span class="s3">== -</span><span class="s5">1 </span><span class="s2">or </span><span class="s1">hec </span><span class="s3">&lt; </span><span class="s1">host_end</span><span class="s3">):</span>
+                    <span class="s1">host_end </span><span class="s3">= </span><span class="s1">hec</span>
+
+            <span class="s0"># at this point, either we have an explicit point where the</span>
+            <span class="s0"># auth portion cannot go past, or the last @ char is the decider.</span>
+            <span class="s2">if </span><span class="s1">host_end </span><span class="s3">== -</span><span class="s5">1</span><span class="s3">:</span>
+                <span class="s0"># atSign can be anywhere.</span>
+                <span class="s1">at_sign </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">rfind</span><span class="s3">(</span><span class="s4">&quot;@&quot;</span><span class="s3">)</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s0"># atSign must be in auth portion.</span>
+                <span class="s0"># http://a@b/c@d =&gt; host:b auth:a path:/c@d</span>
+                <span class="s1">at_sign </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">rfind</span><span class="s3">(</span><span class="s4">&quot;@&quot;</span><span class="s3">, </span><span class="s5">0</span><span class="s3">, </span><span class="s1">host_end </span><span class="s3">+ </span><span class="s5">1</span><span class="s3">)</span>
+
+            <span class="s0"># Now we have a portion which is definitely the auth.</span>
+            <span class="s0"># Pull that off.</span>
+            <span class="s2">if </span><span class="s1">at_sign </span><span class="s3">!= -</span><span class="s5">1</span><span class="s3">:</span>
+                <span class="s1">auth </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[:</span><span class="s1">at_sign</span><span class="s3">]</span>
+                <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[</span><span class="s1">at_sign </span><span class="s3">+ </span><span class="s5">1 </span><span class="s3">:]</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">auth </span><span class="s3">= </span><span class="s1">auth</span>
+
+            <span class="s0"># the host is the remaining to the left of the first non-host char</span>
+            <span class="s1">host_end </span><span class="s3">= -</span><span class="s5">1</span>
+            <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range</span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">NON_HOST_CHARS</span><span class="s3">)):</span>
+                <span class="s1">hec </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">find</span><span class="s3">(</span><span class="s1">NON_HOST_CHARS</span><span class="s3">[</span><span class="s1">i</span><span class="s3">])</span>
+                <span class="s2">if </span><span class="s1">hec </span><span class="s3">!= -</span><span class="s5">1 </span><span class="s2">and </span><span class="s3">(</span><span class="s1">host_end </span><span class="s3">== -</span><span class="s5">1 </span><span class="s2">or </span><span class="s1">hec </span><span class="s3">&lt; </span><span class="s1">host_end</span><span class="s3">):</span>
+                    <span class="s1">host_end </span><span class="s3">= </span><span class="s1">hec</span>
+            <span class="s0"># if we still have not hit it, then the entire thing is a host.</span>
+            <span class="s2">if </span><span class="s1">host_end </span><span class="s3">== -</span><span class="s5">1</span><span class="s3">:</span>
+                <span class="s1">host_end </span><span class="s3">= </span><span class="s1">len</span><span class="s3">(</span><span class="s1">rest</span><span class="s3">)</span>
+
+            <span class="s2">if </span><span class="s1">host_end </span><span class="s3">&gt; </span><span class="s5">0 </span><span class="s2">and </span><span class="s1">rest</span><span class="s3">[</span><span class="s1">host_end </span><span class="s3">- </span><span class="s5">1</span><span class="s3">] == </span><span class="s4">&quot;:&quot;</span><span class="s3">:</span>
+                <span class="s1">host_end </span><span class="s3">-= </span><span class="s5">1</span>
+            <span class="s1">host </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[:</span><span class="s1">host_end</span><span class="s3">]</span>
+            <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[</span><span class="s1">host_end</span><span class="s3">:]</span>
+
+            <span class="s0"># pull out port.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">parse_host</span><span class="s3">(</span><span class="s1">host</span><span class="s3">)</span>
+
+            <span class="s0"># we've indicated that there is a hostname,</span>
+            <span class="s0"># so even if it's empty, it has to be present.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s2">or </span><span class="s4">&quot;&quot;</span>
+
+            <span class="s0"># if hostname begins with [ and ends with ]</span>
+            <span class="s0"># assume that it's an IPv6 address.</span>
+            <span class="s1">ipv6_hostname </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">.</span><span class="s1">startswith</span><span class="s3">(</span><span class="s4">&quot;[&quot;</span><span class="s3">) </span><span class="s2">and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">.</span><span class="s1">endswith</span><span class="s3">(</span>
+                <span class="s4">&quot;]&quot;</span>
+            <span class="s3">)</span>
+
+            <span class="s0"># validate a little.</span>
+            <span class="s2">if not </span><span class="s1">ipv6_hostname</span><span class="s3">:</span>
+                <span class="s1">hostparts </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">.</span><span class="s1">split</span><span class="s3">(</span><span class="s4">&quot;.&quot;</span><span class="s3">)</span>
+                <span class="s1">l </span><span class="s3">= </span><span class="s1">len</span><span class="s3">(</span><span class="s1">hostparts</span><span class="s3">)  </span><span class="s0"># noqa: E741</span>
+                <span class="s1">i </span><span class="s3">= </span><span class="s5">0</span>
+                <span class="s2">while </span><span class="s1">i </span><span class="s3">&lt; </span><span class="s1">l</span><span class="s3">:</span>
+                    <span class="s1">part </span><span class="s3">= </span><span class="s1">hostparts</span><span class="s3">[</span><span class="s1">i</span><span class="s3">]</span>
+                    <span class="s2">if not </span><span class="s1">part</span><span class="s3">:</span>
+                        <span class="s1">i </span><span class="s3">+= </span><span class="s5">1  </span><span class="s0"># emulate statement3 in JS for loop</span>
+                        <span class="s2">continue</span>
+                    <span class="s2">if not </span><span class="s1">HOSTNAME_PART_PATTERN</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">part</span><span class="s3">):</span>
+                        <span class="s1">newpart </span><span class="s3">= </span><span class="s4">&quot;&quot;</span>
+                        <span class="s1">k </span><span class="s3">= </span><span class="s1">len</span><span class="s3">(</span><span class="s1">part</span><span class="s3">)</span>
+                        <span class="s1">j </span><span class="s3">= </span><span class="s5">0</span>
+                        <span class="s2">while </span><span class="s1">j </span><span class="s3">&lt; </span><span class="s1">k</span><span class="s3">:</span>
+                            <span class="s2">if </span><span class="s1">ord</span><span class="s3">(</span><span class="s1">part</span><span class="s3">[</span><span class="s1">j</span><span class="s3">]) &gt; </span><span class="s5">127</span><span class="s3">:</span>
+                                <span class="s0"># we replace non-ASCII char with a temporary placeholder</span>
+                                <span class="s0"># we need this to make sure size of hostname is not</span>
+                                <span class="s0"># broken by replacing non-ASCII by nothing</span>
+                                <span class="s1">newpart </span><span class="s3">+= </span><span class="s4">&quot;x&quot;</span>
+                            <span class="s2">else</span><span class="s3">:</span>
+                                <span class="s1">newpart </span><span class="s3">+= </span><span class="s1">part</span><span class="s3">[</span><span class="s1">j</span><span class="s3">]</span>
+                            <span class="s1">j </span><span class="s3">+= </span><span class="s5">1  </span><span class="s0"># emulate statement3 in JS for loop</span>
+
+                        <span class="s0"># we test again with ASCII char only</span>
+                        <span class="s2">if not </span><span class="s1">HOSTNAME_PART_PATTERN</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">newpart</span><span class="s3">):</span>
+                            <span class="s1">valid_parts </span><span class="s3">= </span><span class="s1">hostparts</span><span class="s3">[:</span><span class="s1">i</span><span class="s3">]</span>
+                            <span class="s1">not_host </span><span class="s3">= </span><span class="s1">hostparts</span><span class="s3">[</span><span class="s1">i </span><span class="s3">+ </span><span class="s5">1 </span><span class="s3">:]</span>
+                            <span class="s1">bit </span><span class="s3">= </span><span class="s1">HOSTNAME_PART_START</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">part</span><span class="s3">)</span>
+                            <span class="s2">if </span><span class="s1">bit</span><span class="s3">:</span>
+                                <span class="s1">valid_parts</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">bit</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s5">1</span><span class="s3">))</span>
+                                <span class="s1">not_host</span><span class="s3">.</span><span class="s1">insert</span><span class="s3">(</span><span class="s5">0</span><span class="s3">, </span><span class="s1">bit</span><span class="s3">.</span><span class="s1">group</span><span class="s3">(</span><span class="s5">2</span><span class="s3">))</span>
+                            <span class="s2">if </span><span class="s1">not_host</span><span class="s3">:</span>
+                                <span class="s1">rest </span><span class="s3">= </span><span class="s4">&quot;.&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">not_host</span><span class="s3">) + </span><span class="s1">rest</span>
+                            <span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s3">= </span><span class="s4">&quot;.&quot;</span><span class="s3">.</span><span class="s1">join</span><span class="s3">(</span><span class="s1">valid_parts</span><span class="s3">)</span>
+                            <span class="s2">break</span>
+                    <span class="s1">i </span><span class="s3">+= </span><span class="s5">1  </span><span class="s0"># emulate statement3 in JS for loop</span>
+
+            <span class="s2">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">) &gt; </span><span class="s1">HOSTNAME_MAX_LEN</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s3">= </span><span class="s4">&quot;&quot;</span>
+
+            <span class="s0"># strip [ and ] from the hostname</span>
+            <span class="s0"># the host field still retains them, though</span>
+            <span class="s2">if </span><span class="s1">ipv6_hostname</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">[</span><span class="s5">1</span><span class="s3">:-</span><span class="s5">1</span><span class="s3">]</span>
+
+        <span class="s0"># chop off from the tail first.</span>
+        <span class="s1">hash </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">find</span><span class="s3">(</span><span class="s4">&quot;#&quot;</span><span class="s3">)  </span><span class="s0"># noqa: A001</span>
+        <span class="s2">if </span><span class="s1">hash </span><span class="s3">!= -</span><span class="s5">1</span><span class="s3">:</span>
+            <span class="s0"># got a fragment string.</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">hash </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[</span><span class="s1">hash</span><span class="s3">:]</span>
+            <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[:</span><span class="s1">hash</span><span class="s3">]</span>
+        <span class="s1">qm </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">.</span><span class="s1">find</span><span class="s3">(</span><span class="s4">&quot;?&quot;</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">qm </span><span class="s3">!= -</span><span class="s5">1</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">search </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[</span><span class="s1">qm</span><span class="s3">:]</span>
+            <span class="s1">rest </span><span class="s3">= </span><span class="s1">rest</span><span class="s3">[:</span><span class="s1">qm</span><span class="s3">]</span>
+        <span class="s2">if </span><span class="s1">rest</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">pathname </span><span class="s3">= </span><span class="s1">rest</span>
+        <span class="s2">if </span><span class="s1">SLASHED_PROTOCOL</span><span class="s3">[</span><span class="s1">lower_proto</span><span class="s3">] </span><span class="s2">and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s2">and not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">pathname</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">pathname </span><span class="s3">= </span><span class="s4">&quot;&quot;</span>
+
+        <span class="s2">return </span><span class="s1">self</span>
+
+    <span class="s2">def </span><span class="s1">parse_host</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">host</span><span class="s3">: </span><span class="s1">str</span><span class="s3">) </span><span class="s1">-&gt; </span><span class="s2">None</span><span class="s3">:</span>
+        <span class="s1">port_match </span><span class="s3">= </span><span class="s1">PORT_PATTERN</span><span class="s3">.</span><span class="s1">search</span><span class="s3">(</span><span class="s1">host</span><span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">port_match</span><span class="s3">:</span>
+            <span class="s1">port </span><span class="s3">= </span><span class="s1">port_match</span><span class="s3">.</span><span class="s1">group</span><span class="s3">()</span>
+            <span class="s2">if </span><span class="s1">port </span><span class="s3">!= </span><span class="s4">&quot;:&quot;</span><span class="s3">:</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">port </span><span class="s3">= </span><span class="s1">port</span><span class="s3">[</span><span class="s5">1</span><span class="s3">:]</span>
+            <span class="s1">host </span><span class="s3">= </span><span class="s1">host</span><span class="s3">[: -</span><span class="s1">len</span><span class="s3">(</span><span class="s1">port</span><span class="s3">)]</span>
+        <span class="s2">if </span><span class="s1">host</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">hostname </span><span class="s3">= </span><span class="s1">host</span>
+
+
+<span class="s2">def </span><span class="s1">url_parse</span><span class="s3">(</span><span class="s1">url</span><span class="s3">: </span><span class="s1">URL </span><span class="s3">| </span><span class="s1">str</span><span class="s3">, *, </span><span class="s1">slashes_denote_host</span><span class="s3">: </span><span class="s1">bool </span><span class="s3">= </span><span class="s2">False</span><span class="s3">) </span><span class="s1">-&gt; URL</span><span class="s3">:</span>
+    <span class="s2">if </span><span class="s1">isinstance</span><span class="s3">(</span><span class="s1">url</span><span class="s3">, </span><span class="s1">URL</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">url</span>
+    <span class="s1">u </span><span class="s3">= </span><span class="s1">MutableURL</span><span class="s3">()</span>
+    <span class="s1">u</span><span class="s3">.</span><span class="s1">parse</span><span class="s3">(</span><span class="s1">url</span><span class="s3">, </span><span class="s1">slashes_denote_host</span><span class="s3">)</span>
+    <span class="s2">return </span><span class="s1">URL</span><span class="s3">(</span>
+        <span class="s1">u</span><span class="s3">.</span><span class="s1">protocol</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">slashes</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">auth</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">port</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">hostname</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">hash</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">search</span><span class="s3">, </span><span class="s1">u</span><span class="s3">.</span><span class="s1">pathname</span>
+    <span class="s3">)</span>
+</pre>
+</body>
+</html>

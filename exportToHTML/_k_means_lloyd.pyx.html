@@ -1,0 +1,437 @@
+<html>
+<head>
+<title>_k_means_lloyd.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_k_means_lloyd.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Licence: BSD 3 clause</span>
+
+<span class="s0">from cython cimport floating</span>
+<span class="s0">from cython.parallel import prange, parallel</span>
+<span class="s0">from libc.stdlib cimport malloc, calloc, free</span>
+<span class="s0">from libc.string cimport memset</span>
+<span class="s0">from libc.float cimport DBL_MAX, FLT_MAX</span>
+
+<span class="s0">from ..utils._openmp_helpers cimport omp_lock_t</span>
+<span class="s0">from ..utils._openmp_helpers cimport omp_init_lock</span>
+<span class="s0">from ..utils._openmp_helpers cimport omp_destroy_lock</span>
+<span class="s0">from ..utils._openmp_helpers cimport omp_set_lock</span>
+<span class="s0">from ..utils._openmp_helpers cimport omp_unset_lock</span>
+<span class="s0">from ..utils.extmath import row_norms</span>
+<span class="s0">from ..utils._cython_blas cimport _gemm</span>
+<span class="s0">from ..utils._cython_blas cimport RowMajor, Trans, NoTrans</span>
+<span class="s0">from ._k_means_common import CHUNK_SIZE</span>
+<span class="s0">from ._k_means_common cimport _relocate_empty_clusters_dense</span>
+<span class="s0">from ._k_means_common cimport _relocate_empty_clusters_sparse</span>
+<span class="s0">from ._k_means_common cimport _average_centers, _center_shift</span>
+
+
+<span class="s0">def lloyd_iter_chunked_dense(</span>
+        <span class="s0">const floating[:, ::1] X,            # IN</span>
+        <span class="s0">const floating[::1] sample_weight,   # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,  # IN</span>
+        <span class="s0">floating[:, ::1] centers_new,        # OUT</span>
+        <span class="s0">floating[::1] weight_in_clusters,    # OUT</span>
+        <span class="s0">int[::1] labels,                     # OUT</span>
+        <span class="s0">floating[::1] center_shift,          # OUT</span>
+        <span class="s0">int n_threads,</span>
+        <span class="s0">bint update_centers=True):</span>
+    <span class="s0">&quot;&quot;&quot;Single iteration of K-means lloyd algorithm with dense input.</span>
+
+    <span class="s0">Update labels and centers (inplace), for one iteration, distributed</span>
+    <span class="s0">over data chunks.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : ndarray of shape (n_samples, n_features), dtype=floating</span>
+        <span class="s0">The observations to cluster.</span>
+
+    <span class="s0">sample_weight : ndarray of shape (n_samples,), dtype=floating</span>
+        <span class="s0">The weights for each observation in X.</span>
+
+    <span class="s0">centers_old : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers before previous iteration, placeholder for the centers after</span>
+        <span class="s0">previous iteration.</span>
+
+    <span class="s0">centers_new : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers after previous iteration, placeholder for the new centers</span>
+        <span class="s0">computed during this iteration. `centers_new` can be `None` if</span>
+        <span class="s0">`update_centers` is False.</span>
+
+    <span class="s0">weight_in_clusters : ndarray of shape (n_clusters,), dtype=floating</span>
+        <span class="s0">Placeholder for the sums of the weights of every observation assigned</span>
+        <span class="s0">to each center. `weight_in_clusters` can be `None` if `update_centers`</span>
+        <span class="s0">is False.</span>
+
+    <span class="s0">labels : ndarray of shape (n_samples,), dtype=int</span>
+        <span class="s0">labels assignment.</span>
+
+    <span class="s0">center_shift : ndarray of shape (n_clusters,), dtype=floating</span>
+        <span class="s0">Distance between old and new centers.</span>
+
+    <span class="s0">n_threads : int</span>
+        <span class="s0">The number of threads to be used by openmp.</span>
+
+    <span class="s0">update_centers : bool</span>
+        <span class="s0">- If True, the labels and the new centers will be computed, i.e. runs</span>
+          <span class="s0">the E-step and the M-step of the algorithm.</span>
+        <span class="s0">- If False, only the labels will be computed, i.e runs the E-step of</span>
+          <span class="s0">the algorithm. This is useful especially when calling predict on a</span>
+          <span class="s0">fitted model.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = X.shape[0]</span>
+        <span class="s0">int n_features = X.shape[1]</span>
+        <span class="s0">int n_clusters = centers_old.shape[0]</span>
+
+    <span class="s0">if n_samples == 0:</span>
+        <span class="s0"># An empty array was passed, do nothing and return early (before</span>
+        <span class="s0"># attempting to compute n_chunks). This can typically happen when</span>
+        <span class="s0"># calling the prediction function of a bisecting k-means model with a</span>
+        <span class="s0"># large fraction of outiers.</span>
+        <span class="s0">return</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0"># hard-coded number of samples per chunk. Appeared to be close to</span>
+        <span class="s0"># optimal in all situations.</span>
+        <span class="s0">int n_samples_chunk = CHUNK_SIZE if n_samples &gt; CHUNK_SIZE else n_samples</span>
+        <span class="s0">int n_chunks = n_samples // n_samples_chunk</span>
+        <span class="s0">int n_samples_rem = n_samples % n_samples_chunk</span>
+        <span class="s0">int chunk_idx</span>
+        <span class="s0">int start, end</span>
+
+        <span class="s0">int j, k</span>
+
+        <span class="s0">floating[::1] centers_squared_norms = row_norms(centers_old, squared=True)</span>
+
+        <span class="s0">floating *centers_new_chunk</span>
+        <span class="s0">floating *weight_in_clusters_chunk</span>
+        <span class="s0">floating *pairwise_distances_chunk</span>
+
+        <span class="s0">omp_lock_t lock</span>
+
+    <span class="s0"># count remainder chunk in total number of chunks</span>
+    <span class="s0">n_chunks += n_samples != n_chunks * n_samples_chunk</span>
+
+    <span class="s0"># number of threads should not be bigger than number of chunks</span>
+    <span class="s0">n_threads = min(n_threads, n_chunks)</span>
+
+    <span class="s0">if update_centers:</span>
+        <span class="s0">memset(&amp;centers_new[0, 0], 0, n_clusters * n_features * sizeof(floating))</span>
+        <span class="s0">memset(&amp;weight_in_clusters[0], 0, n_clusters * sizeof(floating))</span>
+        <span class="s0">omp_init_lock(&amp;lock)</span>
+
+    <span class="s0">with nogil, parallel(num_threads=n_threads):</span>
+        <span class="s0"># thread local buffers</span>
+        <span class="s0">centers_new_chunk = &lt;floating*&gt; calloc(n_clusters * n_features, sizeof(floating))</span>
+        <span class="s0">weight_in_clusters_chunk = &lt;floating*&gt; calloc(n_clusters, sizeof(floating))</span>
+        <span class="s0">pairwise_distances_chunk = &lt;floating*&gt; malloc(n_samples_chunk * n_clusters * sizeof(floating))</span>
+
+        <span class="s0">for chunk_idx in prange(n_chunks, schedule='static'):</span>
+            <span class="s0">start = chunk_idx * n_samples_chunk</span>
+            <span class="s0">if chunk_idx == n_chunks - 1 and n_samples_rem &gt; 0:</span>
+                <span class="s0">end = start + n_samples_rem</span>
+            <span class="s0">else:</span>
+                <span class="s0">end = start + n_samples_chunk</span>
+
+            <span class="s0">_update_chunk_dense(</span>
+                <span class="s0">X[start: end],</span>
+                <span class="s0">sample_weight[start: end],</span>
+                <span class="s0">centers_old,</span>
+                <span class="s0">centers_squared_norms,</span>
+                <span class="s0">labels[start: end],</span>
+                <span class="s0">centers_new_chunk,</span>
+                <span class="s0">weight_in_clusters_chunk,</span>
+                <span class="s0">pairwise_distances_chunk,</span>
+                <span class="s0">update_centers)</span>
+
+        <span class="s0"># reduction from local buffers.</span>
+        <span class="s0">if update_centers:</span>
+            <span class="s0"># The lock is necessary to avoid race conditions when aggregating</span>
+            <span class="s0"># info from different thread-local buffers.</span>
+            <span class="s0">omp_set_lock(&amp;lock)</span>
+            <span class="s0">for j in range(n_clusters):</span>
+                <span class="s0">weight_in_clusters[j] += weight_in_clusters_chunk[j]</span>
+                <span class="s0">for k in range(n_features):</span>
+                    <span class="s0">centers_new[j, k] += centers_new_chunk[j * n_features + k]</span>
+
+            <span class="s0">omp_unset_lock(&amp;lock)</span>
+
+        <span class="s0">free(centers_new_chunk)</span>
+        <span class="s0">free(weight_in_clusters_chunk)</span>
+        <span class="s0">free(pairwise_distances_chunk)</span>
+
+    <span class="s0">if update_centers:</span>
+        <span class="s0">omp_destroy_lock(&amp;lock)</span>
+        <span class="s0">_relocate_empty_clusters_dense(</span>
+            <span class="s0">X, sample_weight, centers_old, centers_new, weight_in_clusters, labels</span>
+        <span class="s0">)</span>
+
+        <span class="s0">_average_centers(centers_new, weight_in_clusters)</span>
+        <span class="s0">_center_shift(centers_old, centers_new, center_shift)</span>
+
+
+<span class="s0">cdef void _update_chunk_dense(</span>
+        <span class="s0">const floating[:, ::1] X,                   # IN</span>
+        <span class="s0">const floating[::1] sample_weight,          # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,         # IN</span>
+        <span class="s0">const floating[::1] centers_squared_norms,  # IN</span>
+        <span class="s0">int[::1] labels,                            # OUT</span>
+        <span class="s0">floating *centers_new,                      # OUT</span>
+        <span class="s0">floating *weight_in_clusters,               # OUT</span>
+        <span class="s0">floating *pairwise_distances,               # OUT</span>
+        <span class="s0">bint update_centers) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;K-means combined EM step for one dense data chunk.</span>
+
+    <span class="s0">Compute the partial contribution of a single data chunk to the labels and</span>
+    <span class="s0">centers.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = labels.shape[0]</span>
+        <span class="s0">int n_clusters = centers_old.shape[0]</span>
+        <span class="s0">int n_features = centers_old.shape[1]</span>
+
+        <span class="s0">floating sq_dist, min_sq_dist</span>
+        <span class="s0">int i, j, k, label</span>
+
+    <span class="s0"># Instead of computing the full pairwise squared distances matrix,</span>
+    <span class="s0"># ||X - C||² = ||X||² - 2 X.C^T + ||C||², we only need to store</span>
+    <span class="s0"># the - 2 X.C^T + ||C||² term since the argmin for a given sample only</span>
+    <span class="s0"># depends on the centers.</span>
+    <span class="s0"># pairwise_distances = ||C||²</span>
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">for j in range(n_clusters):</span>
+            <span class="s0">pairwise_distances[i * n_clusters + j] = centers_squared_norms[j]</span>
+
+    <span class="s0"># pairwise_distances += -2 * X.dot(C.T)</span>
+    <span class="s0">_gemm(RowMajor, NoTrans, Trans, n_samples, n_clusters, n_features,</span>
+          <span class="s0">-2.0, &amp;X[0, 0], n_features, &amp;centers_old[0, 0], n_features,</span>
+          <span class="s0">1.0, pairwise_distances, n_clusters)</span>
+
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">min_sq_dist = pairwise_distances[i * n_clusters]</span>
+        <span class="s0">label = 0</span>
+        <span class="s0">for j in range(1, n_clusters):</span>
+            <span class="s0">sq_dist = pairwise_distances[i * n_clusters + j]</span>
+            <span class="s0">if sq_dist &lt; min_sq_dist:</span>
+                <span class="s0">min_sq_dist = sq_dist</span>
+                <span class="s0">label = j</span>
+        <span class="s0">labels[i] = label</span>
+
+        <span class="s0">if update_centers:</span>
+            <span class="s0">weight_in_clusters[label] += sample_weight[i]</span>
+            <span class="s0">for k in range(n_features):</span>
+                <span class="s0">centers_new[label * n_features + k] += X[i, k] * sample_weight[i]</span>
+
+
+<span class="s0">def lloyd_iter_chunked_sparse(</span>
+        <span class="s0">X,                                   # IN</span>
+        <span class="s0">const floating[::1] sample_weight,   # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,  # IN</span>
+        <span class="s0">floating[:, ::1] centers_new,        # OUT</span>
+        <span class="s0">floating[::1] weight_in_clusters,    # OUT</span>
+        <span class="s0">int[::1] labels,                     # OUT</span>
+        <span class="s0">floating[::1] center_shift,          # OUT</span>
+        <span class="s0">int n_threads,</span>
+        <span class="s0">bint update_centers=True):</span>
+    <span class="s0">&quot;&quot;&quot;Single iteration of K-means lloyd algorithm with sparse input.</span>
+
+    <span class="s0">Update labels and centers (inplace), for one iteration, distributed</span>
+    <span class="s0">over data chunks.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : sparse matrix of shape (n_samples, n_features), dtype=floating</span>
+        <span class="s0">The observations to cluster. Must be in CSR format.</span>
+
+    <span class="s0">sample_weight : ndarray of shape (n_samples,), dtype=floating</span>
+        <span class="s0">The weights for each observation in X.</span>
+
+    <span class="s0">centers_old : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers before previous iteration, placeholder for the centers after</span>
+        <span class="s0">previous iteration.</span>
+
+    <span class="s0">centers_new : ndarray of shape (n_clusters, n_features), dtype=floating</span>
+        <span class="s0">Centers after previous iteration, placeholder for the new centers</span>
+        <span class="s0">computed during this iteration. `centers_new` can be `None` if</span>
+        <span class="s0">`update_centers` is False.</span>
+
+    <span class="s0">weight_in_clusters : ndarray of shape (n_clusters,), dtype=floating</span>
+        <span class="s0">Placeholder for the sums of the weights of every observation assigned</span>
+        <span class="s0">to each center. `weight_in_clusters` can be `None` if `update_centers`</span>
+        <span class="s0">is False.</span>
+
+    <span class="s0">labels : ndarray of shape (n_samples,), dtype=int</span>
+        <span class="s0">labels assignment.</span>
+
+    <span class="s0">center_shift : ndarray of shape (n_clusters,), dtype=floating</span>
+        <span class="s0">Distance between old and new centers.</span>
+
+    <span class="s0">n_threads : int</span>
+        <span class="s0">The number of threads to be used by openmp.</span>
+
+    <span class="s0">update_centers : bool</span>
+        <span class="s0">- If True, the labels and the new centers will be computed, i.e. runs</span>
+          <span class="s0">the E-step and the M-step of the algorithm.</span>
+        <span class="s0">- If False, only the labels will be computed, i.e runs the E-step of</span>
+          <span class="s0">the algorithm. This is useful especially when calling predict on a</span>
+          <span class="s0">fitted model.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = X.shape[0]</span>
+        <span class="s0">int n_features = X.shape[1]</span>
+        <span class="s0">int n_clusters = centers_old.shape[0]</span>
+
+    <span class="s0">if n_samples == 0:</span>
+        <span class="s0"># An empty array was passed, do nothing and return early (before</span>
+        <span class="s0"># attempting to compute n_chunks). This can typically happen when</span>
+        <span class="s0"># calling the prediction function of a bisecting k-means model with a</span>
+        <span class="s0"># large fraction of outiers.</span>
+        <span class="s0">return</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0"># Choose same as for dense. Does not have the same impact since with</span>
+        <span class="s0"># sparse data the pairwise distances matrix is not precomputed.</span>
+        <span class="s0"># However, splitting in chunks is necessary to get parallelism.</span>
+        <span class="s0">int n_samples_chunk = CHUNK_SIZE if n_samples &gt; CHUNK_SIZE else n_samples</span>
+        <span class="s0">int n_chunks = n_samples // n_samples_chunk</span>
+        <span class="s0">int n_samples_rem = n_samples % n_samples_chunk</span>
+        <span class="s0">int chunk_idx</span>
+        <span class="s0">int start = 0, end = 0</span>
+
+        <span class="s0">int j, k</span>
+
+        <span class="s0">floating[::1] X_data = X.data</span>
+        <span class="s0">int[::1] X_indices = X.indices</span>
+        <span class="s0">int[::1] X_indptr = X.indptr</span>
+
+        <span class="s0">floating[::1] centers_squared_norms = row_norms(centers_old, squared=True)</span>
+
+        <span class="s0">floating *centers_new_chunk</span>
+        <span class="s0">floating *weight_in_clusters_chunk</span>
+
+        <span class="s0">omp_lock_t lock</span>
+
+    <span class="s0"># count remainder chunk in total number of chunks</span>
+    <span class="s0">n_chunks += n_samples != n_chunks * n_samples_chunk</span>
+
+    <span class="s0"># number of threads should not be bigger than number of chunks</span>
+    <span class="s0">n_threads = min(n_threads, n_chunks)</span>
+
+    <span class="s0">if update_centers:</span>
+        <span class="s0">memset(&amp;centers_new[0, 0], 0, n_clusters * n_features * sizeof(floating))</span>
+        <span class="s0">memset(&amp;weight_in_clusters[0], 0, n_clusters * sizeof(floating))</span>
+        <span class="s0">omp_init_lock(&amp;lock)</span>
+
+    <span class="s0">with nogil, parallel(num_threads=n_threads):</span>
+        <span class="s0"># thread local buffers</span>
+        <span class="s0">centers_new_chunk = &lt;floating*&gt; calloc(n_clusters * n_features, sizeof(floating))</span>
+        <span class="s0">weight_in_clusters_chunk = &lt;floating*&gt; calloc(n_clusters, sizeof(floating))</span>
+
+        <span class="s0">for chunk_idx in prange(n_chunks, schedule='static'):</span>
+            <span class="s0">start = chunk_idx * n_samples_chunk</span>
+            <span class="s0">if chunk_idx == n_chunks - 1 and n_samples_rem &gt; 0:</span>
+                <span class="s0">end = start + n_samples_rem</span>
+            <span class="s0">else:</span>
+                <span class="s0">end = start + n_samples_chunk</span>
+
+            <span class="s0">_update_chunk_sparse(</span>
+                <span class="s0">X_data[X_indptr[start]: X_indptr[end]],</span>
+                <span class="s0">X_indices[X_indptr[start]: X_indptr[end]],</span>
+                <span class="s0">X_indptr[start: end+1],</span>
+                <span class="s0">sample_weight[start: end],</span>
+                <span class="s0">centers_old,</span>
+                <span class="s0">centers_squared_norms,</span>
+                <span class="s0">labels[start: end],</span>
+                <span class="s0">centers_new_chunk,</span>
+                <span class="s0">weight_in_clusters_chunk,</span>
+                <span class="s0">update_centers)</span>
+
+        <span class="s0"># reduction from local buffers.</span>
+        <span class="s0">if update_centers:</span>
+            <span class="s0"># The lock is necessary to avoid race conditions when aggregating</span>
+            <span class="s0"># info from different thread-local buffers.</span>
+            <span class="s0">omp_set_lock(&amp;lock)</span>
+            <span class="s0">for j in range(n_clusters):</span>
+                <span class="s0">weight_in_clusters[j] += weight_in_clusters_chunk[j]</span>
+                <span class="s0">for k in range(n_features):</span>
+                    <span class="s0">centers_new[j, k] += centers_new_chunk[j * n_features + k]</span>
+            <span class="s0">omp_unset_lock(&amp;lock)</span>
+
+        <span class="s0">free(centers_new_chunk)</span>
+        <span class="s0">free(weight_in_clusters_chunk)</span>
+
+    <span class="s0">if update_centers:</span>
+        <span class="s0">omp_destroy_lock(&amp;lock)</span>
+        <span class="s0">_relocate_empty_clusters_sparse(</span>
+            <span class="s0">X_data, X_indices, X_indptr, sample_weight,</span>
+            <span class="s0">centers_old, centers_new, weight_in_clusters, labels)</span>
+
+        <span class="s0">_average_centers(centers_new, weight_in_clusters)</span>
+        <span class="s0">_center_shift(centers_old, centers_new, center_shift)</span>
+
+
+<span class="s0">cdef void _update_chunk_sparse(</span>
+        <span class="s0">const floating[::1] X_data,                 # IN</span>
+        <span class="s0">const int[::1] X_indices,                   # IN</span>
+        <span class="s0">const int[::1] X_indptr,                    # IN</span>
+        <span class="s0">const floating[::1] sample_weight,          # IN</span>
+        <span class="s0">const floating[:, ::1] centers_old,         # IN</span>
+        <span class="s0">const floating[::1] centers_squared_norms,  # IN</span>
+        <span class="s0">int[::1] labels,                            # OUT</span>
+        <span class="s0">floating *centers_new,                      # OUT</span>
+        <span class="s0">floating *weight_in_clusters,               # OUT</span>
+        <span class="s0">bint update_centers) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;K-means combined EM step for one sparse data chunk.</span>
+
+    <span class="s0">Compute the partial contribution of a single data chunk to the labels and</span>
+    <span class="s0">centers.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">int n_samples = labels.shape[0]</span>
+        <span class="s0">int n_clusters = centers_old.shape[0]</span>
+        <span class="s0">int n_features = centers_old.shape[1]</span>
+
+        <span class="s0">floating sq_dist, min_sq_dist</span>
+        <span class="s0">int i, j, k, label</span>
+        <span class="s0">floating max_floating = FLT_MAX if floating is float else DBL_MAX</span>
+        <span class="s0">int s = X_indptr[0]</span>
+
+    <span class="s0"># XXX Precompute the pairwise distances matrix is not worth for sparse</span>
+    <span class="s0"># currently. Should be tested when BLAS (sparse x dense) matrix</span>
+    <span class="s0"># multiplication is available.</span>
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">min_sq_dist = max_floating</span>
+        <span class="s0">label = 0</span>
+
+        <span class="s0">for j in range(n_clusters):</span>
+            <span class="s0">sq_dist = 0.0</span>
+            <span class="s0">for k in range(X_indptr[i] - s, X_indptr[i + 1] - s):</span>
+                <span class="s0">sq_dist += centers_old[j, X_indices[k]] * X_data[k]</span>
+
+            <span class="s0"># Instead of computing the full squared distance with each cluster,</span>
+            <span class="s0"># ||X - C||² = ||X||² - 2 X.C^T + ||C||², we only need to compute</span>
+            <span class="s0"># the - 2 X.C^T + ||C||² term since the argmin for a given sample</span>
+            <span class="s0"># only depends on the centers C.</span>
+            <span class="s0">sq_dist = centers_squared_norms[j] -2 * sq_dist</span>
+            <span class="s0">if sq_dist &lt; min_sq_dist:</span>
+                <span class="s0">min_sq_dist = sq_dist</span>
+                <span class="s0">label = j</span>
+
+        <span class="s0">labels[i] = label</span>
+
+        <span class="s0">if update_centers:</span>
+            <span class="s0">weight_in_clusters[label] += sample_weight[i]</span>
+            <span class="s0">for k in range(X_indptr[i] - s, X_indptr[i + 1] - s):</span>
+                <span class="s0">centers_new[label * n_features + X_indices[k]] += X_data[k] * sample_weight[i]</span>
+</pre>
+</body>
+</html>

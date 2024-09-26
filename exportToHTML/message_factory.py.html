@@ -1,0 +1,256 @@
+<html>
+<head>
+<title>message_factory.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #bcbec4;}
+.s4 { color: #6aab73;}
+.s5 { color: #cf8e6d;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+message_factory.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Protocol Buffers - Google's data interchange format</span>
+<span class="s0"># Copyright 2008 Google Inc.  All rights reserved.</span>
+<span class="s0">#</span>
+<span class="s0"># Use of this source code is governed by a BSD-style</span>
+<span class="s0"># license that can be found in the LICENSE file or at</span>
+<span class="s0"># https://developers.google.com/open-source/licenses/bsd</span>
+
+<span class="s2">&quot;&quot;&quot;Provides a factory class for generating dynamic messages. 
+ 
+The easiest way to use this class is if you have access to the FileDescriptor 
+protos containing the messages you want to create you can just do the following: 
+ 
+message_classes = message_factory.GetMessages(iterable_of_file_descriptors) 
+my_proto_instance = message_classes['some.proto.package.MessageName']() 
+&quot;&quot;&quot;</span>
+
+<span class="s1">__author__ </span><span class="s3">= </span><span class="s4">'matthewtoia@google.com (Matt Toia)'</span>
+
+<span class="s5">import </span><span class="s1">warnings</span>
+
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf</span><span class="s3">.</span><span class="s1">internal </span><span class="s5">import </span><span class="s1">api_implementation</span>
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf </span><span class="s5">import </span><span class="s1">descriptor_pool</span>
+<span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf </span><span class="s5">import </span><span class="s1">message</span>
+
+<span class="s5">if </span><span class="s1">api_implementation</span><span class="s3">.</span><span class="s1">Type</span><span class="s3">() == </span><span class="s4">'python'</span><span class="s3">:</span>
+  <span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf</span><span class="s3">.</span><span class="s1">internal </span><span class="s5">import </span><span class="s1">python_message </span><span class="s5">as </span><span class="s1">message_impl</span>
+<span class="s5">else</span><span class="s3">:</span>
+  <span class="s5">from </span><span class="s1">google</span><span class="s3">.</span><span class="s1">protobuf</span><span class="s3">.</span><span class="s1">pyext </span><span class="s5">import </span><span class="s1">cpp_message </span><span class="s5">as </span><span class="s1">message_impl  </span><span class="s0"># pylint: disable=g-import-not-at-top</span>
+
+
+<span class="s0"># The type of all Message classes.</span>
+<span class="s1">_GENERATED_PROTOCOL_MESSAGE_TYPE </span><span class="s3">= </span><span class="s1">message_impl</span><span class="s3">.</span><span class="s1">GeneratedProtocolMessageType</span>
+
+
+<span class="s5">def </span><span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">descriptor</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Obtains a proto2 message class based on the passed in descriptor. 
+ 
+  Passing a descriptor with a fully qualified name matching a previous 
+  invocation will cause the same class to be returned. 
+ 
+  Args: 
+    descriptor: The descriptor to build from. 
+ 
+  Returns: 
+    A class describing the passed in descriptor. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">concrete_class </span><span class="s3">= </span><span class="s1">getattr</span><span class="s3">(</span><span class="s1">descriptor</span><span class="s3">, </span><span class="s4">'_concrete_class'</span><span class="s3">, </span><span class="s5">None</span><span class="s3">)</span>
+  <span class="s5">if </span><span class="s1">concrete_class</span><span class="s3">:</span>
+    <span class="s5">return </span><span class="s1">concrete_class</span>
+  <span class="s5">return </span><span class="s1">_InternalCreateMessageClass</span><span class="s3">(</span><span class="s1">descriptor</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">GetMessageClassesForFiles</span><span class="s3">(</span><span class="s1">files</span><span class="s3">, </span><span class="s1">pool</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Gets all the messages from specified files. 
+ 
+  This will find and resolve dependencies, failing if the descriptor 
+  pool cannot satisfy them. 
+ 
+  Args: 
+    files: The file names to extract messages from. 
+    pool: The descriptor pool to find the files including the dependent 
+      files. 
+ 
+  Returns: 
+    A dictionary mapping proto names to the message classes. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">result </span><span class="s3">= {}</span>
+  <span class="s5">for </span><span class="s1">file_name </span><span class="s5">in </span><span class="s1">files</span><span class="s3">:</span>
+    <span class="s1">file_desc </span><span class="s3">= </span><span class="s1">pool</span><span class="s3">.</span><span class="s1">FindFileByName</span><span class="s3">(</span><span class="s1">file_name</span><span class="s3">)</span>
+    <span class="s5">for </span><span class="s1">desc </span><span class="s5">in </span><span class="s1">file_desc</span><span class="s3">.</span><span class="s1">message_types_by_name</span><span class="s3">.</span><span class="s1">values</span><span class="s3">():</span>
+      <span class="s1">result</span><span class="s3">[</span><span class="s1">desc</span><span class="s3">.</span><span class="s1">full_name</span><span class="s3">] = </span><span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">desc</span><span class="s3">)</span>
+
+    <span class="s0"># While the extension FieldDescriptors are created by the descriptor pool,</span>
+    <span class="s0"># the python classes created in the factory need them to be registered</span>
+    <span class="s0"># explicitly, which is done below.</span>
+    <span class="s0">#</span>
+    <span class="s0"># The call to RegisterExtension will specifically check if the</span>
+    <span class="s0"># extension was already registered on the object and either</span>
+    <span class="s0"># ignore the registration if the original was the same, or raise</span>
+    <span class="s0"># an error if they were different.</span>
+
+    <span class="s5">for </span><span class="s1">extension </span><span class="s5">in </span><span class="s1">file_desc</span><span class="s3">.</span><span class="s1">extensions_by_name</span><span class="s3">.</span><span class="s1">values</span><span class="s3">():</span>
+      <span class="s1">extended_class </span><span class="s3">= </span><span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">extension</span><span class="s3">.</span><span class="s1">containing_type</span><span class="s3">)</span>
+      <span class="s5">if </span><span class="s1">api_implementation</span><span class="s3">.</span><span class="s1">Type</span><span class="s3">() != </span><span class="s4">'python'</span><span class="s3">:</span>
+        <span class="s0"># TODO: Remove this check here. Duplicate extension</span>
+        <span class="s0"># register check should be in descriptor_pool.</span>
+        <span class="s5">if </span><span class="s1">extension </span><span class="s5">is not </span><span class="s1">pool</span><span class="s3">.</span><span class="s1">FindExtensionByNumber</span><span class="s3">(</span>
+            <span class="s1">extension</span><span class="s3">.</span><span class="s1">containing_type</span><span class="s3">, </span><span class="s1">extension</span><span class="s3">.</span><span class="s1">number</span>
+        <span class="s3">):</span>
+          <span class="s5">raise </span><span class="s1">ValueError</span><span class="s3">(</span><span class="s4">'Double registration of Extensions'</span><span class="s3">)</span>
+      <span class="s0"># Recursively load protos for extension field, in order to be able to</span>
+      <span class="s0"># fully represent the extension. This matches the behavior for regular</span>
+      <span class="s0"># fields too.</span>
+      <span class="s5">if </span><span class="s1">extension</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">:</span>
+        <span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">extension</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">)</span>
+  <span class="s5">return </span><span class="s1">result</span>
+
+
+<span class="s5">def </span><span class="s1">_InternalCreateMessageClass</span><span class="s3">(</span><span class="s1">descriptor</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Builds a proto2 message class based on the passed in descriptor. 
+ 
+  Args: 
+    descriptor: The descriptor to build from. 
+ 
+  Returns: 
+    A class describing the passed in descriptor. 
+  &quot;&quot;&quot;</span>
+  <span class="s1">descriptor_name </span><span class="s3">= </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">name</span>
+  <span class="s1">result_class </span><span class="s3">= </span><span class="s1">_GENERATED_PROTOCOL_MESSAGE_TYPE</span><span class="s3">(</span>
+      <span class="s1">descriptor_name</span><span class="s3">,</span>
+      <span class="s3">(</span><span class="s1">message</span><span class="s3">.</span><span class="s1">Message</span><span class="s3">,),</span>
+      <span class="s3">{</span>
+          <span class="s4">'DESCRIPTOR'</span><span class="s3">: </span><span class="s1">descriptor</span><span class="s3">,</span>
+          <span class="s0"># If module not set, it wrongly points to message_factory module.</span>
+          <span class="s4">'__module__'</span><span class="s3">: </span><span class="s5">None</span><span class="s3">,</span>
+      <span class="s3">})</span>
+  <span class="s5">for </span><span class="s1">field </span><span class="s5">in </span><span class="s1">descriptor</span><span class="s3">.</span><span class="s1">fields</span><span class="s3">:</span>
+    <span class="s5">if </span><span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">:</span>
+      <span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">field</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">)</span>
+  <span class="s5">for </span><span class="s1">extension </span><span class="s5">in </span><span class="s1">result_class</span><span class="s3">.</span><span class="s1">DESCRIPTOR</span><span class="s3">.</span><span class="s1">extensions</span><span class="s3">:</span>
+    <span class="s1">extended_class </span><span class="s3">= </span><span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">extension</span><span class="s3">.</span><span class="s1">containing_type</span><span class="s3">)</span>
+    <span class="s5">if </span><span class="s1">api_implementation</span><span class="s3">.</span><span class="s1">Type</span><span class="s3">() != </span><span class="s4">'python'</span><span class="s3">:</span>
+      <span class="s0"># TODO: Remove this check here. Duplicate extension</span>
+      <span class="s0"># register check should be in descriptor_pool.</span>
+      <span class="s1">pool </span><span class="s3">= </span><span class="s1">extension</span><span class="s3">.</span><span class="s1">containing_type</span><span class="s3">.</span><span class="s1">file</span><span class="s3">.</span><span class="s1">pool</span>
+      <span class="s5">if </span><span class="s1">extension </span><span class="s5">is not </span><span class="s1">pool</span><span class="s3">.</span><span class="s1">FindExtensionByNumber</span><span class="s3">(</span>
+          <span class="s1">extension</span><span class="s3">.</span><span class="s1">containing_type</span><span class="s3">, </span><span class="s1">extension</span><span class="s3">.</span><span class="s1">number</span>
+      <span class="s3">):</span>
+        <span class="s5">raise </span><span class="s1">ValueError</span><span class="s3">(</span><span class="s4">'Double registration of Extensions'</span><span class="s3">)</span>
+    <span class="s5">if </span><span class="s1">extension</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">:</span>
+      <span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">extension</span><span class="s3">.</span><span class="s1">message_type</span><span class="s3">)</span>
+  <span class="s5">return </span><span class="s1">result_class</span>
+
+
+<span class="s0"># Deprecated. Please use GetMessageClass() or GetMessageClassesForFiles()</span>
+<span class="s0"># method above instead.</span>
+<span class="s5">class </span><span class="s1">MessageFactory</span><span class="s3">(</span><span class="s1">object</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Factory for creating Proto2 messages from descriptors in a pool.&quot;&quot;&quot;</span>
+
+  <span class="s5">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Initializes a new factory.&quot;&quot;&quot;</span>
+    <span class="s1">self</span><span class="s3">.</span><span class="s1">pool </span><span class="s3">= </span><span class="s1">pool </span><span class="s5">or </span><span class="s1">descriptor_pool</span><span class="s3">.</span><span class="s1">DescriptorPool</span><span class="s3">()</span>
+
+  <span class="s5">def </span><span class="s1">GetPrototype</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">descriptor</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Obtains a proto2 message class based on the passed in descriptor. 
+ 
+    Passing a descriptor with a fully qualified name matching a previous 
+    invocation will cause the same class to be returned. 
+ 
+    Args: 
+      descriptor: The descriptor to build from. 
+ 
+    Returns: 
+      A class describing the passed in descriptor. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">warnings</span><span class="s3">.</span><span class="s1">warn</span><span class="s3">(</span>
+        <span class="s4">'MessageFactory class is deprecated. Please use '</span>
+        <span class="s4">'GetMessageClass() instead of MessageFactory.GetPrototype. '</span>
+        <span class="s4">'MessageFactory class will be removed after 2024.'</span><span class="s3">,</span>
+        <span class="s1">stacklevel</span><span class="s3">=</span><span class="s6">2</span><span class="s3">,</span>
+    <span class="s3">)</span>
+    <span class="s5">return </span><span class="s1">GetMessageClass</span><span class="s3">(</span><span class="s1">descriptor</span><span class="s3">)</span>
+
+  <span class="s5">def </span><span class="s1">CreatePrototype</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">descriptor</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Builds a proto2 message class based on the passed in descriptor. 
+ 
+    Don't call this function directly, it always creates a new class. Call 
+    GetMessageClass() instead. 
+ 
+    Args: 
+      descriptor: The descriptor to build from. 
+ 
+    Returns: 
+      A class describing the passed in descriptor. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">warnings</span><span class="s3">.</span><span class="s1">warn</span><span class="s3">(</span>
+        <span class="s4">'Directly call CreatePrototype is wrong. Please use '</span>
+        <span class="s4">'GetMessageClass() method instead. Directly use '</span>
+        <span class="s4">'CreatePrototype will raise error after July 2023.'</span><span class="s3">,</span>
+        <span class="s1">stacklevel</span><span class="s3">=</span><span class="s6">2</span><span class="s3">,</span>
+    <span class="s3">)</span>
+    <span class="s5">return </span><span class="s1">_InternalCreateMessageClass</span><span class="s3">(</span><span class="s1">descriptor</span><span class="s3">)</span>
+
+  <span class="s5">def </span><span class="s1">GetMessages</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">files</span><span class="s3">):</span>
+    <span class="s2">&quot;&quot;&quot;Gets all the messages from a specified file. 
+ 
+    This will find and resolve dependencies, failing if the descriptor 
+    pool cannot satisfy them. 
+ 
+    Args: 
+      files: The file names to extract messages from. 
+ 
+    Returns: 
+      A dictionary mapping proto names to the message classes. This will include 
+      any dependent messages as well as any messages defined in the same file as 
+      a specified message. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">warnings</span><span class="s3">.</span><span class="s1">warn</span><span class="s3">(</span>
+        <span class="s4">'MessageFactory class is deprecated. Please use '</span>
+        <span class="s4">'GetMessageClassesForFiles() instead of '</span>
+        <span class="s4">'MessageFactory.GetMessages(). MessageFactory class '</span>
+        <span class="s4">'will be removed after 2024.'</span><span class="s3">,</span>
+        <span class="s1">stacklevel</span><span class="s3">=</span><span class="s6">2</span><span class="s3">,</span>
+    <span class="s3">)</span>
+    <span class="s5">return </span><span class="s1">GetMessageClassesForFiles</span><span class="s3">(</span><span class="s1">files</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">pool</span><span class="s3">)</span>
+
+
+<span class="s5">def </span><span class="s1">GetMessages</span><span class="s3">(</span><span class="s1">file_protos</span><span class="s3">, </span><span class="s1">pool</span><span class="s3">=</span><span class="s5">None</span><span class="s3">):</span>
+  <span class="s2">&quot;&quot;&quot;Builds a dictionary of all the messages available in a set of files. 
+ 
+  Args: 
+    file_protos: Iterable of FileDescriptorProto to build messages out of. 
+    pool: The descriptor pool to add the file protos. 
+ 
+  Returns: 
+    A dictionary mapping proto names to the message classes. This will include 
+    any dependent messages as well as any messages defined in the same file as 
+    a specified message. 
+  &quot;&quot;&quot;</span>
+  <span class="s0"># The cpp implementation of the protocol buffer library requires to add the</span>
+  <span class="s0"># message in topological order of the dependency graph.</span>
+  <span class="s1">des_pool </span><span class="s3">= </span><span class="s1">pool </span><span class="s5">or </span><span class="s1">descriptor_pool</span><span class="s3">.</span><span class="s1">DescriptorPool</span><span class="s3">()</span>
+  <span class="s1">file_by_name </span><span class="s3">= {</span><span class="s1">file_proto</span><span class="s3">.</span><span class="s1">name</span><span class="s3">: </span><span class="s1">file_proto </span><span class="s5">for </span><span class="s1">file_proto </span><span class="s5">in </span><span class="s1">file_protos</span><span class="s3">}</span>
+  <span class="s5">def </span><span class="s1">_AddFile</span><span class="s3">(</span><span class="s1">file_proto</span><span class="s3">):</span>
+    <span class="s5">for </span><span class="s1">dependency </span><span class="s5">in </span><span class="s1">file_proto</span><span class="s3">.</span><span class="s1">dependency</span><span class="s3">:</span>
+      <span class="s5">if </span><span class="s1">dependency </span><span class="s5">in </span><span class="s1">file_by_name</span><span class="s3">:</span>
+        <span class="s0"># Remove from elements to be visited, in order to cut cycles.</span>
+        <span class="s1">_AddFile</span><span class="s3">(</span><span class="s1">file_by_name</span><span class="s3">.</span><span class="s1">pop</span><span class="s3">(</span><span class="s1">dependency</span><span class="s3">))</span>
+    <span class="s1">des_pool</span><span class="s3">.</span><span class="s1">Add</span><span class="s3">(</span><span class="s1">file_proto</span><span class="s3">)</span>
+  <span class="s5">while </span><span class="s1">file_by_name</span><span class="s3">:</span>
+    <span class="s1">_AddFile</span><span class="s3">(</span><span class="s1">file_by_name</span><span class="s3">.</span><span class="s1">popitem</span><span class="s3">()[</span><span class="s6">1</span><span class="s3">])</span>
+  <span class="s5">return </span><span class="s1">GetMessageClassesForFiles</span><span class="s3">(</span>
+      <span class="s3">[</span><span class="s1">file_proto</span><span class="s3">.</span><span class="s1">name </span><span class="s5">for </span><span class="s1">file_proto </span><span class="s5">in </span><span class="s1">file_protos</span><span class="s3">], </span><span class="s1">des_pool</span><span class="s3">)</span>
+</pre>
+</body>
+</html>

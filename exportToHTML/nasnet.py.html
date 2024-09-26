@@ -1,0 +1,893 @@
+<html>
+<head>
+<title>nasnet.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #2aacb8;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+nasnet.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">layers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">applications </span><span class="s0">import </span><span class="s1">imagenet_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">models </span><span class="s0">import </span><span class="s1">Functional</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">ops </span><span class="s0">import </span><span class="s1">operation_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">file_utils</span>
+
+<span class="s1">BASE_WEIGHTS_PATH </span><span class="s2">= (</span>
+    <span class="s3">&quot;https://storage.googleapis.com/tensorflow/keras-applications/nasnet/&quot;</span>
+<span class="s2">)</span>
+<span class="s1">NASNET_MOBILE_WEIGHT_PATH </span><span class="s2">= </span><span class="s1">BASE_WEIGHTS_PATH </span><span class="s2">+ </span><span class="s3">&quot;NASNet-mobile.h5&quot;</span>
+<span class="s1">NASNET_MOBILE_WEIGHT_PATH_NO_TOP </span><span class="s2">= </span><span class="s1">BASE_WEIGHTS_PATH </span><span class="s2">+ </span><span class="s3">&quot;NASNet-mobile-no-top.h5&quot;</span>
+<span class="s1">NASNET_LARGE_WEIGHT_PATH </span><span class="s2">= </span><span class="s1">BASE_WEIGHTS_PATH </span><span class="s2">+ </span><span class="s3">&quot;NASNet-large.h5&quot;</span>
+<span class="s1">NASNET_LARGE_WEIGHT_PATH_NO_TOP </span><span class="s2">= </span><span class="s1">BASE_WEIGHTS_PATH </span><span class="s2">+ </span><span class="s3">&quot;NASNet-large-no-top.h5&quot;</span>
+
+
+<span class="s0">def </span><span class="s1">NASNet</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">penultimate_filters</span><span class="s2">=</span><span class="s4">4032</span><span class="s2">,</span>
+    <span class="s1">num_blocks</span><span class="s2">=</span><span class="s4">6</span><span class="s2">,</span>
+    <span class="s1">stem_block_filters</span><span class="s2">=</span><span class="s4">96</span><span class="s2">,</span>
+    <span class="s1">skip_reduction</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">filter_multiplier</span><span class="s2">=</span><span class="s4">2</span><span class="s2">,</span>
+    <span class="s1">include_top</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">weights</span><span class="s2">=</span><span class="s3">&quot;imagenet&quot;</span><span class="s2">,</span>
+    <span class="s1">input_tensor</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">pooling</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">classes</span><span class="s2">=</span><span class="s4">1000</span><span class="s2">,</span>
+    <span class="s1">default_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">classifier_activation</span><span class="s2">=</span><span class="s3">&quot;softmax&quot;</span><span class="s2">,</span>
+    <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;NASNet&quot;</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Instantiates a NASNet model. 
+ 
+    Reference: 
+    - [Learning Transferable Architectures for Scalable Image Recognition]( 
+        https://arxiv.org/abs/1707.07012) (CVPR 2018) 
+ 
+    For image classification use cases, see 
+    [this page for detailed examples]( 
+      https://keras.io/api/applications/#usage-examples-for-image-classification-models). 
+ 
+    For transfer learning use cases, make sure to read the 
+    [guide to transfer learning &amp; fine-tuning]( 
+      https://keras.io/guides/transfer_learning/). 
+ 
+    Note: each Keras Application expects a specific kind of input preprocessing. 
+    For NasNet, call `keras.applications.nasnet.preprocess_input` 
+    on your inputs before passing them to the model. 
+    `nasnet.preprocess_input` will scale input pixels between -1 and 1. 
+ 
+    Args: 
+        input_shape: Optional shape tuple, the input shape 
+            is by default `(331, 331, 3)` for NASNetLarge and 
+            `(224, 224, 3)` for NASNetMobile. 
+            It should have exactly 3 input channels, 
+            and width and height should be no smaller than 32. 
+            E.g. `(224, 224, 3)` would be one valid value. 
+        penultimate_filters: Number of filters in the penultimate layer. 
+            NASNet models use the notation `NASNet (N @ P)`, where: 
+                -   N is the number of blocks 
+                -   P is the number of penultimate filters 
+        num_blocks: Number of repeated blocks of the NASNet model. 
+            NASNet models use the notation `NASNet (N @ P)`, where: 
+                -   N is the number of blocks 
+                -   P is the number of penultimate filters 
+        stem_block_filters: Number of filters in the initial stem block 
+        skip_reduction: Whether to skip the reduction step at the tail 
+            end of the network. 
+        filter_multiplier: Controls the width of the network. 
+            - If `filter_multiplier` &lt; 1.0, proportionally decreases the number 
+                of filters in each layer. 
+            - If `filter_multiplier` &gt; 1.0, proportionally increases the number 
+                of filters in each layer. 
+            - If `filter_multiplier` = 1, default number of filters from the 
+                paper are used at each layer. 
+        include_top: Whether to include the fully-connected 
+            layer at the top of the network. 
+        weights: `None` (random initialization) or 
+            `imagenet` (ImageNet weights) 
+        input_tensor: Optional Keras tensor (i.e. output of 
+            `layers.Input()`) 
+            to use as image input for the model. 
+        pooling: Optional pooling mode for feature extraction 
+            when `include_top` is `False`. 
+            - `None` means that the output of the model 
+                will be the 4D tensor output of the 
+                last convolutional block. 
+            - `avg` means that global average pooling 
+                will be applied to the output of the 
+                last convolutional block, and thus 
+                the output of the model will be a 
+                2D tensor. 
+            - `max` means that global max pooling will 
+                be applied. 
+        classes: Optional number of classes to classify images 
+            into, only to be specified if `include_top` is `True`, and 
+            if no `weights` argument is specified. 
+        default_size: Specifies the default image size of the model 
+        classifier_activation: A `str` or callable. 
+            The activation function to use on the &quot;top&quot; layer. 
+            Ignored unless `include_top=True`. 
+            Set `classifier_activation=None` to return the logits 
+            of the &quot;top&quot; layer. When loading pretrained weights, 
+            `classifier_activation` can only be `None` or `&quot;softmax&quot;`. 
+        name: The name of the model (string). 
+ 
+    Returns: 
+        A model instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot;</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;NASNet does not support the `channels_first` image data &quot;</span>
+            <span class="s3">&quot;format. Switch to `channels_last` by editing your local &quot;</span>
+            <span class="s3">&quot;config file at ~/.keras/keras.json&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s2">(</span><span class="s1">weights </span><span class="s0">in </span><span class="s2">{</span><span class="s3">&quot;imagenet&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">} </span><span class="s0">or </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">)):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;The `weights` argument should be either &quot;</span>
+            <span class="s3">&quot;`None` (random initialization), `imagenet` &quot;</span>
+            <span class="s3">&quot;(pre-training on ImageNet), &quot;</span>
+            <span class="s3">&quot;or the path to the weights file to be loaded.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">weights </span><span class="s2">== </span><span class="s3">&quot;imagenet&quot; </span><span class="s0">and </span><span class="s1">include_top </span><span class="s0">and </span><span class="s1">classes </span><span class="s2">!= </span><span class="s4">1000</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">'If using `weights` as `&quot;imagenet&quot;` with `include_top` '</span>
+            <span class="s3">&quot;as true, `classes` should be 1000&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s2">(</span>
+        <span class="s1">isinstance</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)</span>
+        <span class="s0">and None in </span><span class="s1">input_shape</span>
+        <span class="s0">and </span><span class="s1">weights </span><span class="s2">== </span><span class="s3">&quot;imagenet&quot;</span>
+    <span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;When specifying the input shape of a NASNet&quot;</span>
+            <span class="s3">&quot; and loading `ImageNet` weights, &quot;</span>
+            <span class="s3">&quot;the input_shape argument must be static &quot;</span>
+            <span class="s3">&quot;(no None entries). Got: `input_shape=&quot; </span><span class="s2">+ </span><span class="s1">str</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) + </span><span class="s3">&quot;`.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">default_size </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">default_size </span><span class="s2">= </span><span class="s4">331</span>
+
+    <span class="s6"># Determine proper input shape and default size.</span>
+    <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">obtain_input_shape</span><span class="s2">(</span>
+        <span class="s1">input_shape</span><span class="s2">,</span>
+        <span class="s1">default_size</span><span class="s2">=</span><span class="s1">default_size</span><span class="s2">,</span>
+        <span class="s1">min_size</span><span class="s2">=</span><span class="s4">32</span><span class="s2">,</span>
+        <span class="s1">data_format</span><span class="s2">=</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">(),</span>
+        <span class="s1">require_flatten</span><span class="s2">=</span><span class="s1">include_top</span><span class="s2">,</span>
+        <span class="s1">weights</span><span class="s2">=</span><span class="s1">weights</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() != </span><span class="s3">&quot;channels_last&quot;</span><span class="s2">:</span>
+        <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+            <span class="s3">&quot;The NASNet family of models is only available &quot;</span>
+            <span class="s3">'for the input data format &quot;channels_last&quot; '</span>
+            <span class="s3">&quot;(width, height, channels). &quot;</span>
+            <span class="s3">&quot;However your settings specify the default &quot;</span>
+            <span class="s3">'data format &quot;channels_first&quot; (channels, width, height).'</span>
+            <span class="s3">' You should set `image_data_format=&quot;channels_last&quot;` '</span>
+            <span class="s3">&quot;in your Keras config located at ~/.keras/keras.json. &quot;</span>
+            <span class="s3">&quot;The model being returned right now will expect inputs &quot;</span>
+            <span class="s3">'to follow the &quot;channels_last&quot; data format.'</span><span class="s2">,</span>
+            <span class="s1">stacklevel</span><span class="s2">=</span><span class="s4">2</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">input_tensor </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">img_input </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Input</span><span class="s2">(</span><span class="s1">shape</span><span class="s2">=</span><span class="s1">input_shape</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if not </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">is_keras_tensor</span><span class="s2">(</span><span class="s1">input_tensor</span><span class="s2">):</span>
+            <span class="s1">img_input </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Input</span><span class="s2">(</span><span class="s1">tensor</span><span class="s2">=</span><span class="s1">input_tensor</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">=</span><span class="s1">input_shape</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">img_input </span><span class="s2">= </span><span class="s1">input_tensor</span>
+
+    <span class="s0">if </span><span class="s1">penultimate_filters </span><span class="s2">% (</span><span class="s4">24 </span><span class="s2">* (</span><span class="s1">filter_multiplier</span><span class="s2">**</span><span class="s4">2</span><span class="s2">)) != </span><span class="s4">0</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;For NASNet-A models, the `penultimate_filters` must be a multiple &quot;</span>
+            <span class="s3">&quot;of 24 * (`filter_multiplier` ** 2). &quot;</span>
+            <span class="s3">f&quot;Current value: </span><span class="s0">{</span><span class="s1">penultimate_filters</span><span class="s0">}</span><span class="s3">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">channel_dim </span><span class="s2">= </span><span class="s4">1 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s2">-</span><span class="s4">1</span>
+    <span class="s1">filters </span><span class="s2">= </span><span class="s1">penultimate_filters </span><span class="s2">// </span><span class="s4">24</span>
+
+    <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Conv2D</span><span class="s2">(</span>
+        <span class="s1">stem_block_filters</span><span class="s2">,</span>
+        <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+        <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+        <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;valid&quot;</span><span class="s2">,</span>
+        <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;stem_conv1&quot;</span><span class="s2">,</span>
+        <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;he_normal&quot;</span><span class="s2">,</span>
+    <span class="s2">)(</span><span class="s1">img_input</span><span class="s2">)</span>
+
+    <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+        <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">, </span><span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">, </span><span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;stem_bn1&quot;</span>
+    <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s1">p </span><span class="s2">= </span><span class="s0">None</span>
+    <span class="s1">x</span><span class="s2">, </span><span class="s1">p </span><span class="s2">= </span><span class="s1">_reduction_a_cell</span><span class="s2">(</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">p</span><span class="s2">, </span><span class="s1">filters </span><span class="s2">// (</span><span class="s1">filter_multiplier</span><span class="s2">**</span><span class="s4">2</span><span class="s2">), </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">&quot;stem_1&quot;</span>
+    <span class="s2">)</span>
+    <span class="s1">x</span><span class="s2">, </span><span class="s1">p </span><span class="s2">= </span><span class="s1">_reduction_a_cell</span><span class="s2">(</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">p</span><span class="s2">, </span><span class="s1">filters </span><span class="s2">// </span><span class="s1">filter_multiplier</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">&quot;stem_2&quot;</span>
+    <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_blocks</span><span class="s2">):</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">p </span><span class="s2">= </span><span class="s1">_normal_a_cell</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">p</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+    <span class="s1">x</span><span class="s2">, </span><span class="s1">p0 </span><span class="s2">= </span><span class="s1">_reduction_a_cell</span><span class="s2">(</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">p</span><span class="s2">, </span><span class="s1">filters </span><span class="s2">* </span><span class="s1">filter_multiplier</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduce_</span><span class="s0">{</span><span class="s1">num_blocks</span><span class="s0">}</span><span class="s3">&quot;</span>
+    <span class="s2">)</span>
+
+    <span class="s1">p </span><span class="s2">= </span><span class="s1">p0 </span><span class="s0">if not </span><span class="s1">skip_reduction </span><span class="s0">else </span><span class="s1">p</span>
+
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_blocks</span><span class="s2">):</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">p </span><span class="s2">= </span><span class="s1">_normal_a_cell</span><span class="s2">(</span>
+            <span class="s1">x</span><span class="s2">,</span>
+            <span class="s1">p</span><span class="s2">,</span>
+            <span class="s1">filters </span><span class="s2">* </span><span class="s1">filter_multiplier</span><span class="s2">,</span>
+            <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s1">num_blocks </span><span class="s2">+ </span><span class="s1">i </span><span class="s2">+ </span><span class="s4">1</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s1">x</span><span class="s2">, </span><span class="s1">p0 </span><span class="s2">= </span><span class="s1">_reduction_a_cell</span><span class="s2">(</span>
+        <span class="s1">x</span><span class="s2">,</span>
+        <span class="s1">p</span><span class="s2">,</span>
+        <span class="s1">filters </span><span class="s2">* </span><span class="s1">filter_multiplier</span><span class="s2">**</span><span class="s4">2</span><span class="s2">,</span>
+        <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduce_</span><span class="s0">{</span><span class="s4">2 </span><span class="s2">* </span><span class="s1">num_blocks</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+    <span class="s1">p </span><span class="s2">= </span><span class="s1">p0 </span><span class="s0">if not </span><span class="s1">skip_reduction </span><span class="s0">else </span><span class="s1">p</span>
+
+    <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">num_blocks</span><span class="s2">):</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">p </span><span class="s2">= </span><span class="s1">_normal_a_cell</span><span class="s2">(</span>
+            <span class="s1">x</span><span class="s2">,</span>
+            <span class="s1">p</span><span class="s2">,</span>
+            <span class="s1">filters </span><span class="s2">* </span><span class="s1">filter_multiplier</span><span class="s2">**</span><span class="s4">2</span><span class="s2">,</span>
+            <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;</span><span class="s0">{</span><span class="s4">2 </span><span class="s2">* </span><span class="s1">num_blocks </span><span class="s2">+ </span><span class="s1">i </span><span class="s2">+ </span><span class="s4">1</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+    <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">include_top</span><span class="s2">:</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">GlobalAveragePooling2D</span><span class="s2">()(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">validate_activation</span><span class="s2">(</span><span class="s1">classifier_activation</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">)</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Dense</span><span class="s2">(</span>
+            <span class="s1">classes</span><span class="s2">, </span><span class="s1">activation</span><span class="s2">=</span><span class="s1">classifier_activation</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;predictions&quot;</span>
+        <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">pooling </span><span class="s2">== </span><span class="s3">&quot;avg&quot;</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">GlobalAveragePooling2D</span><span class="s2">()(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">pooling </span><span class="s2">== </span><span class="s3">&quot;max&quot;</span><span class="s2">:</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">GlobalMaxPooling2D</span><span class="s2">()(</span><span class="s1">x</span><span class="s2">)</span>
+
+    <span class="s6"># Ensure that the model takes into account</span>
+    <span class="s6"># any potential predecessors of `input_tensor`.</span>
+    <span class="s0">if </span><span class="s1">input_tensor </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">operation_utils</span><span class="s2">.</span><span class="s1">get_source_inputs</span><span class="s2">(</span><span class="s1">input_tensor</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">img_input</span>
+
+    <span class="s1">model </span><span class="s2">= </span><span class="s1">Functional</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">x</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">)</span>
+
+    <span class="s6"># Load weights.</span>
+    <span class="s0">if </span><span class="s1">weights </span><span class="s2">== </span><span class="s3">&quot;imagenet&quot;</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">default_size </span><span class="s2">== </span><span class="s4">224</span><span class="s2">:  </span><span class="s6"># mobile version</span>
+            <span class="s0">if </span><span class="s1">include_top</span><span class="s2">:</span>
+                <span class="s1">weights_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">get_file</span><span class="s2">(</span>
+                    <span class="s3">&quot;nasnet_mobile.h5&quot;</span><span class="s2">,</span>
+                    <span class="s1">NASNET_MOBILE_WEIGHT_PATH</span><span class="s2">,</span>
+                    <span class="s1">cache_subdir</span><span class="s2">=</span><span class="s3">&quot;models&quot;</span><span class="s2">,</span>
+                    <span class="s1">file_hash</span><span class="s2">=</span><span class="s3">&quot;020fb642bf7360b370c678b08e0adf61&quot;</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">weights_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">get_file</span><span class="s2">(</span>
+                    <span class="s3">&quot;nasnet_mobile_no_top.h5&quot;</span><span class="s2">,</span>
+                    <span class="s1">NASNET_MOBILE_WEIGHT_PATH_NO_TOP</span><span class="s2">,</span>
+                    <span class="s1">cache_subdir</span><span class="s2">=</span><span class="s3">&quot;models&quot;</span><span class="s2">,</span>
+                    <span class="s1">file_hash</span><span class="s2">=</span><span class="s3">&quot;1ed92395b5b598bdda52abe5c0dbfd63&quot;</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">load_weights</span><span class="s2">(</span><span class="s1">weights_path</span><span class="s2">)</span>
+        <span class="s0">elif </span><span class="s1">default_size </span><span class="s2">== </span><span class="s4">331</span><span class="s2">:  </span><span class="s6"># large version</span>
+            <span class="s0">if </span><span class="s1">include_top</span><span class="s2">:</span>
+                <span class="s1">weights_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">get_file</span><span class="s2">(</span>
+                    <span class="s3">&quot;nasnet_large.h5&quot;</span><span class="s2">,</span>
+                    <span class="s1">NASNET_LARGE_WEIGHT_PATH</span><span class="s2">,</span>
+                    <span class="s1">cache_subdir</span><span class="s2">=</span><span class="s3">&quot;models&quot;</span><span class="s2">,</span>
+                    <span class="s1">file_hash</span><span class="s2">=</span><span class="s3">&quot;11577c9a518f0070763c2b964a382f17&quot;</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">weights_path </span><span class="s2">= </span><span class="s1">file_utils</span><span class="s2">.</span><span class="s1">get_file</span><span class="s2">(</span>
+                    <span class="s3">&quot;nasnet_large_no_top.h5&quot;</span><span class="s2">,</span>
+                    <span class="s1">NASNET_LARGE_WEIGHT_PATH_NO_TOP</span><span class="s2">,</span>
+                    <span class="s1">cache_subdir</span><span class="s2">=</span><span class="s3">&quot;models&quot;</span><span class="s2">,</span>
+                    <span class="s1">file_hash</span><span class="s2">=</span><span class="s3">&quot;d81d89dc07e6e56530c4e77faddd61b5&quot;</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">load_weights</span><span class="s2">(</span><span class="s1">weights_path</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;ImageNet weights can only be loaded with NASNetLarge&quot;</span>
+                <span class="s3">&quot; or NASNetMobile&quot;</span>
+            <span class="s2">)</span>
+    <span class="s0">elif </span><span class="s1">weights </span><span class="s0">is not None</span><span class="s2">:</span>
+        <span class="s1">model</span><span class="s2">.</span><span class="s1">load_weights</span><span class="s2">(</span><span class="s1">weights</span><span class="s2">)</span>
+
+    <span class="s0">return </span><span class="s1">model</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span>
+        <span class="s3">&quot;keras.applications.nasnet.NASNetMobile&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.applications.NASNetMobile&quot;</span><span class="s2">,</span>
+    <span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">def </span><span class="s1">NASNetMobile</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">include_top</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">weights</span><span class="s2">=</span><span class="s3">&quot;imagenet&quot;</span><span class="s2">,</span>
+    <span class="s1">input_tensor</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">pooling</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">classes</span><span class="s2">=</span><span class="s4">1000</span><span class="s2">,</span>
+    <span class="s1">classifier_activation</span><span class="s2">=</span><span class="s3">&quot;softmax&quot;</span><span class="s2">,</span>
+    <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;nasnet_mobile&quot;</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Instantiates a Mobile NASNet model in ImageNet mode. 
+ 
+    Reference: 
+    - [Learning Transferable Architectures for Scalable Image Recognition]( 
+        https://arxiv.org/abs/1707.07012) (CVPR 2018) 
+ 
+    Optionally loads weights pre-trained on ImageNet. 
+    Note that the data format convention used by the model is 
+    the one specified in your Keras config at `~/.keras/keras.json`. 
+ 
+    Note: each Keras Application expects a specific kind of input preprocessing. 
+    For NASNet, call `keras.applications.nasnet.preprocess_input` on your 
+    inputs before passing them to the model. 
+ 
+    Args: 
+        input_shape: Optional shape tuple, only to be specified 
+            if `include_top` is False (otherwise the input shape 
+            has to be `(224, 224, 3)` for NASNetMobile 
+            It should have exactly 3 inputs channels, 
+            and width and height should be no smaller than 32. 
+            E.g. `(224, 224, 3)` would be one valid value. 
+        include_top: Whether to include the fully-connected 
+            layer at the top of the network. 
+        weights: `None` (random initialization) or 
+            `imagenet` (ImageNet weights). For loading `imagenet` weights, 
+            `input_shape` should be (224, 224, 3) 
+        input_tensor: Optional Keras tensor (i.e. output of 
+            `layers.Input()`) 
+            to use as image input for the model. 
+        pooling: Optional pooling mode for feature extraction 
+            when `include_top` is `False`. 
+            - `None` means that the output of the model 
+                will be the 4D tensor output of the 
+                last convolutional layer. 
+            - `avg` means that global average pooling 
+                will be applied to the output of the 
+                last convolutional layer, and thus 
+                the output of the model will be a 
+                2D tensor. 
+            - `max` means that global max pooling will 
+                be applied. 
+        classes: Optional number of classes to classify images 
+            into, only to be specified if `include_top` is `True`, and 
+            if no `weights` argument is specified. 
+        classifier_activation: A `str` or callable. The activation function to 
+            use on the &quot;top&quot; layer. Ignored unless `include_top=True`. Set 
+            `classifier_activation=None` to return the logits of the &quot;top&quot; 
+            layer.  When loading pretrained weights, `classifier_activation` can 
+            only be `None` or `&quot;softmax&quot;`. 
+        name: The name of the model (string). 
+ 
+    Returns: 
+        A Keras model instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() == </span><span class="s3">&quot;torch&quot;</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s3">&quot;NASNetMobile is not available with the torch backend &quot;</span>
+            <span class="s3">&quot;at this time due to an outstanding bug. &quot;</span>
+            <span class="s3">&quot;If interested, please open a PR.&quot;</span>
+        <span class="s2">)</span>
+    <span class="s0">if not </span><span class="s1">include_top </span><span class="s0">and </span><span class="s1">input_shape </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s1">input_shape </span><span class="s2">= (</span><span class="s4">224</span><span class="s2">, </span><span class="s4">224</span><span class="s2">, </span><span class="s4">3</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">NASNet</span><span class="s2">(</span>
+        <span class="s1">input_shape</span><span class="s2">,</span>
+        <span class="s1">penultimate_filters</span><span class="s2">=</span><span class="s4">1056</span><span class="s2">,</span>
+        <span class="s1">num_blocks</span><span class="s2">=</span><span class="s4">4</span><span class="s2">,</span>
+        <span class="s1">stem_block_filters</span><span class="s2">=</span><span class="s4">32</span><span class="s2">,</span>
+        <span class="s1">skip_reduction</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">filter_multiplier</span><span class="s2">=</span><span class="s4">2</span><span class="s2">,</span>
+        <span class="s1">include_top</span><span class="s2">=</span><span class="s1">include_top</span><span class="s2">,</span>
+        <span class="s1">weights</span><span class="s2">=</span><span class="s1">weights</span><span class="s2">,</span>
+        <span class="s1">input_tensor</span><span class="s2">=</span><span class="s1">input_tensor</span><span class="s2">,</span>
+        <span class="s1">pooling</span><span class="s2">=</span><span class="s1">pooling</span><span class="s2">,</span>
+        <span class="s1">classes</span><span class="s2">=</span><span class="s1">classes</span><span class="s2">,</span>
+        <span class="s1">default_size</span><span class="s2">=</span><span class="s4">224</span><span class="s2">,</span>
+        <span class="s1">classifier_activation</span><span class="s2">=</span><span class="s1">classifier_activation</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span>
+    <span class="s2">[</span>
+        <span class="s3">&quot;keras.applications.nasnet.NASNetLarge&quot;</span><span class="s2">,</span>
+        <span class="s3">&quot;keras.applications.NASNetLarge&quot;</span><span class="s2">,</span>
+    <span class="s2">]</span>
+<span class="s2">)</span>
+<span class="s0">def </span><span class="s1">NASNetLarge</span><span class="s2">(</span>
+    <span class="s1">input_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">include_top</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+    <span class="s1">weights</span><span class="s2">=</span><span class="s3">&quot;imagenet&quot;</span><span class="s2">,</span>
+    <span class="s1">input_tensor</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">pooling</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+    <span class="s1">classes</span><span class="s2">=</span><span class="s4">1000</span><span class="s2">,</span>
+    <span class="s1">classifier_activation</span><span class="s2">=</span><span class="s3">&quot;softmax&quot;</span><span class="s2">,</span>
+    <span class="s1">name</span><span class="s2">=</span><span class="s3">&quot;nasnet_large&quot;</span><span class="s2">,</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Instantiates a NASNet model in ImageNet mode. 
+ 
+    Reference: 
+    - [Learning Transferable Architectures for Scalable Image Recognition]( 
+        https://arxiv.org/abs/1707.07012) (CVPR 2018) 
+ 
+    Optionally loads weights pre-trained on ImageNet. 
+    Note that the data format convention used by the model is 
+    the one specified in your Keras config at `~/.keras/keras.json`. 
+ 
+    Note: each Keras Application expects a specific kind of input preprocessing. 
+    For NASNet, call `keras.applications.nasnet.preprocess_input` on your 
+    inputs before passing them to the model. 
+ 
+    Args: 
+        input_shape: Optional shape tuple, only to be specified 
+            if `include_top` is False (otherwise the input shape 
+            has to be `(331, 331, 3)` for NASNetLarge. 
+            It should have exactly 3 inputs channels, 
+            and width and height should be no smaller than 32. 
+            E.g. `(224, 224, 3)` would be one valid value. 
+        include_top: Whether to include the fully-connected 
+            layer at the top of the network. 
+        weights: `None` (random initialization) or 
+            `imagenet` (ImageNet weights).  For loading `imagenet` weights, 
+            `input_shape` should be (331, 331, 3) 
+        input_tensor: Optional Keras tensor (i.e. output of 
+            `layers.Input()`) 
+            to use as image input for the model. 
+        pooling: Optional pooling mode for feature extraction 
+            when `include_top` is `False`. 
+            - `None` means that the output of the model 
+                will be the 4D tensor output of the 
+                last convolutional layer. 
+            - `avg` means that global average pooling 
+                will be applied to the output of the 
+                last convolutional layer, and thus 
+                the output of the model will be a 
+                2D tensor. 
+            - `max` means that global max pooling will 
+                be applied. 
+        classes: Optional number of classes to classify images 
+            into, only to be specified if `include_top` is `True`, and 
+            if no `weights` argument is specified. 
+        classifier_activation: A `str` or callable. The activation function to 
+            use on the &quot;top&quot; layer. Ignored unless `include_top=True`. Set 
+            `classifier_activation=None` to return the logits of the &quot;top&quot; 
+            layer.  When loading pretrained weights, `classifier_activation` 
+            can only be `None` or `&quot;softmax&quot;`. 
+        name: The name of the model (string). 
+ 
+    Returns: 
+        A Keras model instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">NASNet</span><span class="s2">(</span>
+        <span class="s1">input_shape</span><span class="s2">,</span>
+        <span class="s1">penultimate_filters</span><span class="s2">=</span><span class="s4">4032</span><span class="s2">,</span>
+        <span class="s1">num_blocks</span><span class="s2">=</span><span class="s4">6</span><span class="s2">,</span>
+        <span class="s1">stem_block_filters</span><span class="s2">=</span><span class="s4">96</span><span class="s2">,</span>
+        <span class="s1">skip_reduction</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s1">filter_multiplier</span><span class="s2">=</span><span class="s4">2</span><span class="s2">,</span>
+        <span class="s1">include_top</span><span class="s2">=</span><span class="s1">include_top</span><span class="s2">,</span>
+        <span class="s1">weights</span><span class="s2">=</span><span class="s1">weights</span><span class="s2">,</span>
+        <span class="s1">input_tensor</span><span class="s2">=</span><span class="s1">input_tensor</span><span class="s2">,</span>
+        <span class="s1">pooling</span><span class="s2">=</span><span class="s1">pooling</span><span class="s2">,</span>
+        <span class="s1">classes</span><span class="s2">=</span><span class="s1">classes</span><span class="s2">,</span>
+        <span class="s1">default_size</span><span class="s2">=</span><span class="s4">331</span><span class="s2">,</span>
+        <span class="s1">classifier_activation</span><span class="s2">=</span><span class="s1">classifier_activation</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+    <span class="s1">ip</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">kernel_size</span><span class="s2">=(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">), </span><span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">), </span><span class="s1">block_id</span><span class="s2">=</span><span class="s0">None</span>
+<span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Adds 2 blocks of [relu-separable conv-batchnorm]. 
+ 
+    Args: 
+        ip: Input tensor 
+        filters: Number of output filters per layer 
+        kernel_size: Kernel size of separable convolutions 
+        strides: Strided convolution for downsampling 
+        block_id: String block_id 
+ 
+    Returns: 
+        A Keras tensor 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel_dim </span><span class="s2">= </span><span class="s4">1 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s2">-</span><span class="s4">1</span>
+
+    <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">f&quot;separable_conv_block_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">):</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">)(</span><span class="s1">ip</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">strides </span><span class="s2">== (</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">):</span>
+            <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">ZeroPadding2D</span><span class="s2">(</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">correct_pad</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">kernel_size</span><span class="s2">),</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;separable_conv_1_pad_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+            <span class="s1">conv_pad </span><span class="s2">= </span><span class="s3">&quot;valid&quot;</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">conv_pad </span><span class="s2">= </span><span class="s3">&quot;same&quot;</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">SeparableConv2D</span><span class="s2">(</span>
+            <span class="s1">filters</span><span class="s2">,</span>
+            <span class="s1">kernel_size</span><span class="s2">,</span>
+            <span class="s1">strides</span><span class="s2">=</span><span class="s1">strides</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;separable_conv_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">conv_pad</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+            <span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">,</span>
+            <span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;separable_conv_1_bn_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">SeparableConv2D</span><span class="s2">(</span>
+            <span class="s1">filters</span><span class="s2">,</span>
+            <span class="s1">kernel_size</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;separable_conv_2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+            <span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">,</span>
+            <span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;separable_conv_2_bn_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">x</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">x</span>
+
+
+<span class="s0">def </span><span class="s1">_adjust_block</span><span class="s2">(</span><span class="s1">p</span><span class="s2">, </span><span class="s1">ip</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Adjusts the input `previous path` to match the shape of the `input`. 
+ 
+    Used in situations where the output number of filters needs to be changed. 
+ 
+    Args: 
+        p: Input tensor which needs to be modified 
+        ip: Input tensor whose shape needs to be matched 
+        filters: Number of output filters to be matched 
+        block_id: String block_id 
+ 
+    Returns: 
+        Adjusted Keras tensor 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel_dim </span><span class="s2">= </span><span class="s4">1 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s2">-</span><span class="s4">1</span>
+    <span class="s1">img_dim </span><span class="s2">= </span><span class="s4">2 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s2">-</span><span class="s4">2</span>
+
+    <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;adjust_block&quot;</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">p </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">p </span><span class="s2">= </span><span class="s1">ip</span>
+
+        <span class="s0">elif </span><span class="s1">p</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s1">img_dim</span><span class="s2">] != </span><span class="s1">ip</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s1">img_dim</span><span class="s2">]:</span>
+            <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">f&quot;adjust_reduction_block_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">):</span>
+                <span class="s1">p </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">, </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_relu_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)(</span>
+                    <span class="s1">p</span>
+                <span class="s2">)</span>
+                <span class="s1">p1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                    <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                    <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                    <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;valid&quot;</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_avg_pool_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+                <span class="s1">p1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Conv2D</span><span class="s2">(</span>
+                    <span class="s1">filters </span><span class="s2">// </span><span class="s4">2</span><span class="s2">,</span>
+                    <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                    <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                    <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_conv_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                    <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;he_normal&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p1</span><span class="s2">)</span>
+
+                <span class="s1">p2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">ZeroPadding2D</span><span class="s2">(</span><span class="s1">padding</span><span class="s2">=((</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">), (</span><span class="s4">0</span><span class="s2">, </span><span class="s4">1</span><span class="s2">)))(</span><span class="s1">p</span><span class="s2">)</span>
+                <span class="s1">p2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Cropping2D</span><span class="s2">(</span><span class="s1">cropping</span><span class="s2">=((</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">), (</span><span class="s4">1</span><span class="s2">, </span><span class="s4">0</span><span class="s2">)))(</span><span class="s1">p2</span><span class="s2">)</span>
+                <span class="s1">p2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                    <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                    <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                    <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;valid&quot;</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_avg_pool_2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p2</span><span class="s2">)</span>
+                <span class="s1">p2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Conv2D</span><span class="s2">(</span>
+                    <span class="s1">filters </span><span class="s2">// </span><span class="s4">2</span><span class="s2">,</span>
+                    <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                    <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                    <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_conv_2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                    <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;he_normal&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p2</span><span class="s2">)</span>
+
+                <span class="s1">p </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">([</span><span class="s1">p1</span><span class="s2">, </span><span class="s1">p2</span><span class="s2">], </span><span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">)</span>
+                <span class="s1">p </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+                    <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+                    <span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">,</span>
+                    <span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_bn_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+
+        <span class="s0">elif </span><span class="s1">p</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[</span><span class="s1">channel_dim</span><span class="s2">] != </span><span class="s1">filters</span><span class="s2">:</span>
+            <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">f&quot;adjust_projection_block_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">):</span>
+                <span class="s1">p </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+                <span class="s1">p </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Conv2D</span><span class="s2">(</span>
+                    <span class="s1">filters</span><span class="s2">,</span>
+                    <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                    <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                    <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_conv_projection_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                    <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+                    <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;he_normal&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+                <span class="s1">p </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+                    <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+                    <span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">,</span>
+                    <span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">,</span>
+                    <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;adjust_bn_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+                <span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">p</span>
+
+
+<span class="s0">def </span><span class="s1">_normal_a_cell</span><span class="s2">(</span><span class="s1">ip</span><span class="s2">, </span><span class="s1">p</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Adds a Normal cell for NASNet-A (Fig. 4 in the paper). 
+ 
+    Args: 
+        ip: Input tensor `x` 
+        p: Input tensor `p` 
+        filters: Number of output filters 
+        block_id: String block_id 
+ 
+    Returns: 
+        A Keras tensor 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel_dim </span><span class="s2">= </span><span class="s4">1 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s2">-</span><span class="s4">1</span>
+
+    <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">f&quot;normal_A_block_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">):</span>
+        <span class="s1">p </span><span class="s2">= </span><span class="s1">_adjust_block</span><span class="s2">(</span><span class="s1">p</span><span class="s2">, </span><span class="s1">ip</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">)</span>
+
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">)(</span><span class="s1">ip</span><span class="s2">)</span>
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Conv2D</span><span class="s2">(</span>
+            <span class="s1">filters</span><span class="s2">,</span>
+            <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+            <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_conv_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;he_normal&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">h</span><span class="s2">)</span>
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+            <span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">,</span>
+            <span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_bn_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">h</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_1&quot;</span><span class="s2">):</span>
+            <span class="s1">x1_1 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">h</span><span class="s2">,</span>
+                <span class="s1">filters</span><span class="s2">,</span>
+                <span class="s1">kernel_size</span><span class="s2">=(</span><span class="s4">5</span><span class="s2">, </span><span class="s4">5</span><span class="s2">),</span>
+                <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;normal_left1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">x1_2 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;normal_right1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">x1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x1_1</span><span class="s2">, </span><span class="s1">x1_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_add_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_2&quot;</span><span class="s2">):</span>
+            <span class="s1">x2_1 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, (</span><span class="s4">5</span><span class="s2">, </span><span class="s4">5</span><span class="s2">), </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;normal_left2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">x2_2 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, (</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">), </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;normal_right2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">x2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x2_1</span><span class="s2">, </span><span class="s1">x2_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_add_2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_3&quot;</span><span class="s2">):</span>
+            <span class="s1">x3 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_left3_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">h</span><span class="s2">)</span>
+            <span class="s1">x3 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x3</span><span class="s2">, </span><span class="s1">p</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_add_3_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_4&quot;</span><span class="s2">):</span>
+            <span class="s1">x4_1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_left4_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+            <span class="s1">x4_2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_right4_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">p</span><span class="s2">)</span>
+            <span class="s1">x4 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x4_1</span><span class="s2">, </span><span class="s1">x4_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_add_4_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_5&quot;</span><span class="s2">):</span>
+            <span class="s1">x5 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">h</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;normal_left5_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">x5 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x5</span><span class="s2">, </span><span class="s1">h</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_add_5_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">p</span><span class="s2">, </span><span class="s1">x1</span><span class="s2">, </span><span class="s1">x2</span><span class="s2">, </span><span class="s1">x3</span><span class="s2">, </span><span class="s1">x4</span><span class="s2">, </span><span class="s1">x5</span><span class="s2">],</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;normal_concat_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+    <span class="s0">return </span><span class="s1">x</span><span class="s2">, </span><span class="s1">ip</span>
+
+
+<span class="s0">def </span><span class="s1">_reduction_a_cell</span><span class="s2">(</span><span class="s1">ip</span><span class="s2">, </span><span class="s1">p</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Adds a Reduction cell for NASNet-A (Fig. 4 in the paper). 
+ 
+    Args: 
+      ip: Input tensor `x` 
+      p: Input tensor `p` 
+      filters: Number of output filters 
+      block_id: String block_id 
+ 
+    Returns: 
+      A Keras tensor 
+    &quot;&quot;&quot;</span>
+    <span class="s1">channel_dim </span><span class="s2">= </span><span class="s4">1 </span><span class="s0">if </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">image_data_format</span><span class="s2">() == </span><span class="s3">&quot;channels_first&quot; </span><span class="s0">else </span><span class="s2">-</span><span class="s4">1</span>
+
+    <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">f&quot;reduction_A_block_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">):</span>
+        <span class="s1">p </span><span class="s2">= </span><span class="s1">_adjust_block</span><span class="s2">(</span><span class="s1">p</span><span class="s2">, </span><span class="s1">ip</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, </span><span class="s1">block_id</span><span class="s2">)</span>
+
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Activation</span><span class="s2">(</span><span class="s3">&quot;relu&quot;</span><span class="s2">)(</span><span class="s1">ip</span><span class="s2">)</span>
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">Conv2D</span><span class="s2">(</span>
+            <span class="s1">filters</span><span class="s2">,</span>
+            <span class="s2">(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+            <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_conv_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s1">use_bias</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+            <span class="s1">kernel_initializer</span><span class="s2">=</span><span class="s3">&quot;he_normal&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">h</span><span class="s2">)</span>
+        <span class="s1">h </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">BatchNormalization</span><span class="s2">(</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+            <span class="s1">momentum</span><span class="s2">=</span><span class="s4">0.9997</span><span class="s2">,</span>
+            <span class="s1">epsilon</span><span class="s2">=</span><span class="s4">1e-3</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_bn_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">h</span><span class="s2">)</span>
+        <span class="s1">h3 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">ZeroPadding2D</span><span class="s2">(</span>
+            <span class="s1">padding</span><span class="s2">=</span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">correct_pad</span><span class="s2">(</span><span class="s1">h</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_pad_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)(</span><span class="s1">h</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_1&quot;</span><span class="s2">):</span>
+            <span class="s1">x1_1 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">h</span><span class="s2">,</span>
+                <span class="s1">filters</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s4">5</span><span class="s2">, </span><span class="s4">5</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduction_left1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">x1_2 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">,</span>
+                <span class="s1">filters</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s4">7</span><span class="s2">, </span><span class="s4">7</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduction_right1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">x1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x1_1</span><span class="s2">, </span><span class="s1">x1_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_add_1_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_2&quot;</span><span class="s2">):</span>
+            <span class="s1">x2_1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">MaxPooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;valid&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_left2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">h3</span><span class="s2">)</span>
+            <span class="s1">x2_2 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">,</span>
+                <span class="s1">filters</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s4">7</span><span class="s2">, </span><span class="s4">7</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduction_right2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">x2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x2_1</span><span class="s2">, </span><span class="s1">x2_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_add_2_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_3&quot;</span><span class="s2">):</span>
+            <span class="s1">x3_1 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;valid&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_left3_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">h3</span><span class="s2">)</span>
+            <span class="s1">x3_2 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">p</span><span class="s2">,</span>
+                <span class="s1">filters</span><span class="s2">,</span>
+                <span class="s2">(</span><span class="s4">5</span><span class="s2">, </span><span class="s4">5</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduction_right3_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)</span>
+            <span class="s1">x3 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x3_1</span><span class="s2">, </span><span class="s1">x3_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_add3_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_4&quot;</span><span class="s2">):</span>
+            <span class="s1">x4 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">AveragePooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">1</span><span class="s2">, </span><span class="s4">1</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;same&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_left4_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">x1</span><span class="s2">)</span>
+            <span class="s1">x4 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x2</span><span class="s2">, </span><span class="s1">x4</span><span class="s2">])</span>
+
+        <span class="s0">with </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">name_scope</span><span class="s2">(</span><span class="s3">&quot;block_5&quot;</span><span class="s2">):</span>
+            <span class="s1">x5_1 </span><span class="s2">= </span><span class="s1">_separable_conv_block</span><span class="s2">(</span>
+                <span class="s1">x1</span><span class="s2">, </span><span class="s1">filters</span><span class="s2">, (</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">), </span><span class="s1">block_id</span><span class="s2">=</span><span class="s3">f&quot;reduction_left4_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+            <span class="s1">x5_2 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">MaxPooling2D</span><span class="s2">(</span>
+                <span class="s2">(</span><span class="s4">3</span><span class="s2">, </span><span class="s4">3</span><span class="s2">),</span>
+                <span class="s1">strides</span><span class="s2">=(</span><span class="s4">2</span><span class="s2">, </span><span class="s4">2</span><span class="s2">),</span>
+                <span class="s1">padding</span><span class="s2">=</span><span class="s3">&quot;valid&quot;</span><span class="s2">,</span>
+                <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_right5_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+            <span class="s2">)(</span><span class="s1">h3</span><span class="s2">)</span>
+            <span class="s1">x5 </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">add</span><span class="s2">([</span><span class="s1">x5_1</span><span class="s2">, </span><span class="s1">x5_2</span><span class="s2">], </span><span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_add4_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">)</span>
+
+        <span class="s1">x </span><span class="s2">= </span><span class="s1">layers</span><span class="s2">.</span><span class="s1">concatenate</span><span class="s2">(</span>
+            <span class="s2">[</span><span class="s1">x2</span><span class="s2">, </span><span class="s1">x3</span><span class="s2">, </span><span class="s1">x4</span><span class="s2">, </span><span class="s1">x5</span><span class="s2">],</span>
+            <span class="s1">axis</span><span class="s2">=</span><span class="s1">channel_dim</span><span class="s2">,</span>
+            <span class="s1">name</span><span class="s2">=</span><span class="s3">f&quot;reduction_concat_</span><span class="s0">{</span><span class="s1">block_id</span><span class="s0">}</span><span class="s3">&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">x</span><span class="s2">, </span><span class="s1">ip</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.applications.nasnet.preprocess_input&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">preprocess_input</span><span class="s2">(</span><span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+    <span class="s0">return </span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">preprocess_input</span><span class="s2">(</span>
+        <span class="s1">x</span><span class="s2">, </span><span class="s1">data_format</span><span class="s2">=</span><span class="s1">data_format</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s3">&quot;tf&quot;</span>
+    <span class="s2">)</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.applications.nasnet.decode_predictions&quot;</span><span class="s2">)</span>
+<span class="s0">def </span><span class="s1">decode_predictions</span><span class="s2">(</span><span class="s1">preds</span><span class="s2">, </span><span class="s1">top</span><span class="s2">=</span><span class="s4">5</span><span class="s2">):</span>
+    <span class="s0">return </span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">decode_predictions</span><span class="s2">(</span><span class="s1">preds</span><span class="s2">, </span><span class="s1">top</span><span class="s2">=</span><span class="s1">top</span><span class="s2">)</span>
+
+
+<span class="s1">preprocess_input</span><span class="s2">.</span><span class="s1">__doc__ </span><span class="s2">= </span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">PREPROCESS_INPUT_DOC</span><span class="s2">.</span><span class="s1">format</span><span class="s2">(</span>
+    <span class="s1">mode</span><span class="s2">=</span><span class="s3">&quot;&quot;</span><span class="s2">,</span>
+    <span class="s1">ret</span><span class="s2">=</span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">PREPROCESS_INPUT_RET_DOC_TF</span><span class="s2">,</span>
+    <span class="s1">error</span><span class="s2">=</span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">PREPROCESS_INPUT_ERROR_DOC</span><span class="s2">,</span>
+<span class="s2">)</span>
+<span class="s1">decode_predictions</span><span class="s2">.</span><span class="s1">__doc__ </span><span class="s2">= </span><span class="s1">imagenet_utils</span><span class="s2">.</span><span class="s1">decode_predictions</span><span class="s2">.</span><span class="s1">__doc__</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,279 @@
+<html>
+<head>
+<title>_base_call.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_base_call.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Copyright 2019 The gRPC Authors</span>
+<span class="s0">#</span>
+<span class="s0"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="s0"># you may not use this file except in compliance with the License.</span>
+<span class="s0"># You may obtain a copy of the License at</span>
+<span class="s0">#</span>
+<span class="s0">#     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="s0">#</span>
+<span class="s0"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="s0"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="s0"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="s0"># See the License for the specific language governing permissions and</span>
+<span class="s0"># limitations under the License.</span>
+<span class="s2">&quot;&quot;&quot;Abstract base classes for client-side Call objects. 
+ 
+Call objects represents the RPC itself, and offer methods to access / modify 
+its information. They also offer methods to manipulate the life-cycle of the 
+RPC, e.g. cancellation. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">abc </span><span class="s3">import </span><span class="s1">ABCMeta</span>
+<span class="s3">from </span><span class="s1">abc </span><span class="s3">import </span><span class="s1">abstractmethod</span>
+<span class="s3">from </span><span class="s1">typing </span><span class="s3">import </span><span class="s1">Any</span><span class="s4">, </span><span class="s1">AsyncIterator</span><span class="s4">, </span><span class="s1">Generator</span><span class="s4">, </span><span class="s1">Generic</span><span class="s4">, </span><span class="s1">Optional</span><span class="s4">, </span><span class="s1">Union</span>
+
+<span class="s3">import </span><span class="s1">grpc</span>
+
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_metadata </span><span class="s3">import </span><span class="s1">Metadata</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_typing </span><span class="s3">import </span><span class="s1">DoneCallbackType</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_typing </span><span class="s3">import </span><span class="s1">EOFType</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_typing </span><span class="s3">import </span><span class="s1">RequestType</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">_typing </span><span class="s3">import </span><span class="s1">ResponseType</span>
+
+<span class="s1">__all__ </span><span class="s4">= </span><span class="s5">&quot;RpcContext&quot;</span><span class="s4">, </span><span class="s5">&quot;Call&quot;</span><span class="s4">, </span><span class="s5">&quot;UnaryUnaryCall&quot;</span><span class="s4">, </span><span class="s5">&quot;UnaryStreamCall&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">RpcContext</span><span class="s4">(</span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;Provides RPC-related information and action.&quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">cancelled</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Return True if the RPC is cancelled. 
+ 
+        The RPC is cancelled when the cancellation was requested with cancel(). 
+ 
+        Returns: 
+          A bool indicates whether the RPC is cancelled or not. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">done</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Return True if the RPC is done. 
+ 
+        An RPC is done if the RPC is completed, cancelled or aborted. 
+ 
+        Returns: 
+          A bool indicates if the RPC is done. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">time_remaining</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Optional</span><span class="s4">[</span><span class="s1">float</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Describes the length of allowed time remaining for the RPC. 
+ 
+        Returns: 
+          A nonnegative float indicating the length of allowed time in seconds 
+          remaining for the RPC to complete before it is considered to have 
+          timed out, or None if no deadline was specified for the RPC. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">cancel</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; bool</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Cancels the RPC. 
+ 
+        Idempotent and has no effect if the RPC has already terminated. 
+ 
+        Returns: 
+          A bool indicates if the cancellation is performed or not. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">add_done_callback</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">callback</span><span class="s4">: </span><span class="s1">DoneCallbackType</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Registers a callback to be called on RPC termination. 
+ 
+        Args: 
+          callback: A callable object will be called with the call object as 
+          its only argument. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">Call</span><span class="s4">(</span><span class="s1">RpcContext</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span><span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;The abstract base class of an RPC on the client-side.&quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">initial_metadata</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Metadata</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Accesses the initial metadata sent by the server. 
+ 
+        Returns: 
+          The initial :term:`metadata`. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">trailing_metadata</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Metadata</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Accesses the trailing metadata sent by the server. 
+ 
+        Returns: 
+          The trailing :term:`metadata`. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">code</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; grpc</span><span class="s4">.</span><span class="s1">StatusCode</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Accesses the status code sent by the server. 
+ 
+        Returns: 
+          The StatusCode value for the RPC. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">details</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; str</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Accesses the details sent by the server. 
+ 
+        Returns: 
+          The details string of the RPC. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">wait_for_connection</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Waits until connected to peer and raises aio.AioRpcError if failed. 
+ 
+        This is an EXPERIMENTAL method. 
+ 
+        This method ensures the RPC has been successfully connected. Otherwise, 
+        an AioRpcError will be raised to explain the reason of the connection 
+        failure. 
+ 
+        This method is recommended for building retry mechanisms. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">UnaryUnaryCall</span><span class="s4">(</span>
+    <span class="s1">Generic</span><span class="s4">[</span><span class="s1">RequestType</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">], </span><span class="s1">Call</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span>
+<span class="s4">):</span>
+    <span class="s2">&quot;&quot;&quot;The abstract base class of an unary-unary RPC on the client-side.&quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">__await__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Generator</span><span class="s4">[</span><span class="s1">Any</span><span class="s4">, </span><span class="s3">None</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Await the response message to be ready. 
+ 
+        Returns: 
+          The response message of the RPC. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">UnaryStreamCall</span><span class="s4">(</span>
+    <span class="s1">Generic</span><span class="s4">[</span><span class="s1">RequestType</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">], </span><span class="s1">Call</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span>
+<span class="s4">):</span>
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">__aiter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; AsyncIterator</span><span class="s4">[</span><span class="s1">ResponseType</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Returns the async iterator representation that yields messages. 
+ 
+        Under the hood, it is calling the &quot;read&quot; method. 
+ 
+        Returns: 
+          An async iterator object that yields messages. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">read</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Union</span><span class="s4">[</span><span class="s1">EOFType</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Reads one message from the stream. 
+ 
+        Read operations must be serialized when called from multiple 
+        coroutines. 
+ 
+        Note that the iterator and read/write APIs may not be mixed on 
+        a single RPC. 
+ 
+        Returns: 
+          A response message, or an `grpc.aio.EOF` to indicate the end of the 
+          stream. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">StreamUnaryCall</span><span class="s4">(</span>
+    <span class="s1">Generic</span><span class="s4">[</span><span class="s1">RequestType</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">], </span><span class="s1">Call</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span>
+<span class="s4">):</span>
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">write</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">request</span><span class="s4">: </span><span class="s1">RequestType</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Writes one message to the stream. 
+ 
+        Note that the iterator and read/write APIs may not be mixed on 
+        a single RPC. 
+ 
+        Raises: 
+          An RpcError exception if the write failed. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">done_writing</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Notifies server that the client is done sending messages. 
+ 
+        After done_writing is called, any additional invocation to the write 
+        function will fail. This function is idempotent. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">__await__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Generator</span><span class="s4">[</span><span class="s1">Any</span><span class="s4">, </span><span class="s3">None</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Await the response message to be ready. 
+ 
+        Returns: 
+          The response message of the stream. 
+        &quot;&quot;&quot;</span>
+
+
+<span class="s3">class </span><span class="s1">StreamStreamCall</span><span class="s4">(</span>
+    <span class="s1">Generic</span><span class="s4">[</span><span class="s1">RequestType</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">], </span><span class="s1">Call</span><span class="s4">, </span><span class="s1">metaclass</span><span class="s4">=</span><span class="s1">ABCMeta</span>
+<span class="s4">):</span>
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">def </span><span class="s1">__aiter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; AsyncIterator</span><span class="s4">[</span><span class="s1">ResponseType</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Returns the async iterator representation that yields messages. 
+ 
+        Under the hood, it is calling the &quot;read&quot; method. 
+ 
+        Returns: 
+          An async iterator object that yields messages. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">read</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; Union</span><span class="s4">[</span><span class="s1">EOFType</span><span class="s4">, </span><span class="s1">ResponseType</span><span class="s4">]:</span>
+        <span class="s2">&quot;&quot;&quot;Reads one message from the stream. 
+ 
+        Read operations must be serialized when called from multiple 
+        coroutines. 
+ 
+        Note that the iterator and read/write APIs may not be mixed on 
+        a single RPC. 
+ 
+        Returns: 
+          A response message, or an `grpc.aio.EOF` to indicate the end of the 
+          stream. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">write</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">request</span><span class="s4">: </span><span class="s1">RequestType</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Writes one message to the stream. 
+ 
+        Note that the iterator and read/write APIs may not be mixed on 
+        a single RPC. 
+ 
+        Raises: 
+          An RpcError exception if the write failed. 
+        &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">abstractmethod</span>
+    <span class="s3">async def </span><span class="s1">done_writing</span><span class="s4">(</span><span class="s1">self</span><span class="s4">) </span><span class="s1">-&gt; </span><span class="s3">None</span><span class="s4">:</span>
+        <span class="s2">&quot;&quot;&quot;Notifies server that the client is done sending messages. 
+ 
+        After done_writing is called, any additional invocation to the write 
+        function will fail. This function is idempotent. 
+        &quot;&quot;&quot;</span>
+</pre>
+</body>
+</html>

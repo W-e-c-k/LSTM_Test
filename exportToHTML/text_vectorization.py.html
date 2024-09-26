@@ -1,0 +1,649 @@
+<html>
+<head>
+<title>text_vectorization.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #5f826b; font-style: italic;}
+.s5 { color: #7a7e85;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+text_vectorization.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">api_export </span><span class="s0">import </span><span class="s1">keras_export</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">layer </span><span class="s0">import </span><span class="s1">Layer</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">preprocessing</span><span class="s2">.</span><span class="s1">index_lookup </span><span class="s0">import </span><span class="s1">listify_tensors</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">.</span><span class="s1">preprocessing</span><span class="s2">.</span><span class="s1">string_lookup </span><span class="s0">import </span><span class="s1">StringLookup</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">serialization_lib</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">argument_validation</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">backend_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">tf_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils</span><span class="s2">.</span><span class="s1">module_utils </span><span class="s0">import </span><span class="s1">tensorflow </span><span class="s0">as </span><span class="s1">tf</span>
+
+
+<span class="s2">@</span><span class="s1">keras_export</span><span class="s2">(</span><span class="s3">&quot;keras.layers.TextVectorization&quot;</span><span class="s2">)</span>
+<span class="s0">class </span><span class="s1">TextVectorization</span><span class="s2">(</span><span class="s1">Layer</span><span class="s2">):</span>
+    <span class="s4">&quot;&quot;&quot;A preprocessing layer which maps text features to integer sequences. 
+ 
+    This layer has basic options for managing text in a Keras model. It 
+    transforms a batch of strings (one example = one string) into either a list 
+    of token indices (one example = 1D tensor of integer token indices) or a 
+    dense representation (one example = 1D tensor of float values representing 
+    data about the example's tokens). This layer is meant to handle natural 
+    language inputs. To handle simple string inputs (categorical strings or 
+    pre-tokenized strings) see `kers_core.layers.StringLookup`. 
+ 
+    The vocabulary for the layer must be either supplied on construction or 
+    learned via `adapt()`. When this layer is adapted, it will analyze the 
+    dataset, determine the frequency of individual string values, and create a 
+    vocabulary from them. This vocabulary can have unlimited size or be capped, 
+    depending on the configuration options for this layer; if there are more 
+    unique values in the input than the maximum vocabulary size, the most 
+    frequent terms will be used to create the vocabulary. 
+ 
+    The processing of each example contains the following steps: 
+ 
+    1. Standardize each example (usually lowercasing + punctuation stripping) 
+    2. Split each example into substrings (usually words) 
+    3. Recombine substrings into tokens (usually ngrams) 
+    4. Index tokens (associate a unique int value with each token) 
+    5. Transform each example using this index, either into a vector of ints or 
+       a dense float vector. 
+ 
+    Some notes on passing callables to customize splitting and normalization for 
+    this layer: 
+ 
+    1. Any callable can be passed to this Layer, but if you want to serialize 
+       this object you should only pass functions that are registered Keras 
+       serializables (see `keras.saving.register_keras_serializable` 
+       for more details). 
+    2. When using a custom callable for `standardize`, the data received 
+       by the callable will be exactly as passed to this layer. The callable 
+       should return a tensor of the same shape as the input. 
+    3. When using a custom callable for `split`, the data received by the 
+       callable will have the 1st dimension squeezed out - instead of 
+       `[[&quot;string to split&quot;], [&quot;another string to split&quot;]]`, the Callable will 
+       see `[&quot;string to split&quot;, &quot;another string to split&quot;]`. 
+       The callable should return a `tf.Tensor` of dtype `string` 
+       with the first dimension containing the split tokens - 
+       in this example, we should see something like `[[&quot;string&quot;, &quot;to&quot;, 
+       &quot;split&quot;], [&quot;another&quot;, &quot;string&quot;, &quot;to&quot;, &quot;split&quot;]]`. 
+ 
+    **Note:** This layer uses TensorFlow internally. It cannot 
+    be used as part of the compiled computation graph of a model with 
+    any backend other than TensorFlow. 
+    It can however be used with any backend when running eagerly. 
+    It can also always be used as part of an input preprocessing pipeline 
+    with any backend (outside the model itself), which is how we recommend 
+    to use this layer. 
+ 
+    **Note:** This layer is safe to use inside a `tf.data` pipeline 
+    (independently of which backend you're using). 
+ 
+    Args: 
+        max_tokens: Maximum size of the vocabulary for this layer. This should 
+            only be specified when adapting a vocabulary or when setting 
+            `pad_to_max_tokens=True`. Note that this vocabulary 
+            contains 1 OOV token, so the effective number of tokens is 
+            `(max_tokens - 1 - (1 if output_mode == &quot;int&quot; else 0))`. 
+        standardize: Optional specification for standardization to apply to the 
+            input text. Values can be: 
+            - `None`: No standardization. 
+            - `&quot;lower_and_strip_punctuation&quot;`: Text will be lowercased and all 
+                punctuation removed. 
+            - `&quot;lower&quot;`: Text will be lowercased. 
+            - `&quot;strip_punctuation&quot;`: All punctuation will be removed. 
+            - Callable: Inputs will passed to the callable function, 
+                which should be standardized and returned. 
+        split: Optional specification for splitting the input text. 
+            Values can be: 
+            - `None`: No splitting. 
+            - `&quot;whitespace&quot;`: Split on whitespace. 
+            - `&quot;character&quot;`: Split on each unicode character. 
+            - Callable: Standardized inputs will passed to the callable 
+                function, which should be split and returned. 
+        ngrams: Optional specification for ngrams to create from the 
+            possibly-split input text. Values can be `None`, an integer 
+            or tuple of integers; passing an integer will create ngrams 
+            up to that integer, and passing a tuple of integers will 
+            create ngrams for the specified values in the tuple. 
+            Passing `None` means that no ngrams will be created. 
+        output_mode: Optional specification for the output of the layer. 
+            Values can be `&quot;int&quot;`, `&quot;multi_hot&quot;`, `&quot;count&quot;` or `&quot;tf_idf&quot;`, 
+            configuring the layer as follows: 
+            - `&quot;int&quot;`: Outputs integer indices, one integer index per split 
+                string token. When `output_mode == &quot;int&quot;`, 
+                0 is reserved for masked locations; 
+                this reduces the vocab size to `max_tokens - 2` 
+                instead of `max_tokens - 1`. 
+            - `&quot;multi_hot&quot;`: Outputs a single int array per batch, of either 
+                vocab_size or max_tokens size, containing 1s in all elements 
+                where the token mapped to that index exists at least 
+                once in the batch item. 
+            - `&quot;count&quot;`: Like `&quot;multi_hot&quot;`, but the int array contains 
+                a count of the number of times the token at that index 
+                appeared in the batch item. 
+            - `&quot;tf_idf&quot;`: Like `&quot;multi_hot&quot;`, but the TF-IDF algorithm 
+                is applied to find the value in each token slot. 
+            For `&quot;int&quot;` output, any shape of input and output is supported. 
+            For all other output modes, currently only rank 1 inputs 
+            (and rank 2 outputs after splitting) are supported. 
+        output_sequence_length: Only valid in INT mode. If set, the output will 
+            have its time dimension padded or truncated to exactly 
+            `output_sequence_length` values, resulting in a tensor of shape 
+            `(batch_size, output_sequence_length)` regardless of how many tokens 
+            resulted from the splitting step. Defaults to `None`. If `ragged` 
+            is `True` then `output_sequence_length` may still truncate the 
+            output. 
+        pad_to_max_tokens: Only valid in  `&quot;multi_hot&quot;`, `&quot;count&quot;`, 
+            and `&quot;tf_idf&quot;` modes. If `True`, the output will have 
+            its feature axis padded to `max_tokens` even if the number 
+            of unique tokens in the vocabulary is less than `max_tokens`, 
+            resulting in a tensor of shape `(batch_size, max_tokens)` 
+            regardless of vocabulary size. Defaults to `False`. 
+        vocabulary: Optional. Either an array of strings or a string path to a 
+            text file. If passing an array, can pass a tuple, list, 
+            1D NumPy array, or 1D tensor containing the string vocabulary terms. 
+            If passing a file path, the file should contain one line per term 
+            in the vocabulary. If this argument is set, 
+            there is no need to `adapt()` the layer. 
+        idf_weights: Only valid when `output_mode` is `&quot;tf_idf&quot;`. A tuple, list, 
+            1D NumPy array, or 1D tensor of the same length as the vocabulary, 
+            containing the floating point inverse document frequency weights, 
+            which will be multiplied by per sample term counts for 
+            the final `tf_idf` weight. If the `vocabulary` argument is set, 
+            and `output_mode` is `&quot;tf_idf&quot;`, this argument must be supplied. 
+        ragged: Boolean. Only applicable to `&quot;int&quot;` output mode. 
+            Only supported with TensorFlow backend. 
+            If `True`, returns a `RaggedTensor` instead of a dense `Tensor`, 
+            where each sequence may have a different length 
+            after string splitting. Defaults to `False`. 
+        sparse: Boolean. Only applicable to `&quot;multi_hot&quot;`, `&quot;count&quot;`, and 
+            `&quot;tf_idf&quot;` output modes. Only supported with TensorFlow 
+            backend. If `True`, returns a `SparseTensor` 
+            instead of a dense `Tensor`. Defaults to `False`. 
+        encoding: Optional. The text encoding to use to interpret the input 
+            strings. Defaults to `&quot;utf-8&quot;`. 
+ 
+    Examples: 
+ 
+    This example instantiates a `TextVectorization` layer that lowercases text, 
+    splits on whitespace, strips punctuation, and outputs integer vocab indices. 
+ 
+    &gt;&gt;&gt; max_tokens = 5000  # Maximum vocab size. 
+    &gt;&gt;&gt; max_len = 4  # Sequence length to pad the outputs to. 
+    &gt;&gt;&gt; # Create the layer. 
+    &gt;&gt;&gt; vectorize_layer = TextVectorization( 
+    ...     max_tokens=max_tokens, 
+    ...     output_mode='int', 
+    ...     output_sequence_length=max_len) 
+ 
+    &gt;&gt;&gt; # Now that the vocab layer has been created, call `adapt` on the 
+    &gt;&gt;&gt; # list of strings to create the vocabulary. 
+    &gt;&gt;&gt; vectorize_layer.adapt([&quot;foo bar&quot;, &quot;bar baz&quot;, &quot;baz bada boom&quot;]) 
+ 
+    &gt;&gt;&gt; # Now, the layer can map strings to integers -- you can use an 
+    &gt;&gt;&gt; # embedding layer to map these integers to learned embeddings. 
+    &gt;&gt;&gt; input_data = [[&quot;foo qux bar&quot;], [&quot;qux baz&quot;]] 
+    &gt;&gt;&gt; vectorize_layer(input_data) 
+    array([[4, 1, 3, 0], 
+           [1, 2, 0, 0]]) 
+ 
+    This example instantiates a `TextVectorization` layer by passing a list 
+    of vocabulary terms to the layer's `__init__()` method. 
+ 
+    &gt;&gt;&gt; vocab_data = [&quot;earth&quot;, &quot;wind&quot;, &quot;and&quot;, &quot;fire&quot;] 
+    &gt;&gt;&gt; max_len = 4  # Sequence length to pad the outputs to. 
+    &gt;&gt;&gt; # Create the layer, passing the vocab directly. You can also pass the 
+    &gt;&gt;&gt; # vocabulary arg a path to a file containing one vocabulary word per 
+    &gt;&gt;&gt; # line. 
+    &gt;&gt;&gt; vectorize_layer = keras.layers.TextVectorization( 
+    ...     max_tokens=max_tokens, 
+    ...     output_mode='int', 
+    ...     output_sequence_length=max_len, 
+    ...     vocabulary=vocab_data) 
+ 
+    &gt;&gt;&gt; # Because we've passed the vocabulary directly, we don't need to adapt 
+    &gt;&gt;&gt; # the layer - the vocabulary is already set. The vocabulary contains the 
+    &gt;&gt;&gt; # padding token ('') and OOV token ('[UNK]') 
+    &gt;&gt;&gt; # as well as the passed tokens. 
+    &gt;&gt;&gt; vectorize_layer.get_vocabulary() 
+    ['', '[UNK]', 'earth', 'wind', 'and', 'fire'] 
+    &quot;&quot;&quot;</span>
+
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s2">(</span>
+        <span class="s1">self</span><span class="s2">,</span>
+        <span class="s1">max_tokens</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">standardize</span><span class="s2">=</span><span class="s3">&quot;lower_and_strip_punctuation&quot;</span><span class="s2">,</span>
+        <span class="s1">split</span><span class="s2">=</span><span class="s3">&quot;whitespace&quot;</span><span class="s2">,</span>
+        <span class="s1">ngrams</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">output_mode</span><span class="s2">=</span><span class="s3">&quot;int&quot;</span><span class="s2">,</span>
+        <span class="s1">output_sequence_length</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">pad_to_max_tokens</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">vocabulary</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">idf_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s1">sparse</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">ragged</span><span class="s2">=</span><span class="s0">False</span><span class="s2">,</span>
+        <span class="s1">encoding</span><span class="s2">=</span><span class="s3">&quot;utf-8&quot;</span><span class="s2">,</span>
+        <span class="s1">name</span><span class="s2">=</span><span class="s0">None</span><span class="s2">,</span>
+        <span class="s2">**</span><span class="s1">kwargs</span><span class="s2">,</span>
+    <span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">available</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ImportError</span><span class="s2">(</span>
+                <span class="s3">&quot;Layer TextVectorization requires TensorFlow. &quot;</span>
+                <span class="s3">&quot;Install it via `pip install tensorflow`.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">sparse </span><span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`sparse=True` can only be used with the &quot; &quot;TensorFlow backend.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">ragged </span><span class="s0">and </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">() != </span><span class="s3">&quot;tensorflow&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`ragged=True` can only be used with the &quot; &quot;TensorFlow backend.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s5"># 'standardize' must be one of</span>
+        <span class="s5"># (None, &quot;lower_and_strip_punctuation&quot;, &quot;lower&quot;, &quot;strip_punctuation&quot;,</span>
+        <span class="s5"># callable)</span>
+        <span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">validate_string_arg</span><span class="s2">(</span>
+            <span class="s1">standardize</span><span class="s2">,</span>
+            <span class="s1">allowable_strings</span><span class="s2">=(</span>
+                <span class="s3">&quot;lower_and_strip_punctuation&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;lower&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;strip_punctuation&quot;</span><span class="s2">,</span>
+            <span class="s2">),</span>
+            <span class="s1">caller_name</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">,</span>
+            <span class="s1">arg_name</span><span class="s2">=</span><span class="s3">&quot;standardize&quot;</span><span class="s2">,</span>
+            <span class="s1">allow_none</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+            <span class="s1">allow_callables</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s5"># 'split' must be one of (None, &quot;whitespace&quot;, &quot;character&quot;, callable)</span>
+        <span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">validate_string_arg</span><span class="s2">(</span>
+            <span class="s1">split</span><span class="s2">,</span>
+            <span class="s1">allowable_strings</span><span class="s2">=(</span><span class="s3">&quot;whitespace&quot;</span><span class="s2">, </span><span class="s3">&quot;character&quot;</span><span class="s2">),</span>
+            <span class="s1">caller_name</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">,</span>
+            <span class="s1">arg_name</span><span class="s2">=</span><span class="s3">&quot;split&quot;</span><span class="s2">,</span>
+            <span class="s1">allow_none</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+            <span class="s1">allow_callables</span><span class="s2">=</span><span class="s0">True</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s5"># Support deprecated names for output_modes.</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;binary&quot;</span><span class="s2">:</span>
+            <span class="s1">output_mode </span><span class="s2">= </span><span class="s3">&quot;multi_hot&quot;</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;tf-idf&quot;</span><span class="s2">:</span>
+            <span class="s1">output_mode </span><span class="s2">= </span><span class="s3">&quot;tf_idf&quot;</span>
+        <span class="s1">argument_validation</span><span class="s2">.</span><span class="s1">validate_string_arg</span><span class="s2">(</span>
+            <span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s1">allowable_strings</span><span class="s2">=(</span>
+                <span class="s3">&quot;int&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;one_hot&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;multi_hot&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;count&quot;</span><span class="s2">,</span>
+                <span class="s3">&quot;tf_idf&quot;</span><span class="s2">,</span>
+            <span class="s2">),</span>
+            <span class="s1">caller_name</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">__class__</span><span class="s2">.</span><span class="s1">__name__</span><span class="s2">,</span>
+            <span class="s1">arg_name</span><span class="s2">=</span><span class="s3">&quot;output_mode&quot;</span><span class="s2">,</span>
+        <span class="s2">)</span>
+
+        <span class="s5"># 'ngrams' must be one of (None, int, tuple(int))</span>
+        <span class="s0">if not </span><span class="s2">(</span>
+            <span class="s1">ngrams </span><span class="s0">is None</span>
+            <span class="s0">or </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">ngrams</span><span class="s2">, </span><span class="s1">int</span><span class="s2">)</span>
+            <span class="s0">or </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">ngrams</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)</span>
+            <span class="s0">and </span><span class="s1">all</span><span class="s2">(</span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">item</span><span class="s2">, </span><span class="s1">int</span><span class="s2">) </span><span class="s0">for </span><span class="s1">item </span><span class="s0">in </span><span class="s1">ngrams</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`ngrams` must be None, an integer, or a tuple of &quot;</span>
+                <span class="s3">f&quot;integers. Received: ngrams=</span><span class="s0">{</span><span class="s1">ngrams</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s5"># 'output_sequence_length' must be one of (None, int) and is only</span>
+        <span class="s5"># set if output_mode is &quot;int&quot;&quot;.</span>
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s2">== </span><span class="s3">&quot;int&quot; </span><span class="s0">and not </span><span class="s2">(</span>
+            <span class="s1">isinstance</span><span class="s2">(</span><span class="s1">output_sequence_length</span><span class="s2">, </span><span class="s1">int</span><span class="s2">)</span>
+            <span class="s0">or </span><span class="s2">(</span><span class="s1">output_sequence_length </span><span class="s0">is None</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`output_sequence_length` must be either None or an &quot;</span>
+                <span class="s3">&quot;integer when `output_mode` is 'int'. Received: &quot;</span>
+                <span class="s3">f&quot;output_sequence_length=</span><span class="s0">{</span><span class="s1">output_sequence_length</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">output_mode </span><span class="s2">!= </span><span class="s3">&quot;int&quot; </span><span class="s0">and </span><span class="s1">output_sequence_length </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`output_sequence_length` must not be set if `output_mode` is &quot;</span>
+                <span class="s3">&quot;not 'int'. &quot;</span>
+                <span class="s3">f&quot;Received output_sequence_length=</span><span class="s0">{</span><span class="s1">output_sequence_length</span><span class="s0">}</span><span class="s3">.&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">ragged </span><span class="s0">and </span><span class="s1">output_mode </span><span class="s2">!= </span><span class="s3">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s3">&quot;`ragged` must not be true if `output_mode` is &quot;</span>
+                <span class="s3">f&quot;`'int'`. Received: ragged=</span><span class="s0">{</span><span class="s1">ragged</span><span class="s0">} </span><span class="s3">and &quot;</span>
+                <span class="s3">f&quot;output_mode=</span><span class="s0">{</span><span class="s1">output_mode</span><span class="s0">}</span><span class="s3">&quot;</span>
+            <span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_max_tokens </span><span class="s2">= </span><span class="s1">max_tokens</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize </span><span class="s2">= </span><span class="s1">standardize</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_split </span><span class="s2">= </span><span class="s1">split</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_ngrams_arg </span><span class="s2">= </span><span class="s1">ngrams</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">ngrams</span><span class="s2">, </span><span class="s1">int</span><span class="s2">):</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_ngrams </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">range</span><span class="s2">(</span><span class="s6">1</span><span class="s2">, </span><span class="s1">ngrams </span><span class="s2">+ </span><span class="s6">1</span><span class="s2">))</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">_ngrams </span><span class="s2">= </span><span class="s1">ngrams</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_ragged </span><span class="s2">= </span><span class="s1">ragged</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_output_mode </span><span class="s2">= </span><span class="s1">output_mode</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length </span><span class="s2">= </span><span class="s1">output_sequence_length</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_encoding </span><span class="s2">= </span><span class="s1">encoding</span>
+
+        <span class="s5"># We save this hidden option to persist the fact</span>
+        <span class="s5"># that we have a non-adaptable layer with a</span>
+        <span class="s5"># manually set vocab.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span>
+            <span class="s3">&quot;has_input_vocabulary&quot;</span><span class="s2">, (</span><span class="s1">vocabulary </span><span class="s0">is not None</span><span class="s2">)</span>
+        <span class="s2">)</span>
+        <span class="s1">vocabulary_size </span><span class="s2">= </span><span class="s1">kwargs</span><span class="s2">.</span><span class="s1">pop</span><span class="s2">(</span><span class="s3">&quot;vocabulary_size&quot;</span><span class="s2">, </span><span class="s0">None</span><span class="s2">)</span>
+
+        <span class="s1">super</span><span class="s2">().</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">name</span><span class="s2">=</span><span class="s1">name</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer </span><span class="s2">= </span><span class="s1">StringLookup</span><span class="s2">(</span>
+            <span class="s1">max_tokens</span><span class="s2">=</span><span class="s1">max_tokens</span><span class="s2">,</span>
+            <span class="s1">vocabulary</span><span class="s2">=</span><span class="s1">vocabulary</span><span class="s2">,</span>
+            <span class="s1">idf_weights</span><span class="s2">=</span><span class="s1">idf_weights</span><span class="s2">,</span>
+            <span class="s1">pad_to_max_tokens</span><span class="s2">=</span><span class="s1">pad_to_max_tokens</span><span class="s2">,</span>
+            <span class="s1">mask_token</span><span class="s2">=</span><span class="s3">&quot;&quot;</span><span class="s2">,</span>
+            <span class="s1">output_mode</span><span class="s2">=</span><span class="s1">output_mode</span><span class="s2">,</span>
+            <span class="s1">sparse</span><span class="s2">=</span><span class="s1">sparse</span><span class="s2">,</span>
+            <span class="s1">has_input_vocabulary</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_has_input_vocabulary</span><span class="s2">,</span>
+            <span class="s1">encoding</span><span class="s2">=</span><span class="s1">encoding</span><span class="s2">,</span>
+            <span class="s1">vocabulary_size</span><span class="s2">=</span><span class="s1">vocabulary_size</span><span class="s2">,</span>
+        <span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_convert_input_args </span><span class="s2">= </span><span class="s0">False</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_allow_non_tensor_positional_args </span><span class="s2">= </span><span class="s0">True</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">supports_jit </span><span class="s2">= </span><span class="s0">False</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">compute_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s3">&quot;string&quot;</span>
+
+    <span class="s2">@</span><span class="s1">property</span>
+    <span class="s0">def </span><span class="s1">variable_dtype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s0">return </span><span class="s3">&quot;string&quot;</span>
+
+    <span class="s0">def </span><span class="s1">build</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s0">pass</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">input_shape</span><span class="s2">):</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_mode </span><span class="s2">== </span><span class="s3">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">[</span><span class="s6">0</span><span class="s2">], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) &lt;= </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) + (</span><span class="s6">1</span><span class="s2">,)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">input_shape </span><span class="s2">= </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">) + (</span><span class="s0">None</span><span class="s2">,)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">input_shape</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">compute_output_spec</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s1">output_shape </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">compute_output_shape</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_mode </span><span class="s2">== </span><span class="s3">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s1">output_dtype </span><span class="s2">= </span><span class="s3">&quot;int64&quot;</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">output_dtype </span><span class="s2">= </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">floatx</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">KerasTensor</span><span class="s2">(</span><span class="s1">output_shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">output_dtype</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">adapt</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">batch_size</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">steps</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Computes a vocabulary of string terms from tokens in a dataset. 
+ 
+        Calling `adapt()` on a `TextVectorization` layer is an alternative to 
+        passing in a precomputed vocabulary on construction via the `vocabulary` 
+        argument. A `TextVectorization` layer should always be either adapted 
+        over a dataset or supplied with a vocabulary. 
+ 
+        During `adapt()`, the layer will build a vocabulary of all string tokens 
+        seen in the dataset, sorted by occurrence count, with ties broken by 
+        sort order of the tokens (high to low). At the end of `adapt()`, if 
+        `max_tokens` is set, the vocabulary will be truncated to `max_tokens` 
+        size. For example, adapting a layer with `max_tokens=1000` will compute 
+        the 1000 most frequent tokens occurring in the input dataset. If 
+        `output_mode='tf-idf'`, `adapt()` will also learn the document 
+        frequencies of each token in the input dataset. 
+ 
+        Arguments: 
+            data: The data to train on. It can be passed either as a 
+                batched `tf.data.Dataset`, as a list of strings, 
+                or as a NumPy array. 
+            steps: Integer or `None`. 
+                Total number of steps (batches of samples) to process. 
+                If `data` is a `tf.data.Dataset`, and `steps` is `None`, 
+                `adapt()` will run until the input dataset is exhausted. 
+                When passing an infinitely 
+                repeating dataset, you must specify the `steps` argument. This 
+                argument is not supported with array inputs or list inputs. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">reset_state</span><span class="s2">()</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">data</span><span class="s2">.</span><span class="s1">Dataset</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">steps </span><span class="s0">is not None</span><span class="s2">:</span>
+                <span class="s1">data </span><span class="s2">= </span><span class="s1">data</span><span class="s2">.</span><span class="s1">take</span><span class="s2">(</span><span class="s1">steps</span><span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">batch </span><span class="s0">in </span><span class="s1">data</span><span class="s2">:</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">batch</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">data </span><span class="s2">= </span><span class="s1">tf_utils</span><span class="s2">.</span><span class="s1">ensure_tensor</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s3">&quot;string&quot;</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">data</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">== </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s5"># A plain list of strings</span>
+                <span class="s5"># is treated as as many documents</span>
+                <span class="s1">data </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">expand_dims</span><span class="s2">(</span><span class="s1">data</span><span class="s2">, -</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">finalize_state</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">update_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocess</span><span class="s2">(</span><span class="s1">data</span><span class="s2">))</span>
+
+    <span class="s0">def </span><span class="s1">finalize_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">finalize_state</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">reset_state</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">reset_state</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">get_vocabulary</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">include_special_tokens</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Returns the current vocabulary of the layer. 
+ 
+        Args: 
+            include_special_tokens: If `True`, the returned vocabulary 
+                will include the padding and OOV tokens, 
+                and a term's index in the vocabulary will equal 
+                the term's index when calling the layer. If `False`, the 
+                returned vocabulary will not include any padding 
+                or OOV tokens. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">get_vocabulary</span><span class="s2">(</span><span class="s1">include_special_tokens</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">vocabulary_size</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Gets the current size of the layer's vocabulary. 
+ 
+        Returns: 
+            The integer size of the vocabulary, including optional 
+            mask and OOV indices. 
+        &quot;&quot;&quot;</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">vocabulary_size</span><span class="s2">()</span>
+
+    <span class="s0">def </span><span class="s1">get_config</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">config </span><span class="s2">= {</span>
+            <span class="s3">&quot;max_tokens&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">max_tokens</span><span class="s2">,</span>
+            <span class="s3">&quot;standardize&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize</span><span class="s2">,</span>
+            <span class="s3">&quot;split&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split</span><span class="s2">,</span>
+            <span class="s3">&quot;ngrams&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ngrams_arg</span><span class="s2">,</span>
+            <span class="s3">&quot;output_mode&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_mode</span><span class="s2">,</span>
+            <span class="s3">&quot;output_sequence_length&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length</span><span class="s2">,</span>
+            <span class="s3">&quot;pad_to_max_tokens&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">pad_to_max_tokens</span><span class="s2">,</span>
+            <span class="s3">&quot;sparse&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">sparse</span><span class="s2">,</span>
+            <span class="s3">&quot;ragged&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ragged</span><span class="s2">,</span>
+            <span class="s3">&quot;vocabulary&quot;</span><span class="s2">: </span><span class="s1">listify_tensors</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">input_vocabulary</span><span class="s2">),</span>
+            <span class="s3">&quot;idf_weights&quot;</span><span class="s2">: </span><span class="s1">listify_tensors</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">input_idf_weights</span>
+            <span class="s2">),</span>
+            <span class="s3">&quot;encoding&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_encoding</span><span class="s2">,</span>
+            <span class="s3">&quot;vocabulary_size&quot;</span><span class="s2">: </span><span class="s1">self</span><span class="s2">.</span><span class="s1">vocabulary_size</span><span class="s2">(),</span>
+        <span class="s2">}</span>
+        <span class="s1">base_config </span><span class="s2">= </span><span class="s1">super</span><span class="s2">().</span><span class="s1">get_config</span><span class="s2">()</span>
+        <span class="s0">return </span><span class="s2">{**</span><span class="s1">base_config</span><span class="s2">, **</span><span class="s1">config</span><span class="s2">}</span>
+
+    <span class="s2">@</span><span class="s1">classmethod</span>
+    <span class="s0">def </span><span class="s1">from_config</span><span class="s2">(</span><span class="s1">cls</span><span class="s2">, </span><span class="s1">config</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;standardize&quot;</span><span class="s2">], </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;standardize&quot;</span><span class="s2">] = </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+                <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;standardize&quot;</span><span class="s2">]</span>
+            <span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;split&quot;</span><span class="s2">], </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;split&quot;</span><span class="s2">] = </span><span class="s1">serialization_lib</span><span class="s2">.</span><span class="s1">deserialize_keras_object</span><span class="s2">(</span>
+                <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;split&quot;</span><span class="s2">]</span>
+            <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;ngrams&quot;</span><span class="s2">], </span><span class="s1">list</span><span class="s2">):</span>
+            <span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;ngrams&quot;</span><span class="s2">] = </span><span class="s1">tuple</span><span class="s2">(</span><span class="s1">config</span><span class="s2">[</span><span class="s3">&quot;ngrams&quot;</span><span class="s2">])</span>
+
+        <span class="s0">return </span><span class="s1">cls</span><span class="s2">(**</span><span class="s1">config</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">set_vocabulary</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">vocabulary</span><span class="s2">, </span><span class="s1">idf_weights</span><span class="s2">=</span><span class="s0">None</span><span class="s2">):</span>
+        <span class="s4">&quot;&quot;&quot;Sets vocabulary (and optionally document frequency) for this layer. 
+ 
+        This method sets the vocabulary and IDF weights for this layer directly, 
+        instead of analyzing a dataset through `adapt()`. It should be used 
+        whenever the vocab (and optionally document frequency) information is 
+        already known. If vocabulary data is already present in the layer, this 
+        method will replace it. 
+ 
+        Args: 
+            vocabulary: Either an array or a string path to a text file. 
+                If passing an array, can pass a tuple, list, 1D NumPy array, 
+                or 1D tensor containing the vocbulary terms. 
+                If passing a file path, the file should contain one line 
+                per term in the vocabulary. 
+            idf_weights: A tuple, list, 1D NumPy array, or 1D tensor of inverse 
+                document frequency weights with equal length to vocabulary. 
+                Must be set if `output_mode` is `&quot;tf_idf&quot;`. 
+                Should not be set otherwise. 
+        &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">set_vocabulary</span><span class="s2">(</span><span class="s1">vocabulary</span><span class="s2">, </span><span class="s1">idf_weights</span><span class="s2">=</span><span class="s1">idf_weights</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">_preprocess</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf_utils</span><span class="s2">.</span><span class="s1">ensure_tensor</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">string</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize </span><span class="s0">in </span><span class="s2">(</span><span class="s3">&quot;lower&quot;</span><span class="s2">, </span><span class="s3">&quot;lower_and_strip_punctuation&quot;</span><span class="s2">):</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">lower</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize </span><span class="s0">in </span><span class="s2">(</span>
+            <span class="s3">&quot;strip_punctuation&quot;</span><span class="s2">,</span>
+            <span class="s3">&quot;lower_and_strip_punctuation&quot;</span><span class="s2">,</span>
+        <span class="s2">):</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">regex_replace</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">, </span><span class="s3">r'[!&quot;#$%&amp;()\*\+,-\./:;&lt;=&gt;?@\[\\\]^_`{|}~\']'</span><span class="s2">, </span><span class="s3">&quot;&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">callable</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize</span><span class="s2">):</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_standardize</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s5"># If we are splitting, we validate that the 1st axis is of dimension</span>
+            <span class="s5"># 1 and so can be squeezed out. We do this here instead of after</span>
+            <span class="s5"># splitting for performance reasons - it's more expensive to squeeze</span>
+            <span class="s5"># a ragged tensor.</span>
+            <span class="s0">if </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank </span><span class="s2">&gt; </span><span class="s6">1</span><span class="s2">:</span>
+                <span class="s0">if </span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">] != </span><span class="s6">1</span><span class="s2">:</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s3">&quot;When using `TextVectorization` to tokenize strings, &quot;</span>
+                        <span class="s3">&quot;the input rank must be 1 or the last shape dimension &quot;</span>
+                        <span class="s3">f&quot;must be 1. Received: inputs.shape=</span><span class="s0">{</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s0">} </span><span class="s3">&quot;</span>
+                        <span class="s3">f&quot;with rank=</span><span class="s0">{</span><span class="s1">inputs</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">rank</span><span class="s0">}</span><span class="s3">&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">squeeze</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s1">axis</span><span class="s2">=-</span><span class="s6">1</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split </span><span class="s2">== </span><span class="s3">&quot;whitespace&quot;</span><span class="s2">:</span>
+                <span class="s5"># This treats multiple whitespaces as one whitespace, and strips</span>
+                <span class="s5"># leading and trailing whitespace.</span>
+                <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">split</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split </span><span class="s2">== </span><span class="s3">&quot;character&quot;</span><span class="s2">:</span>
+                <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">unicode_split</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">, </span><span class="s3">&quot;UTF-8&quot;</span><span class="s2">)</span>
+            <span class="s0">elif </span><span class="s1">callable</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split</span><span class="s2">):</span>
+                <span class="s1">inputs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_split</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+        <span class="s5"># Note that 'inputs' here can be either ragged or dense depending on the</span>
+        <span class="s5"># configuration choices for this Layer. The strings.ngrams op, however,</span>
+        <span class="s5"># does support both ragged and dense inputs.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ngrams </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">strings</span><span class="s2">.</span><span class="s1">ngrams</span><span class="s2">(</span>
+                <span class="s1">inputs</span><span class="s2">, </span><span class="s1">ngram_width</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ngrams</span><span class="s2">, </span><span class="s1">separator</span><span class="s2">=</span><span class="s3">&quot; &quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">return </span><span class="s1">inputs</span>
+
+    <span class="s0">def </span><span class="s1">call</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">inputs</span><span class="s2">):</span>
+        <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span>
+            <span class="s1">inputs</span><span class="s2">, (</span><span class="s1">tf</span><span class="s2">.</span><span class="s1">Tensor</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">, </span><span class="s1">np</span><span class="s2">.</span><span class="s1">ndarray</span><span class="s2">, </span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)</span>
+        <span class="s2">):</span>
+            <span class="s1">inputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">convert_to_tensor</span><span class="s2">(</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">))</span>
+
+        <span class="s1">inputs </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_preprocess</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+        <span class="s5"># If we're not doing any output processing, return right away.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_mode </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">inputs</span>
+
+        <span class="s1">lookup_data </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">call</span><span class="s2">(</span><span class="s1">inputs</span><span class="s2">)</span>
+
+        <span class="s5"># For non-int output, we can return directly from the underlying layer.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_mode </span><span class="s2">!= </span><span class="s3">&quot;int&quot;</span><span class="s2">:</span>
+            <span class="s0">return </span><span class="s1">backend_utils</span><span class="s2">.</span><span class="s1">convert_tf_tensor</span><span class="s2">(</span><span class="s1">lookup_data</span><span class="s2">)</span>
+
+        <span class="s5"># If we have a ragged tensor, we can pad during the conversion to dense.</span>
+        <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">lookup_data</span><span class="s2">, </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">RaggedTensor</span><span class="s2">) </span><span class="s0">and not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ragged</span><span class="s2">:</span>
+            <span class="s1">shape </span><span class="s2">= </span><span class="s1">lookup_data</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">.</span><span class="s1">as_list</span><span class="s2">()</span>
+            <span class="s5"># If output sequence length is None, to_tensor will pad the last</span>
+            <span class="s5"># dimension to the bounding shape of the ragged dimension.</span>
+            <span class="s1">shape</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">lookup_data</span><span class="s2">.</span><span class="s1">to_tensor</span><span class="s2">(</span><span class="s1">default_value</span><span class="s2">=</span><span class="s6">0</span><span class="s2">, </span><span class="s1">shape</span><span class="s2">=</span><span class="s1">shape</span><span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">lookup_data</span>
+
+        <span class="s5"># If we have a dense tensor, we need to pad/trim directly.</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length </span><span class="s0">is not None</span><span class="s2">:</span>
+            <span class="s5"># Maybe trim the output.</span>
+            <span class="s1">outputs </span><span class="s2">= </span><span class="s1">outputs</span><span class="s2">[..., : </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length</span><span class="s2">]</span>
+
+            <span class="s5"># Maybe pad the output. We need to be careful to use dynamic shape</span>
+            <span class="s5"># here as required_space_to_batch_paddings requires a fully known</span>
+            <span class="s5"># shape.</span>
+            <span class="s0">if not </span><span class="s1">self</span><span class="s2">.</span><span class="s1">_ragged</span><span class="s2">:</span>
+                <span class="s1">shape </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">)</span>
+                <span class="s1">padded_shape </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">concat</span><span class="s2">(</span>
+                    <span class="s2">(</span><span class="s1">shape</span><span class="s2">[:-</span><span class="s6">1</span><span class="s2">], [</span><span class="s1">self</span><span class="s2">.</span><span class="s1">_output_sequence_length</span><span class="s2">]), </span><span class="s6">0</span>
+                <span class="s2">)</span>
+                <span class="s1">padding</span><span class="s2">, </span><span class="s1">_ </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">required_space_to_batch_paddings</span><span class="s2">(</span>
+                    <span class="s1">shape</span><span class="s2">, </span><span class="s1">padded_shape</span>
+                <span class="s2">)</span>
+                <span class="s1">outputs </span><span class="s2">= </span><span class="s1">tf</span><span class="s2">.</span><span class="s1">pad</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">, </span><span class="s1">padding</span><span class="s2">)</span>
+
+        <span class="s0">return </span><span class="s1">backend_utils</span><span class="s2">.</span><span class="s1">convert_tf_tensor</span><span class="s2">(</span><span class="s1">outputs</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">save_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">save_own_variables</span><span class="s2">(</span><span class="s1">store</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">load_own_variables</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">store</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">load_own_variables</span><span class="s2">(</span><span class="s1">store</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">save_assets</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">dir_path</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">save_assets</span><span class="s2">(</span><span class="s1">dir_path</span><span class="s2">)</span>
+
+    <span class="s0">def </span><span class="s1">load_assets</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">dir_path</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">_lookup_layer</span><span class="s2">.</span><span class="s1">load_assets</span><span class="s2">(</span><span class="s1">dir_path</span><span class="s2">)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,280 @@
+<html>
+<head>
+<title>_gradient_boosting.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_gradient_boosting.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Author: Peter Prettenhofer</span>
+<span class="s0">#</span>
+<span class="s0"># License: BSD 3 clause</span>
+
+<span class="s0">from libc.stdlib cimport free</span>
+<span class="s0">from libc.string cimport memset</span>
+
+<span class="s0">import numpy as np</span>
+<span class="s0">from scipy.sparse import issparse</span>
+
+<span class="s0">from ..utils._typedefs cimport float32_t, float64_t, intp_t, int32_t, uint8_t</span>
+<span class="s0"># Note: _tree uses cimport numpy, cnp.import_array, so we need to include</span>
+<span class="s0"># numpy headers, see setup.py.</span>
+<span class="s0">from ..tree._tree cimport Node</span>
+<span class="s0">from ..tree._tree cimport Tree</span>
+<span class="s0">from ..tree._utils cimport safe_realloc</span>
+
+
+<span class="s0"># no namespace lookup for numpy dtype and array creation</span>
+<span class="s0">from numpy import zeros as np_zeros</span>
+
+
+<span class="s0"># constant to mark tree leafs</span>
+<span class="s0">cdef intp_t TREE_LEAF = -1</span>
+
+<span class="s0">cdef void _predict_regression_tree_inplace_fast_dense(</span>
+    <span class="s0">const float32_t[:, ::1] X,</span>
+    <span class="s0">Node* root_node,</span>
+    <span class="s0">double *value,</span>
+    <span class="s0">double scale,</span>
+    <span class="s0">Py_ssize_t k,</span>
+    <span class="s0">float64_t[:, :] out</span>
+<span class="s0">) noexcept nogil:</span>
+    <span class="s0">&quot;&quot;&quot;Predicts output for regression tree and stores it in ``out[i, k]``.</span>
+
+    <span class="s0">This function operates directly on the data arrays of the tree</span>
+    <span class="s0">data structures. This is 5x faster than the variant above because</span>
+    <span class="s0">it allows us to avoid buffer validation.</span>
+
+    <span class="s0">The function assumes that the ndarray that wraps ``X`` is</span>
+    <span class="s0">c-continuous.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">X : float32_t 2d memory view</span>
+        <span class="s0">The memory view on the data ndarray of the input ``X``.</span>
+        <span class="s0">Assumes that the array is c-continuous.</span>
+    <span class="s0">root_node : tree Node pointer</span>
+        <span class="s0">Pointer to the main node array of the :class:``sklearn.tree.Tree``.</span>
+    <span class="s0">value : np.float64_t pointer</span>
+        <span class="s0">The pointer to the data array of the ``value`` array attribute</span>
+        <span class="s0">of the :class:``sklearn.tree.Tree``.</span>
+    <span class="s0">scale : double</span>
+        <span class="s0">A constant to scale the predictions.</span>
+    <span class="s0">k : int</span>
+        <span class="s0">The index of the tree output to be predicted. Must satisfy</span>
+        <span class="s0">0 &lt;= ``k`` &lt; ``K``.</span>
+    <span class="s0">out : memory view on array of type np.float64_t</span>
+        <span class="s0">The data array where the predictions are stored.</span>
+        <span class="s0">``out`` is assumed to be a two-dimensional array of</span>
+        <span class="s0">shape ``(n_samples, K)``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef intp_t n_samples = X.shape[0]</span>
+    <span class="s0">cdef Py_ssize_t i</span>
+    <span class="s0">cdef Node *node</span>
+    <span class="s0">for i in range(n_samples):</span>
+        <span class="s0">node = root_node</span>
+        <span class="s0"># While node not a leaf</span>
+        <span class="s0">while node.left_child != TREE_LEAF:</span>
+            <span class="s0">if X[i, node.feature] &lt;= node.threshold:</span>
+                <span class="s0">node = root_node + node.left_child</span>
+            <span class="s0">else:</span>
+                <span class="s0">node = root_node + node.right_child</span>
+        <span class="s0">out[i, k] += scale * value[node - root_node]</span>
+
+
+<span class="s0">def _predict_regression_tree_stages_sparse(</span>
+    <span class="s0">object[:, :] estimators,</span>
+    <span class="s0">object X,</span>
+    <span class="s0">double scale,</span>
+    <span class="s0">float64_t[:, :] out</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Predicts output for regression tree inplace and adds scaled value to ``out[i, k]``.</span>
+
+    <span class="s0">The function assumes that the ndarray that wraps ``X`` is csr_matrix.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef const float32_t[::1] X_data = X.data</span>
+    <span class="s0">cdef const int32_t[::1] X_indices = X.indices</span>
+    <span class="s0">cdef const int32_t[::1] X_indptr = X.indptr</span>
+
+    <span class="s0">cdef intp_t n_samples = X.shape[0]</span>
+    <span class="s0">cdef intp_t n_features = X.shape[1]</span>
+    <span class="s0">cdef intp_t n_stages = estimators.shape[0]</span>
+    <span class="s0">cdef intp_t n_outputs = estimators.shape[1]</span>
+
+    <span class="s0"># Indices and temporary variables</span>
+    <span class="s0">cdef intp_t sample_i</span>
+    <span class="s0">cdef intp_t feature_i</span>
+    <span class="s0">cdef intp_t stage_i</span>
+    <span class="s0">cdef intp_t output_i</span>
+    <span class="s0">cdef Node *root_node = NULL</span>
+    <span class="s0">cdef Node *node = NULL</span>
+    <span class="s0">cdef double *value = NULL</span>
+
+    <span class="s0">cdef Tree tree</span>
+    <span class="s0">cdef Node** nodes = NULL</span>
+    <span class="s0">cdef double** values = NULL</span>
+    <span class="s0">safe_realloc(&amp;nodes, n_stages * n_outputs)</span>
+    <span class="s0">safe_realloc(&amp;values, n_stages * n_outputs)</span>
+    <span class="s0">for stage_i in range(n_stages):</span>
+        <span class="s0">for output_i in range(n_outputs):</span>
+            <span class="s0">tree = estimators[stage_i, output_i].tree_</span>
+            <span class="s0">nodes[stage_i * n_outputs + output_i] = tree.nodes</span>
+            <span class="s0">values[stage_i * n_outputs + output_i] = tree.value</span>
+
+    <span class="s0"># Initialize auxiliary data-structure</span>
+    <span class="s0">cdef float32_t feature_value = 0.</span>
+    <span class="s0">cdef float32_t* X_sample = NULL</span>
+
+    <span class="s0"># feature_to_sample as a data structure records the last seen sample</span>
+    <span class="s0"># for each feature; functionally, it is an efficient way to identify</span>
+    <span class="s0"># which features are nonzero in the present sample.</span>
+    <span class="s0">cdef intp_t* feature_to_sample = NULL</span>
+
+    <span class="s0">safe_realloc(&amp;X_sample, n_features)</span>
+    <span class="s0">safe_realloc(&amp;feature_to_sample, n_features)</span>
+
+    <span class="s0">memset(feature_to_sample, -1, n_features * sizeof(intp_t))</span>
+
+    <span class="s0"># Cycle through all samples</span>
+    <span class="s0">for sample_i in range(n_samples):</span>
+        <span class="s0">for feature_i in range(X_indptr[sample_i], X_indptr[sample_i + 1]):</span>
+            <span class="s0">feature_to_sample[X_indices[feature_i]] = sample_i</span>
+            <span class="s0">X_sample[X_indices[feature_i]] = X_data[feature_i]</span>
+
+        <span class="s0"># Cycle through all stages</span>
+        <span class="s0">for stage_i in range(n_stages):</span>
+            <span class="s0"># Cycle through all trees</span>
+            <span class="s0">for output_i in range(n_outputs):</span>
+                <span class="s0">root_node = nodes[stage_i * n_outputs + output_i]</span>
+                <span class="s0">value = values[stage_i * n_outputs + output_i]</span>
+                <span class="s0">node = root_node</span>
+
+                <span class="s0"># While node not a leaf</span>
+                <span class="s0">while node.left_child != TREE_LEAF:</span>
+                    <span class="s0"># ... and node.right_child != TREE_LEAF:</span>
+                    <span class="s0">if feature_to_sample[node.feature] == sample_i:</span>
+                        <span class="s0">feature_value = X_sample[node.feature]</span>
+                    <span class="s0">else:</span>
+                        <span class="s0">feature_value = 0.</span>
+
+                    <span class="s0">if feature_value &lt;= node.threshold:</span>
+                        <span class="s0">node = root_node + node.left_child</span>
+                    <span class="s0">else:</span>
+                        <span class="s0">node = root_node + node.right_child</span>
+                <span class="s0">out[sample_i, output_i] += scale * value[node - root_node]</span>
+
+    <span class="s0"># Free auxiliary arrays</span>
+    <span class="s0">free(X_sample)</span>
+    <span class="s0">free(feature_to_sample)</span>
+    <span class="s0">free(nodes)</span>
+    <span class="s0">free(values)</span>
+
+
+<span class="s0">def predict_stages(</span>
+    <span class="s0">object[:, :] estimators,</span>
+    <span class="s0">object X,</span>
+    <span class="s0">double scale,</span>
+    <span class="s0">float64_t[:, :] out</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Add predictions of ``estimators`` to ``out``.</span>
+
+    <span class="s0">Each estimator is scaled by ``scale`` before its prediction</span>
+    <span class="s0">is added to ``out``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef Py_ssize_t i</span>
+    <span class="s0">cdef Py_ssize_t k</span>
+    <span class="s0">cdef Py_ssize_t n_estimators = estimators.shape[0]</span>
+    <span class="s0">cdef Py_ssize_t K = estimators.shape[1]</span>
+    <span class="s0">cdef Tree tree</span>
+
+    <span class="s0">if issparse(X):</span>
+        <span class="s0">if X.format != 'csr':</span>
+            <span class="s0">raise ValueError(&quot;When X is a sparse matrix, a CSR format is&quot;</span>
+                             <span class="s0">&quot; expected, got {!r}&quot;.format(type(X)))</span>
+        <span class="s0">_predict_regression_tree_stages_sparse(</span>
+            <span class="s0">estimators=estimators, X=X, scale=scale, out=out</span>
+        <span class="s0">)</span>
+    <span class="s0">else:</span>
+        <span class="s0">if not isinstance(X, np.ndarray) or np.isfortran(X):</span>
+            <span class="s0">raise ValueError(f&quot;X should be C-ordered np.ndarray, got {type(X)}&quot;)</span>
+
+        <span class="s0">for i in range(n_estimators):</span>
+            <span class="s0">for k in range(K):</span>
+                <span class="s0">tree = estimators[i, k].tree_</span>
+
+                <span class="s0"># avoid buffer validation by casting to ndarray</span>
+                <span class="s0"># and get data pointer</span>
+                <span class="s0"># need brackets because of casting operator priority</span>
+                <span class="s0">_predict_regression_tree_inplace_fast_dense(</span>
+                    <span class="s0">X=X,</span>
+                    <span class="s0">root_node=tree.nodes,</span>
+                    <span class="s0">value=tree.value,</span>
+                    <span class="s0">scale=scale,</span>
+                    <span class="s0">k=k,</span>
+                    <span class="s0">out=out</span>
+                <span class="s0">)</span>
+                <span class="s0"># out[:, k] += scale * tree.predict(X).ravel()</span>
+
+
+<span class="s0">def predict_stage(</span>
+    <span class="s0">object[:, :] estimators,</span>
+    <span class="s0">int stage,</span>
+    <span class="s0">object X,</span>
+    <span class="s0">double scale,</span>
+    <span class="s0">float64_t[:, :] out</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Add predictions of ``estimators[stage]`` to ``out``.</span>
+
+    <span class="s0">Each estimator in the stage is scaled by ``scale`` before</span>
+    <span class="s0">its prediction is added to ``out``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">return predict_stages(</span>
+        <span class="s0">estimators=estimators[stage:stage + 1], X=X, scale=scale, out=out</span>
+    <span class="s0">)</span>
+
+
+<span class="s0">def _random_sample_mask(</span>
+    <span class="s0">intp_t n_total_samples,</span>
+    <span class="s0">intp_t n_total_in_bag,</span>
+    <span class="s0">random_state</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Create a random sample mask where ``n_total_in_bag`` elements are set.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">n_total_samples : int</span>
+        <span class="s0">The length of the resulting mask.</span>
+
+    <span class="s0">n_total_in_bag : int</span>
+        <span class="s0">The number of elements in the sample mask which are set to 1.</span>
+
+    <span class="s0">random_state : RandomState</span>
+        <span class="s0">A numpy ``RandomState`` object.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">sample_mask : np.ndarray, shape=[n_total_samples]</span>
+        <span class="s0">An ndarray where ``n_total_in_bag`` elements are set to ``True``</span>
+        <span class="s0">the others are ``False``.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef float64_t[::1] rand = random_state.uniform(size=n_total_samples)</span>
+    <span class="s0">cdef uint8_t[::1] sample_mask = np_zeros((n_total_samples,), dtype=bool)</span>
+
+    <span class="s0">cdef intp_t n_bagged = 0</span>
+    <span class="s0">cdef intp_t i = 0</span>
+
+    <span class="s0">for i in range(n_total_samples):</span>
+        <span class="s0">if rand[i] * (n_total_samples - i) &lt; (n_total_in_bag - n_bagged):</span>
+            <span class="s0">sample_mask[i] = 1</span>
+            <span class="s0">n_bagged += 1</span>
+
+    <span class="s0">return sample_mask.base</span>
+</pre>
+</body>
+</html>

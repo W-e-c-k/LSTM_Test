@@ -1,0 +1,94 @@
+<html>
+<head>
+<title>_openmp_helpers.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_openmp_helpers.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0">import os</span>
+<span class="s0">from joblib import cpu_count</span>
+
+
+<span class="s0"># Module level cache for cpu_count as we do not expect this to change during</span>
+<span class="s0"># the lifecycle of a Python program. This dictionary is keyed by</span>
+<span class="s0"># only_physical_cores.</span>
+<span class="s0">_CPU_COUNTS = {}</span>
+
+
+<span class="s0">def _openmp_parallelism_enabled():</span>
+    <span class="s0">&quot;&quot;&quot;Determines whether scikit-learn has been built with OpenMP</span>
+
+    <span class="s0">It allows to retrieve at runtime the information gathered at compile time.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0"># SKLEARN_OPENMP_PARALLELISM_ENABLED is resolved at compile time and defined</span>
+    <span class="s0"># in _openmp_helpers.pxd as a boolean. This function exposes it to Python.</span>
+    <span class="s0">return SKLEARN_OPENMP_PARALLELISM_ENABLED</span>
+
+
+<span class="s0">cpdef _openmp_effective_n_threads(n_threads=None, only_physical_cores=True):</span>
+    <span class="s0">&quot;&quot;&quot;Determine the effective number of threads to be used for OpenMP calls</span>
+
+    <span class="s0">- For ``n_threads = None``,</span>
+      <span class="s0">- if the ``OMP_NUM_THREADS`` environment variable is set, return</span>
+        <span class="s0">``openmp.omp_get_max_threads()``</span>
+      <span class="s0">- otherwise, return the minimum between ``openmp.omp_get_max_threads()``</span>
+        <span class="s0">and the number of cpus, taking cgroups quotas into account. Cgroups</span>
+        <span class="s0">quotas can typically be set by tools such as Docker.</span>
+      <span class="s0">The result of ``omp_get_max_threads`` can be influenced by environment</span>
+      <span class="s0">variable ``OMP_NUM_THREADS`` or at runtime by ``omp_set_num_threads``.</span>
+
+    <span class="s0">- For ``n_threads &gt; 0``, return this as the maximal number of threads for</span>
+      <span class="s0">parallel OpenMP calls.</span>
+
+    <span class="s0">- For ``n_threads &lt; 0``, return the maximal number of threads minus</span>
+      <span class="s0">``|n_threads + 1|``. In particular ``n_threads = -1`` will use as many</span>
+      <span class="s0">threads as there are available cores on the machine.</span>
+
+    <span class="s0">- Raise a ValueError for ``n_threads = 0``.</span>
+
+    <span class="s0">Passing the `only_physical_cores=False` flag makes it possible to use extra</span>
+    <span class="s0">threads for SMT/HyperThreading logical cores. It has been empirically</span>
+    <span class="s0">observed that using as many threads as available SMT cores can slightly</span>
+    <span class="s0">improve the performance in some cases, but can severely degrade</span>
+    <span class="s0">performance other times. Therefore it is recommended to use</span>
+    <span class="s0">`only_physical_cores=True` unless an empirical study has been conducted to</span>
+    <span class="s0">assess the impact of SMT on a case-by-case basis (using various input data</span>
+    <span class="s0">shapes, in particular small data shapes).</span>
+
+    <span class="s0">If scikit-learn is built without OpenMP support, always return 1.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">if n_threads == 0:</span>
+        <span class="s0">raise ValueError(&quot;n_threads = 0 is invalid&quot;)</span>
+
+    <span class="s0">if not SKLEARN_OPENMP_PARALLELISM_ENABLED:</span>
+        <span class="s0"># OpenMP disabled at build-time =&gt; sequential mode</span>
+        <span class="s0">return 1</span>
+
+    <span class="s0">if os.getenv(&quot;OMP_NUM_THREADS&quot;):</span>
+        <span class="s0"># Fall back to user provided number of threads making it possible</span>
+        <span class="s0"># to exceed the number of cpus.</span>
+        <span class="s0">max_n_threads = omp_get_max_threads()</span>
+    <span class="s0">else:</span>
+        <span class="s0">try:</span>
+            <span class="s0">n_cpus = _CPU_COUNTS[only_physical_cores]</span>
+        <span class="s0">except KeyError:</span>
+            <span class="s0">n_cpus = cpu_count(only_physical_cores=only_physical_cores)</span>
+            <span class="s0">_CPU_COUNTS[only_physical_cores] = n_cpus</span>
+        <span class="s0">max_n_threads = min(omp_get_max_threads(), n_cpus)</span>
+
+    <span class="s0">if n_threads is None:</span>
+        <span class="s0">return max_n_threads</span>
+    <span class="s0">elif n_threads &lt; 0:</span>
+        <span class="s0">return max(1, max_n_threads + n_threads + 1)</span>
+
+    <span class="s0">return n_threads</span>
+</pre>
+</body>
+</html>

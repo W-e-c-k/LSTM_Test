@@ -1,0 +1,641 @@
+<html>
+<head>
+<title>legacy_h5_format.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #2aacb8;}
+.s4 { color: #6aab73;}
+.s5 { color: #7a7e85;}
+.s6 { color: #5f826b; font-style: italic;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+legacy_h5_format.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">json</span>
+<span class="s0">import </span><span class="s1">os</span>
+<span class="s0">import </span><span class="s1">warnings</span>
+
+<span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+<span class="s0">from </span><span class="s1">absl </span><span class="s0">import </span><span class="s1">logging</span>
+
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">backend</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">optimizers</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">common </span><span class="s0">import </span><span class="s1">global_state</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">json_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">saving_options</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">legacy</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">saving_utils</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">saving </span><span class="s0">import </span><span class="s1">object_registration</span>
+<span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src</span><span class="s2">.</span><span class="s1">utils </span><span class="s0">import </span><span class="s1">io_utils</span>
+
+<span class="s0">try</span><span class="s2">:</span>
+    <span class="s0">import </span><span class="s1">h5py</span>
+<span class="s0">except </span><span class="s1">ImportError</span><span class="s2">:</span>
+    <span class="s1">h5py </span><span class="s2">= </span><span class="s0">None</span>
+
+
+<span class="s1">HDF5_OBJECT_HEADER_LIMIT </span><span class="s2">= </span><span class="s3">64512</span>
+
+
+<span class="s0">def </span><span class="s1">save_model_to_hdf5</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">overwrite</span><span class="s2">=</span><span class="s0">True</span><span class="s2">, </span><span class="s1">include_optimizer</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+    <span class="s0">if </span><span class="s1">h5py </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ImportError</span><span class="s2">(</span>
+            <span class="s4">&quot;`save_model()` using h5 format requires h5py. Could not &quot;</span>
+            <span class="s4">&quot;import h5py.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">h5py</span><span class="s2">.</span><span class="s1">File</span><span class="s2">):</span>
+        <span class="s5"># If file exists and should not be overwritten.</span>
+        <span class="s0">if not </span><span class="s1">overwrite </span><span class="s0">and </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">isfile</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">):</span>
+            <span class="s1">proceed </span><span class="s2">= </span><span class="s1">io_utils</span><span class="s2">.</span><span class="s1">ask_to_proceed_with_overwrite</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+            <span class="s0">if not </span><span class="s1">proceed</span><span class="s2">:</span>
+                <span class="s0">return</span>
+
+        <span class="s1">dirpath </span><span class="s2">= </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">dirname</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">dirpath </span><span class="s0">and not </span><span class="s1">os</span><span class="s2">.</span><span class="s1">path</span><span class="s2">.</span><span class="s1">exists</span><span class="s2">(</span><span class="s1">dirpath</span><span class="s2">):</span>
+            <span class="s1">os</span><span class="s2">.</span><span class="s1">makedirs</span><span class="s2">(</span><span class="s1">dirpath</span><span class="s2">, </span><span class="s1">exist_ok</span><span class="s2">=</span><span class="s0">True</span><span class="s2">)</span>
+
+        <span class="s1">f </span><span class="s2">= </span><span class="s1">h5py</span><span class="s2">.</span><span class="s1">File</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s4">&quot;w&quot;</span><span class="s2">)</span>
+        <span class="s1">opened_new_file </span><span class="s2">= </span><span class="s0">True</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">f </span><span class="s2">= </span><span class="s1">filepath</span>
+        <span class="s1">opened_new_file </span><span class="s2">= </span><span class="s0">False</span>
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s0">with </span><span class="s1">saving_options</span><span class="s2">.</span><span class="s1">keras_option_scope</span><span class="s2">(</span><span class="s1">use_legacy_config</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+            <span class="s1">model_metadata </span><span class="s2">= </span><span class="s1">saving_utils</span><span class="s2">.</span><span class="s1">model_metadata</span><span class="s2">(</span>
+                <span class="s1">model</span><span class="s2">, </span><span class="s1">include_optimizer</span>
+            <span class="s2">)</span>
+            <span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">v </span><span class="s0">in </span><span class="s1">model_metadata</span><span class="s2">.</span><span class="s1">items</span><span class="s2">():</span>
+                <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">v</span><span class="s2">, (</span><span class="s1">dict</span><span class="s2">, </span><span class="s1">list</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">)):</span>
+                    <span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s1">k</span><span class="s2">] = </span><span class="s1">json</span><span class="s2">.</span><span class="s1">dumps</span><span class="s2">(</span>
+                        <span class="s1">v</span><span class="s2">, </span><span class="s1">default</span><span class="s2">=</span><span class="s1">json_utils</span><span class="s2">.</span><span class="s1">get_json_type</span>
+                    <span class="s2">).</span><span class="s1">encode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s1">k</span><span class="s2">] = </span><span class="s1">v</span>
+
+            <span class="s1">model_weights_group </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">create_group</span><span class="s2">(</span><span class="s4">&quot;model_weights&quot;</span><span class="s2">)</span>
+            <span class="s1">save_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">model_weights_group</span><span class="s2">, </span><span class="s1">model</span><span class="s2">)</span>
+
+            <span class="s5"># TODO(b/128683857): Add integration tests between tf.keras and</span>
+            <span class="s5"># external Keras, to avoid breaking TF.js users.</span>
+            <span class="s0">if </span><span class="s1">include_optimizer </span><span class="s0">and </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">model</span><span class="s2">, </span><span class="s4">&quot;optimizer&quot;</span><span class="s2">):</span>
+                <span class="s1">save_optimizer_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">)</span>
+
+        <span class="s1">f</span><span class="s2">.</span><span class="s1">flush</span><span class="s2">()</span>
+    <span class="s0">finally</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">opened_new_file</span><span class="s2">:</span>
+            <span class="s1">f</span><span class="s2">.</span><span class="s1">close</span><span class="s2">()</span>
+
+
+<span class="s0">def </span><span class="s1">load_model_from_hdf5</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s0">None</span><span class="s2">, </span><span class="s1">compile</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Loads a model saved via `save_model_to_hdf5`. 
+ 
+    Args: 
+        filepath: One of the following: 
+            - String, path to the saved model 
+            - `h5py.File` object from which to load the model 
+        custom_objects: Optional dictionary mapping names 
+            (strings) to custom classes or functions to be 
+            considered during deserialization. 
+        compile: Boolean, whether to compile the model 
+            after loading. 
+ 
+    Returns: 
+        A Keras model instance. If an optimizer was found 
+        as part of the saved model, the model is already 
+        compiled. Otherwise, the model is uncompiled and 
+        a warning will be displayed. When `compile` is set 
+        to `False`, the compilation is omitted without any 
+        warning. 
+ 
+    Raises: 
+        ImportError: if h5py is not available. 
+        ValueError: In case of an invalid savefile. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">h5py </span><span class="s0">is None</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">ImportError</span><span class="s2">(</span>
+            <span class="s4">&quot;`load_model()` using h5 format requires h5py. Could not &quot;</span>
+            <span class="s4">&quot;import h5py.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">if not </span><span class="s1">custom_objects</span><span class="s2">:</span>
+        <span class="s1">custom_objects </span><span class="s2">= {}</span>
+
+    <span class="s1">gco </span><span class="s2">= </span><span class="s1">object_registration</span><span class="s2">.</span><span class="s1">GLOBAL_CUSTOM_OBJECTS</span>
+    <span class="s1">tlco </span><span class="s2">= </span><span class="s1">global_state</span><span class="s2">.</span><span class="s1">get_global_attribute</span><span class="s2">(</span><span class="s4">&quot;custom_objects_scope_dict&quot;</span><span class="s2">, {})</span>
+    <span class="s1">custom_objects </span><span class="s2">= {**</span><span class="s1">custom_objects</span><span class="s2">, **</span><span class="s1">gco</span><span class="s2">, **</span><span class="s1">tlco</span><span class="s2">}</span>
+
+    <span class="s1">opened_new_file </span><span class="s2">= </span><span class="s0">not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">h5py</span><span class="s2">.</span><span class="s1">File</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">opened_new_file</span><span class="s2">:</span>
+        <span class="s1">f </span><span class="s2">= </span><span class="s1">h5py</span><span class="s2">.</span><span class="s1">File</span><span class="s2">(</span><span class="s1">filepath</span><span class="s2">, </span><span class="s1">mode</span><span class="s2">=</span><span class="s4">&quot;r&quot;</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">f </span><span class="s2">= </span><span class="s1">filepath</span>
+
+    <span class="s1">model </span><span class="s2">= </span><span class="s0">None</span>
+    <span class="s0">try</span><span class="s2">:</span>
+        <span class="s5"># instantiate model</span>
+        <span class="s1">model_config </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s4">&quot;model_config&quot;</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">model_config </span><span class="s0">is None</span><span class="s2">:</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f&quot;No model config found in the file at </span><span class="s0">{</span><span class="s1">filepath</span><span class="s0">}</span><span class="s4">.&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">model_config</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">):</span>
+            <span class="s1">model_config </span><span class="s2">= </span><span class="s1">model_config</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf-8&quot;</span><span class="s2">)</span>
+        <span class="s1">model_config </span><span class="s2">= </span><span class="s1">json_utils</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s1">model_config</span><span class="s2">)</span>
+
+        <span class="s0">with </span><span class="s1">saving_options</span><span class="s2">.</span><span class="s1">keras_option_scope</span><span class="s2">(</span><span class="s1">use_legacy_config</span><span class="s2">=</span><span class="s0">True</span><span class="s2">):</span>
+            <span class="s1">model </span><span class="s2">= </span><span class="s1">saving_utils</span><span class="s2">.</span><span class="s1">model_from_config</span><span class="s2">(</span>
+                <span class="s1">model_config</span><span class="s2">, </span><span class="s1">custom_objects</span><span class="s2">=</span><span class="s1">custom_objects</span>
+            <span class="s2">)</span>
+
+            <span class="s5"># set weights</span>
+            <span class="s1">load_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">[</span><span class="s4">&quot;model_weights&quot;</span><span class="s2">], </span><span class="s1">model</span><span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">compile</span><span class="s2">:</span>
+            <span class="s5"># instantiate optimizer</span>
+            <span class="s1">training_config </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s4">&quot;training_config&quot;</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">training_config</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">):</span>
+                <span class="s1">training_config </span><span class="s2">= </span><span class="s1">training_config</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf-8&quot;</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">training_config </span><span class="s0">is None</span><span class="s2">:</span>
+                <span class="s1">logging</span><span class="s2">.</span><span class="s1">warning</span><span class="s2">(</span>
+                    <span class="s4">&quot;No training configuration found in the save file, so &quot;</span>
+                    <span class="s4">&quot;the model was *not* compiled. Compile it manually.&quot;</span>
+                <span class="s2">)</span>
+                <span class="s0">return </span><span class="s1">model</span>
+            <span class="s1">training_config </span><span class="s2">= </span><span class="s1">json_utils</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s1">training_config</span><span class="s2">)</span>
+
+            <span class="s5"># Compile model.</span>
+            <span class="s1">model</span><span class="s2">.</span><span class="s1">compile</span><span class="s2">(</span>
+                <span class="s2">**</span><span class="s1">saving_utils</span><span class="s2">.</span><span class="s1">compile_args_from_training_config</span><span class="s2">(</span>
+                    <span class="s1">training_config</span><span class="s2">, </span><span class="s1">custom_objects</span>
+                <span class="s2">)</span>
+            <span class="s2">)</span>
+            <span class="s1">saving_utils</span><span class="s2">.</span><span class="s1">try_build_compiled_arguments</span><span class="s2">(</span><span class="s1">model</span><span class="s2">)</span>
+
+            <span class="s5"># Set optimizer weights.</span>
+            <span class="s0">if </span><span class="s4">&quot;optimizer_weights&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">:</span>
+                <span class="s0">try</span><span class="s2">:</span>
+                    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s1">optimizers</span><span class="s2">.</span><span class="s1">Optimizer</span><span class="s2">):</span>
+                        <span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">build</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">_trainable_variables</span><span class="s2">)</span>
+                    <span class="s0">else</span><span class="s2">:</span>
+                        <span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">_create_all_weights</span><span class="s2">(</span>
+                            <span class="s1">model</span><span class="s2">.</span><span class="s1">_trainable_variables</span>
+                        <span class="s2">)</span>
+                <span class="s0">except </span><span class="s2">(</span><span class="s1">NotImplementedError</span><span class="s2">, </span><span class="s1">AttributeError</span><span class="s2">):</span>
+                    <span class="s1">logging</span><span class="s2">.</span><span class="s1">warning</span><span class="s2">(</span>
+                        <span class="s4">&quot;Error when creating the weights of optimizer {}, &quot;</span>
+                        <span class="s4">&quot;making it impossible to restore the saved optimizer &quot;</span>
+                        <span class="s4">&quot;state. As a result, your model is starting with &quot;</span>
+                        <span class="s4">&quot;a freshly initialized optimizer.&quot;</span>
+                    <span class="s2">)</span>
+
+                <span class="s1">optimizer_weight_values </span><span class="s2">= (</span>
+                    <span class="s1">load_optimizer_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">)</span>
+                <span class="s2">)</span>
+                <span class="s0">try</span><span class="s2">:</span>
+                    <span class="s1">model</span><span class="s2">.</span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">set_weights</span><span class="s2">(</span><span class="s1">optimizer_weight_values</span><span class="s2">)</span>
+                <span class="s0">except </span><span class="s1">ValueError</span><span class="s2">:</span>
+                    <span class="s1">logging</span><span class="s2">.</span><span class="s1">warning</span><span class="s2">(</span>
+                        <span class="s4">&quot;Error in loading the saved optimizer &quot;</span>
+                        <span class="s4">&quot;state. As a result, your model is &quot;</span>
+                        <span class="s4">&quot;starting with a freshly initialized &quot;</span>
+                        <span class="s4">&quot;optimizer.&quot;</span>
+                    <span class="s2">)</span>
+    <span class="s0">finally</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">opened_new_file</span><span class="s2">:</span>
+            <span class="s1">f</span><span class="s2">.</span><span class="s1">close</span><span class="s2">()</span>
+    <span class="s0">return </span><span class="s1">model</span>
+
+
+<span class="s0">def </span><span class="s1">save_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s1">model</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Saves the weights of a list of layers to a HDF5 group. 
+ 
+    Args: 
+        f: HDF5 group. 
+        model: Model instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">from </span><span class="s1">keras</span><span class="s2">.</span><span class="s1">src </span><span class="s0">import </span><span class="s1">__version__ </span><span class="s0">as </span><span class="s1">keras_version</span>
+
+    <span class="s1">save_attributes_to_hdf5_group</span><span class="s2">(</span>
+        <span class="s1">f</span><span class="s2">, </span><span class="s4">&quot;layer_names&quot;</span><span class="s2">, [</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">.</span><span class="s1">encode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">) </span><span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">]</span>
+    <span class="s2">)</span>
+    <span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;backend&quot;</span><span class="s2">] = </span><span class="s1">backend</span><span class="s2">.</span><span class="s1">backend</span><span class="s2">().</span><span class="s1">encode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+    <span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;keras_version&quot;</span><span class="s2">] = </span><span class="s1">str</span><span class="s2">(</span><span class="s1">keras_version</span><span class="s2">).</span><span class="s1">encode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+
+    <span class="s5"># Sort model layers by layer name to ensure that group names are strictly</span>
+    <span class="s5"># growing to avoid prefix issues.</span>
+    <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">, </span><span class="s1">key</span><span class="s2">=</span><span class="s0">lambda </span><span class="s1">x</span><span class="s2">: </span><span class="s1">x</span><span class="s2">.</span><span class="s1">name</span><span class="s2">):</span>
+        <span class="s1">g </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">create_group</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">weights </span><span class="s2">= </span><span class="s1">_legacy_weights</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s1">save_subset_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">g</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">)</span>
+    <span class="s1">weights </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span>
+        <span class="s1">v</span>
+        <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_trainable_variables </span><span class="s2">+ </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_non_trainable_variables</span>
+        <span class="s0">if </span><span class="s1">v </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">weights</span>
+    <span class="s2">)</span>
+    <span class="s1">g </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">create_group</span><span class="s2">(</span><span class="s4">&quot;top_level_model_weights&quot;</span><span class="s2">)</span>
+    <span class="s1">save_subset_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">g</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">save_subset_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s1">weights</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Save top-level weights of a model to a HDF5 group. 
+ 
+    Args: 
+        f: HDF5 group. 
+        weights: List of weight variables. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">weight_values </span><span class="s2">= [</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">w</span><span class="s2">) </span><span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">weights</span><span class="s2">]</span>
+    <span class="s1">weight_names </span><span class="s2">= [</span><span class="s1">str</span><span class="s2">(</span><span class="s1">w</span><span class="s2">.</span><span class="s1">path</span><span class="s2">).</span><span class="s1">encode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">) </span><span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">weights</span><span class="s2">]</span>
+    <span class="s1">save_attributes_to_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s4">&quot;weight_names&quot;</span><span class="s2">, </span><span class="s1">weight_names</span><span class="s2">)</span>
+    <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">val </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">weight_names</span><span class="s2">, </span><span class="s1">weight_values</span><span class="s2">):</span>
+        <span class="s1">param_dset </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">create_dataset</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">val</span><span class="s2">.</span><span class="s1">dtype</span><span class="s2">)</span>
+        <span class="s0">if not </span><span class="s1">val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">:</span>
+            <span class="s5"># scalar</span>
+            <span class="s1">param_dset</span><span class="s2">[()] = </span><span class="s1">val</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s1">param_dset</span><span class="s2">[:] = </span><span class="s1">val</span>
+
+
+<span class="s0">def </span><span class="s1">save_optimizer_weights_to_hdf5_group</span><span class="s2">(</span><span class="s1">hdf5_group</span><span class="s2">, </span><span class="s1">optimizer</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Saves optimizer weights of a optimizer to a HDF5 group. 
+ 
+    Args: 
+        hdf5_group: HDF5 group. 
+        optimizer: optimizer instance. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s1">optimizers</span><span class="s2">.</span><span class="s1">Optimizer</span><span class="s2">):</span>
+        <span class="s1">symbolic_weights </span><span class="s2">= </span><span class="s1">optimizer</span><span class="s2">.</span><span class="s1">variables</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">symbolic_weights </span><span class="s2">= </span><span class="s1">getattr</span><span class="s2">(</span><span class="s1">optimizer</span><span class="s2">, </span><span class="s4">&quot;weights&quot;</span><span class="s2">)</span>
+    <span class="s0">if </span><span class="s1">symbolic_weights</span><span class="s2">:</span>
+        <span class="s1">weights_group </span><span class="s2">= </span><span class="s1">hdf5_group</span><span class="s2">.</span><span class="s1">create_group</span><span class="s2">(</span><span class="s4">&quot;optimizer_weights&quot;</span><span class="s2">)</span>
+        <span class="s1">weight_names </span><span class="s2">= [</span><span class="s1">str</span><span class="s2">(</span><span class="s1">w</span><span class="s2">.</span><span class="s1">path</span><span class="s2">).</span><span class="s1">encode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">) </span><span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">symbolic_weights</span><span class="s2">]</span>
+        <span class="s1">save_attributes_to_hdf5_group</span><span class="s2">(</span>
+            <span class="s1">weights_group</span><span class="s2">, </span><span class="s4">&quot;weight_names&quot;</span><span class="s2">, </span><span class="s1">weight_names</span>
+        <span class="s2">)</span>
+        <span class="s1">weight_values </span><span class="s2">= [</span><span class="s1">backend</span><span class="s2">.</span><span class="s1">convert_to_numpy</span><span class="s2">(</span><span class="s1">w</span><span class="s2">) </span><span class="s0">for </span><span class="s1">w </span><span class="s0">in </span><span class="s1">symbolic_weights</span><span class="s2">]</span>
+        <span class="s0">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">val </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">weight_names</span><span class="s2">, </span><span class="s1">weight_values</span><span class="s2">):</span>
+            <span class="s1">param_dset </span><span class="s2">= </span><span class="s1">weights_group</span><span class="s2">.</span><span class="s1">create_dataset</span><span class="s2">(</span>
+                <span class="s1">name</span><span class="s2">, </span><span class="s1">val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">, </span><span class="s1">dtype</span><span class="s2">=</span><span class="s1">val</span><span class="s2">.</span><span class="s1">dtype</span>
+            <span class="s2">)</span>
+            <span class="s0">if not </span><span class="s1">val</span><span class="s2">.</span><span class="s1">shape</span><span class="s2">:</span>
+                <span class="s5"># scalar</span>
+                <span class="s1">param_dset</span><span class="s2">[()] = </span><span class="s1">val</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s1">param_dset</span><span class="s2">[:] = </span><span class="s1">val</span>
+
+
+<span class="s0">def </span><span class="s1">save_attributes_to_hdf5_group</span><span class="s2">(</span><span class="s1">group</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Saves attributes (data) of the specified name into the HDF5 group. 
+ 
+    This method deals with an inherent problem of HDF5 file which is not 
+    able to store data larger than HDF5_OBJECT_HEADER_LIMIT bytes. 
+ 
+    Args: 
+        group: A pointer to a HDF5 group. 
+        name: A name of the attributes to save. 
+        data: Attributes data to store. 
+ 
+    Raises: 
+      RuntimeError: If any single attribute is too large to be saved. 
+    &quot;&quot;&quot;</span>
+    <span class="s5"># Check that no item in `data` is larger than `HDF5_OBJECT_HEADER_LIMIT`</span>
+    <span class="s5"># because in that case even chunking the array would not make the saving</span>
+    <span class="s5"># possible.</span>
+    <span class="s1">bad_attributes </span><span class="s2">= [</span><span class="s1">x </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">data </span><span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">x</span><span class="s2">) &gt; </span><span class="s1">HDF5_OBJECT_HEADER_LIMIT</span><span class="s2">]</span>
+
+    <span class="s5"># Expecting this to never be true.</span>
+    <span class="s0">if </span><span class="s1">bad_attributes</span><span class="s2">:</span>
+        <span class="s0">raise </span><span class="s1">RuntimeError</span><span class="s2">(</span>
+            <span class="s4">&quot;The following attributes cannot be saved to HDF5 file because &quot;</span>
+            <span class="s4">f&quot;they are larger than </span><span class="s0">{</span><span class="s1">HDF5_OBJECT_HEADER_LIMIT</span><span class="s0">} </span><span class="s4">&quot;</span>
+            <span class="s4">f&quot;bytes: </span><span class="s0">{</span><span class="s1">bad_attributes</span><span class="s0">}</span><span class="s4">&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s1">data_npy </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">asarray</span><span class="s2">(</span><span class="s1">data</span><span class="s2">)</span>
+
+    <span class="s1">num_chunks </span><span class="s2">= </span><span class="s3">1</span>
+    <span class="s1">chunked_data </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array_split</span><span class="s2">(</span><span class="s1">data_npy</span><span class="s2">, </span><span class="s1">num_chunks</span><span class="s2">)</span>
+
+    <span class="s5"># This will never loop forever thanks to the test above.</span>
+    <span class="s0">while </span><span class="s1">any</span><span class="s2">(</span><span class="s1">x</span><span class="s2">.</span><span class="s1">nbytes </span><span class="s2">&gt; </span><span class="s1">HDF5_OBJECT_HEADER_LIMIT </span><span class="s0">for </span><span class="s1">x </span><span class="s0">in </span><span class="s1">chunked_data</span><span class="s2">):</span>
+        <span class="s1">num_chunks </span><span class="s2">+= </span><span class="s3">1</span>
+        <span class="s1">chunked_data </span><span class="s2">= </span><span class="s1">np</span><span class="s2">.</span><span class="s1">array_split</span><span class="s2">(</span><span class="s1">data_npy</span><span class="s2">, </span><span class="s1">num_chunks</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s1">num_chunks </span><span class="s2">&gt; </span><span class="s3">1</span><span class="s2">:</span>
+        <span class="s0">for </span><span class="s1">chunk_id</span><span class="s2">, </span><span class="s1">chunk_data </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">chunked_data</span><span class="s2">):</span>
+            <span class="s1">group</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;%s%d&quot; </span><span class="s2">% (</span><span class="s1">name</span><span class="s2">, </span><span class="s1">chunk_id</span><span class="s2">)] = </span><span class="s1">chunk_data</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">group</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">data</span>
+
+
+<span class="s0">def </span><span class="s1">load_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s1">model</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Implements topological (order-based) weight loading. 
+ 
+    Args: 
+        f: A pointer to a HDF5 group. 
+        model: Model instance. 
+ 
+    Raises: 
+        ValueError: in case of mismatch between provided layers 
+            and weights file. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s4">&quot;keras_version&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+        <span class="s1">original_keras_version </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;keras_version&quot;</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">original_keras_version</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">):</span>
+            <span class="s1">original_keras_version </span><span class="s2">= </span><span class="s1">original_keras_version</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">original_keras_version </span><span class="s2">= </span><span class="s4">&quot;1&quot;</span>
+    <span class="s0">if </span><span class="s4">&quot;backend&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+        <span class="s1">original_backend </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;backend&quot;</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">original_backend</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">):</span>
+            <span class="s1">original_backend </span><span class="s2">= </span><span class="s1">original_backend</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">original_backend </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s1">filtered_layers </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+        <span class="s1">weights </span><span class="s2">= </span><span class="s1">_legacy_weights</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">weights</span><span class="s2">:</span>
+            <span class="s1">filtered_layers</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+
+    <span class="s1">layer_names </span><span class="s2">= </span><span class="s1">load_attributes_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s4">&quot;layer_names&quot;</span><span class="s2">)</span>
+    <span class="s1">filtered_layer_names </span><span class="s2">= []</span>
+    <span class="s0">for </span><span class="s1">name </span><span class="s0">in </span><span class="s1">layer_names</span><span class="s2">:</span>
+        <span class="s1">g </span><span class="s2">= </span><span class="s1">f</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+        <span class="s1">weight_names </span><span class="s2">= </span><span class="s1">load_attributes_from_hdf5_group</span><span class="s2">(</span><span class="s1">g</span><span class="s2">, </span><span class="s4">&quot;weight_names&quot;</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">weight_names</span><span class="s2">:</span>
+            <span class="s1">filtered_layer_names</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">name</span><span class="s2">)</span>
+    <span class="s1">layer_names </span><span class="s2">= </span><span class="s1">filtered_layer_names</span>
+    <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer_names</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">filtered_layers</span><span class="s2">):</span>
+        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+            <span class="s4">&quot;Layer count mismatch when loading weights from file. &quot;</span>
+            <span class="s4">f&quot;Model expected </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">filtered_layers</span><span class="s2">)</span><span class="s0">} </span><span class="s4">layers, found &quot;</span>
+            <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">layer_names</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved layers.&quot;</span>
+        <span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">name </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">layer_names</span><span class="s2">):</span>
+        <span class="s1">g </span><span class="s2">= </span><span class="s1">f</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+        <span class="s1">layer </span><span class="s2">= </span><span class="s1">filtered_layers</span><span class="s2">[</span><span class="s1">k</span><span class="s2">]</span>
+        <span class="s1">symbolic_weights </span><span class="s2">= </span><span class="s1">_legacy_weights</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+        <span class="s1">weight_values </span><span class="s2">= </span><span class="s1">load_subset_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">g</span><span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">f&quot;Weight count mismatch for layer #</span><span class="s0">{</span><span class="s1">k</span><span class="s0">} </span><span class="s4">(named </span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">} </span><span class="s4">in &quot;</span>
+                <span class="s4">f&quot;the current model, </span><span class="s0">{</span><span class="s1">name</span><span class="s0">} </span><span class="s4">in the save file). &quot;</span>
+                <span class="s4">f&quot;Layer expects </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">)</span><span class="s0">} </span><span class="s4">weight(s). Received &quot;</span>
+                <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved weight(s)&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">ref_v</span><span class="s2">, </span><span class="s1">val </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">, </span><span class="s1">weight_values</span><span class="s2">):</span>
+            <span class="s1">ref_v</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">val</span><span class="s2">)</span>
+
+    <span class="s0">if </span><span class="s4">&quot;top_level_model_weights&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">:</span>
+        <span class="s1">symbolic_weights </span><span class="s2">= </span><span class="s1">list</span><span class="s2">(</span>
+            <span class="s5"># model.weights</span>
+            <span class="s1">v</span>
+            <span class="s0">for </span><span class="s1">v </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_trainable_variables </span><span class="s2">+ </span><span class="s1">model</span><span class="s2">.</span><span class="s1">_non_trainable_variables</span>
+            <span class="s0">if </span><span class="s1">v </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">weights</span>
+        <span class="s2">)</span>
+        <span class="s1">weight_values </span><span class="s2">= </span><span class="s1">load_subset_weights_from_hdf5_group</span><span class="s2">(</span>
+            <span class="s1">f</span><span class="s2">[</span><span class="s4">&quot;top_level_model_weights&quot;</span><span class="s2">]</span>
+        <span class="s2">)</span>
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">):</span>
+            <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                <span class="s4">&quot;Weight count mismatch for top-level weights when loading &quot;</span>
+                <span class="s4">&quot;weights from file. &quot;</span>
+                <span class="s4">f&quot;Model expects </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">)</span><span class="s0">} </span><span class="s4">top-level weight(s). &quot;</span>
+                <span class="s4">f&quot;Received </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved top-level weight(s)&quot;</span>
+            <span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">ref_v</span><span class="s2">, </span><span class="s1">val </span><span class="s0">in </span><span class="s1">zip</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">, </span><span class="s1">weight_values</span><span class="s2">):</span>
+            <span class="s1">ref_v</span><span class="s2">.</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">val</span><span class="s2">)</span>
+
+
+<span class="s0">def </span><span class="s1">load_weights_from_hdf5_group_by_name</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s1">model</span><span class="s2">, </span><span class="s1">skip_mismatch</span><span class="s2">=</span><span class="s0">False</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Implements name-based weight loading (instead of topological loading). 
+ 
+    Layers that have no matching name are skipped. 
+ 
+    Args: 
+        f: A pointer to a HDF5 group. 
+        model: Model instance. 
+        skip_mismatch: Boolean, whether to skip loading of layers 
+            where there is a mismatch in the number of weights, 
+            or a mismatch in the shape of the weights. 
+ 
+    Raises: 
+        ValueError: in case of mismatch between provided layers 
+            and weights file and skip_match=False. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s4">&quot;keras_version&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+        <span class="s1">original_keras_version </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;keras_version&quot;</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">original_keras_version</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">):</span>
+            <span class="s1">original_keras_version </span><span class="s2">= </span><span class="s1">original_keras_version</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">original_keras_version </span><span class="s2">= </span><span class="s4">&quot;1&quot;</span>
+    <span class="s0">if </span><span class="s4">&quot;backend&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+        <span class="s1">original_backend </span><span class="s2">= </span><span class="s1">f</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">&quot;backend&quot;</span><span class="s2">]</span>
+        <span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">original_backend</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">):</span>
+            <span class="s1">original_backend </span><span class="s2">= </span><span class="s1">original_backend</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">)</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">original_backend </span><span class="s2">= </span><span class="s0">None</span>
+
+    <span class="s5"># New file format.</span>
+    <span class="s1">layer_names </span><span class="s2">= </span><span class="s1">load_attributes_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s4">&quot;layer_names&quot;</span><span class="s2">)</span>
+
+    <span class="s5"># Reverse index of layer name to list of layers with name.</span>
+    <span class="s1">index </span><span class="s2">= {}</span>
+    <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">model</span><span class="s2">.</span><span class="s1">layers</span><span class="s2">:</span>
+        <span class="s0">if </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">:</span>
+            <span class="s1">index</span><span class="s2">.</span><span class="s1">setdefault</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s2">, []).</span><span class="s1">append</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+
+    <span class="s0">for </span><span class="s1">k</span><span class="s2">, </span><span class="s1">name </span><span class="s0">in </span><span class="s1">enumerate</span><span class="s2">(</span><span class="s1">layer_names</span><span class="s2">):</span>
+        <span class="s1">g </span><span class="s2">= </span><span class="s1">f</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+        <span class="s1">weight_values </span><span class="s2">= </span><span class="s1">load_subset_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">g</span><span class="s2">)</span>
+        <span class="s0">for </span><span class="s1">layer </span><span class="s0">in </span><span class="s1">index</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, []):</span>
+            <span class="s1">symbolic_weights </span><span class="s2">= </span><span class="s1">_legacy_weights</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">)</span>
+            <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">):</span>
+                <span class="s0">if </span><span class="s1">skip_mismatch</span><span class="s2">:</span>
+                    <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                        <span class="s4">f&quot;Skipping loading of weights for layer #</span><span class="s0">{</span><span class="s1">k</span><span class="s0">} </span><span class="s4">(named &quot;</span>
+                        <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s4">) due to mismatch in number of weights. &quot;</span>
+                        <span class="s4">f&quot;Layer expects </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">)</span><span class="s0">} </span><span class="s4">weight(s). &quot;</span>
+                        <span class="s4">f&quot;Received </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved weight(s)&quot;</span><span class="s2">,</span>
+                        <span class="s1">stacklevel</span><span class="s2">=</span><span class="s3">2</span><span class="s2">,</span>
+                    <span class="s2">)</span>
+                    <span class="s0">continue</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">f&quot;Weight count mismatch for layer #</span><span class="s0">{</span><span class="s1">k</span><span class="s0">} </span><span class="s4">&quot;</span>
+                    <span class="s4">f&quot;(named </span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s4">). &quot;</span>
+                    <span class="s4">f&quot;Layer expects </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">)</span><span class="s0">} </span><span class="s4">weight(s). &quot;</span>
+                    <span class="s4">f&quot;Received </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved weight(s)&quot;</span>
+                <span class="s2">)</span>
+            <span class="s5"># Set values.</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)):</span>
+                <span class="s1">expected_shape </span><span class="s2">= </span><span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">shape</span>
+                <span class="s1">received_shape </span><span class="s2">= </span><span class="s1">weight_values</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">shape</span>
+                <span class="s0">if </span><span class="s1">expected_shape </span><span class="s2">!= </span><span class="s1">received_shape</span><span class="s2">:</span>
+                    <span class="s0">if </span><span class="s1">skip_mismatch</span><span class="s2">:</span>
+                        <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                            <span class="s4">f&quot;Skipping loading weights for layer #</span><span class="s0">{</span><span class="s1">k</span><span class="s0">} </span><span class="s4">(named &quot;</span>
+                            <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s4">) due to mismatch in shape for &quot;</span>
+                            <span class="s4">f&quot;weight </span><span class="s0">{</span><span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">path</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                            <span class="s4">f&quot;Weight expects shape </span><span class="s0">{</span><span class="s1">expected_shape</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                            <span class="s4">&quot;Received saved weight &quot;</span>
+                            <span class="s4">f&quot;with shape </span><span class="s0">{</span><span class="s1">received_shape</span><span class="s0">}</span><span class="s4">&quot;</span><span class="s2">,</span>
+                            <span class="s1">stacklevel</span><span class="s2">=</span><span class="s3">2</span><span class="s2">,</span>
+                        <span class="s2">)</span>
+                        <span class="s0">continue</span>
+                    <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                        <span class="s4">f&quot;Shape mismatch in layer #</span><span class="s0">{</span><span class="s1">k</span><span class="s0">} </span><span class="s4">(named </span><span class="s0">{</span><span class="s1">layer</span><span class="s2">.</span><span class="s1">name</span><span class="s0">}</span><span class="s4">) &quot;</span>
+                        <span class="s4">f&quot;for weight </span><span class="s0">{</span><span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">path</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                        <span class="s4">f&quot;Weight expects shape </span><span class="s0">{</span><span class="s1">expected_shape</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                        <span class="s4">&quot;Received saved weight &quot;</span>
+                        <span class="s4">f&quot;with shape </span><span class="s0">{</span><span class="s1">received_shape</span><span class="s0">}</span><span class="s4">&quot;</span>
+                    <span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+
+    <span class="s0">if </span><span class="s4">&quot;top_level_model_weights&quot; </span><span class="s0">in </span><span class="s1">f</span><span class="s2">:</span>
+        <span class="s1">symbolic_weights </span><span class="s2">= </span><span class="s1">model</span><span class="s2">.</span><span class="s1">trainable_weights </span><span class="s2">+ </span><span class="s1">model</span><span class="s2">.</span><span class="s1">non_trainable_weights</span>
+        <span class="s1">weight_values </span><span class="s2">= </span><span class="s1">load_subset_weights_from_hdf5_group</span><span class="s2">(</span>
+            <span class="s1">f</span><span class="s2">[</span><span class="s4">&quot;top_level_model_weights&quot;</span><span class="s2">]</span>
+        <span class="s2">)</span>
+
+        <span class="s0">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">) != </span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">):</span>
+            <span class="s0">if </span><span class="s1">skip_mismatch</span><span class="s2">:</span>
+                <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                    <span class="s4">&quot;Skipping loading top-level weights for model due to &quot;</span>
+                    <span class="s4">&quot;mismatch in number of weights. &quot;</span>
+                    <span class="s4">f&quot;Model expects </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">)</span><span class="s0">} </span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;top-level weight(s). &quot;</span>
+                    <span class="s4">f&quot;Received </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved top-level weight(s)&quot;</span><span class="s2">,</span>
+                    <span class="s1">stacklevel</span><span class="s2">=</span><span class="s3">2</span><span class="s2">,</span>
+                <span class="s2">)</span>
+            <span class="s0">else</span><span class="s2">:</span>
+                <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                    <span class="s4">&quot;Weight count mismatch for top-level weights of model. &quot;</span>
+                    <span class="s4">f&quot;Model expects </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">symbolic_weights</span><span class="s2">)</span><span class="s0">} </span><span class="s4">&quot;</span>
+                    <span class="s4">&quot;top-level weight(s). &quot;</span>
+                    <span class="s4">f&quot;Received </span><span class="s0">{</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)</span><span class="s0">} </span><span class="s4">saved top-level weight(s)&quot;</span>
+                <span class="s2">)</span>
+        <span class="s0">else</span><span class="s2">:</span>
+            <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s2">(</span><span class="s1">len</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">)):</span>
+                <span class="s1">expected_shape </span><span class="s2">= </span><span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">shape</span>
+                <span class="s1">received_shape </span><span class="s2">= </span><span class="s1">weight_values</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">shape</span>
+                <span class="s0">if </span><span class="s1">expected_shape </span><span class="s2">!= </span><span class="s1">received_shape</span><span class="s2">:</span>
+                    <span class="s0">if </span><span class="s1">skip_mismatch</span><span class="s2">:</span>
+                        <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                            <span class="s4">&quot;Skipping loading top-level weight for model due &quot;</span>
+                            <span class="s4">&quot;to mismatch in shape for &quot;</span>
+                            <span class="s4">f&quot;weight </span><span class="s0">{</span><span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">path</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                            <span class="s4">f&quot;Weight expects shape </span><span class="s0">{</span><span class="s1">expected_shape</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                            <span class="s4">&quot;Received saved weight &quot;</span>
+                            <span class="s4">f&quot;with shape </span><span class="s0">{</span><span class="s1">received_shape</span><span class="s0">}</span><span class="s4">&quot;</span><span class="s2">,</span>
+                            <span class="s1">stacklevel</span><span class="s2">=</span><span class="s3">2</span><span class="s2">,</span>
+                        <span class="s2">)</span>
+                    <span class="s0">else</span><span class="s2">:</span>
+                        <span class="s0">raise </span><span class="s1">ValueError</span><span class="s2">(</span>
+                            <span class="s4">&quot;Shape mismatch in model for top-level weight &quot;</span>
+                            <span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">path</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                            <span class="s4">f&quot;Weight expects shape </span><span class="s0">{</span><span class="s1">expected_shape</span><span class="s0">}</span><span class="s4">. &quot;</span>
+                            <span class="s4">&quot;Received saved weight &quot;</span>
+                            <span class="s4">f&quot;with shape </span><span class="s0">{</span><span class="s1">received_shape</span><span class="s0">}</span><span class="s4">&quot;</span>
+                        <span class="s2">)</span>
+                <span class="s0">else</span><span class="s2">:</span>
+                    <span class="s1">symbolic_weights</span><span class="s2">[</span><span class="s1">i</span><span class="s2">].</span><span class="s1">assign</span><span class="s2">(</span><span class="s1">weight_values</span><span class="s2">[</span><span class="s1">i</span><span class="s2">])</span>
+
+
+<span class="s0">def </span><span class="s1">load_subset_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Load layer weights of a model from hdf5. 
+ 
+    Args: 
+        f: A pointer to a HDF5 group. 
+ 
+    Returns: 
+        List of NumPy arrays of the weight values. 
+ 
+    Raises: 
+        ValueError: in case of mismatch between provided model 
+            and weights file. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">weight_names </span><span class="s2">= </span><span class="s1">load_attributes_from_hdf5_group</span><span class="s2">(</span><span class="s1">f</span><span class="s2">, </span><span class="s4">&quot;weight_names&quot;</span><span class="s2">)</span>
+    <span class="s0">return </span><span class="s2">[</span><span class="s1">np</span><span class="s2">.</span><span class="s1">asarray</span><span class="s2">(</span><span class="s1">f</span><span class="s2">[</span><span class="s1">weight_name</span><span class="s2">]) </span><span class="s0">for </span><span class="s1">weight_name </span><span class="s0">in </span><span class="s1">weight_names</span><span class="s2">]</span>
+
+
+<span class="s0">def </span><span class="s1">load_optimizer_weights_from_hdf5_group</span><span class="s2">(</span><span class="s1">hdf5_group</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Load optimizer weights from a HDF5 group. 
+ 
+    Args: 
+        hdf5_group: A pointer to a HDF5 group. 
+ 
+    Returns: 
+        data: List of optimizer weight names. 
+    &quot;&quot;&quot;</span>
+    <span class="s1">weights_group </span><span class="s2">= </span><span class="s1">hdf5_group</span><span class="s2">[</span><span class="s4">&quot;optimizer_weights&quot;</span><span class="s2">]</span>
+    <span class="s1">optimizer_weight_names </span><span class="s2">= </span><span class="s1">load_attributes_from_hdf5_group</span><span class="s2">(</span>
+        <span class="s1">weights_group</span><span class="s2">, </span><span class="s4">&quot;weight_names&quot;</span>
+    <span class="s2">)</span>
+    <span class="s0">return </span><span class="s2">[</span>
+        <span class="s1">weights_group</span><span class="s2">[</span><span class="s1">weight_name</span><span class="s2">] </span><span class="s0">for </span><span class="s1">weight_name </span><span class="s0">in </span><span class="s1">optimizer_weight_names</span>
+    <span class="s2">]</span>
+
+
+<span class="s0">def </span><span class="s1">load_attributes_from_hdf5_group</span><span class="s2">(</span><span class="s1">group</span><span class="s2">, </span><span class="s1">name</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Loads attributes of the specified name from the HDF5 group. 
+ 
+    This method deals with an inherent problem 
+    of HDF5 file which is not able to store 
+    data larger than HDF5_OBJECT_HEADER_LIMIT bytes. 
+ 
+    Args: 
+        group: A pointer to a HDF5 group. 
+        name: A name of the attributes to load. 
+ 
+    Returns: 
+        data: Attributes data. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">if </span><span class="s1">name </span><span class="s0">in </span><span class="s1">group</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+        <span class="s1">data </span><span class="s2">= [</span>
+            <span class="s1">n</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">) </span><span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">n</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">) </span><span class="s0">else </span><span class="s1">n</span>
+            <span class="s0">for </span><span class="s1">n </span><span class="s0">in </span><span class="s1">group</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+        <span class="s2">]</span>
+    <span class="s0">else</span><span class="s2">:</span>
+        <span class="s1">data </span><span class="s2">= []</span>
+        <span class="s1">chunk_id </span><span class="s2">= </span><span class="s3">0</span>
+        <span class="s0">while </span><span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}{</span><span class="s1">chunk_id</span><span class="s0">}</span><span class="s4">&quot; </span><span class="s0">in </span><span class="s1">group</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+            <span class="s1">data</span><span class="s2">.</span><span class="s1">extend</span><span class="s2">(</span>
+                <span class="s2">[</span>
+                    <span class="s1">n</span><span class="s2">.</span><span class="s1">decode</span><span class="s2">(</span><span class="s4">&quot;utf8&quot;</span><span class="s2">) </span><span class="s0">if </span><span class="s1">hasattr</span><span class="s2">(</span><span class="s1">n</span><span class="s2">, </span><span class="s4">&quot;decode&quot;</span><span class="s2">) </span><span class="s0">else </span><span class="s1">n</span>
+                    <span class="s0">for </span><span class="s1">n </span><span class="s0">in </span><span class="s1">group</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s4">f&quot;</span><span class="s0">{</span><span class="s1">name</span><span class="s0">}{</span><span class="s1">chunk_id</span><span class="s0">}</span><span class="s4">&quot;</span><span class="s2">]</span>
+                <span class="s2">]</span>
+            <span class="s2">)</span>
+            <span class="s1">chunk_id </span><span class="s2">+= </span><span class="s3">1</span>
+    <span class="s0">return </span><span class="s1">data</span>
+
+
+<span class="s0">def </span><span class="s1">_legacy_weights</span><span class="s2">(</span><span class="s1">layer</span><span class="s2">):</span>
+    <span class="s6">&quot;&quot;&quot;Legacy weight order converter. 
+ 
+    For legacy reason, the layer.weights was in the order of 
+    [self.trainable_weights + self.non_trainable_weights], and this order was 
+    used for preserving the weights in h5 format. The new order of layer.weights 
+    are the same as layer.get_weights() which is more intuitive for user. To 
+    keep supporting the existing saved h5 file, this method should be used to 
+    save/load weights. 
+ 
+    Args: 
+        layer: a `Model` or `Layer` instance. 
+ 
+    Returns: 
+        A list of variables with the legacy weight order. 
+    &quot;&quot;&quot;</span>
+    <span class="s0">return </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">trainable_weights </span><span class="s2">+ </span><span class="s1">layer</span><span class="s2">.</span><span class="s1">non_trainable_weights</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<html>
+<head>
+<title>_isotonic.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_isotonic.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Author: Nelle Varoquaux, Andrew Tulloch, Antony Lee</span>
+
+<span class="s0"># Uses the pool adjacent violators algorithm (PAVA), with the</span>
+<span class="s0"># enhancement of searching for the longest decreasing subsequence to</span>
+<span class="s0"># pool at each step.</span>
+
+<span class="s0">import numpy as np</span>
+<span class="s0">from cython cimport floating</span>
+
+
+<span class="s0">def _inplace_contiguous_isotonic_regression(floating[::1] y, floating[::1] w):</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">Py_ssize_t n = y.shape[0], i, k</span>
+        <span class="s0">floating prev_y, sum_wy, sum_w</span>
+        <span class="s0">Py_ssize_t[::1] target = np.arange(n, dtype=np.intp)</span>
+
+    <span class="s0"># target describes a list of blocks.  At any time, if [i..j] (inclusive) is</span>
+    <span class="s0"># an active block, then target[i] := j and target[j] := i.</span>
+
+    <span class="s0"># For &quot;active&quot; indices (block starts):</span>
+    <span class="s0"># w[i] := sum{w_orig[j], j=[i..target[i]]}</span>
+    <span class="s0"># y[i] := sum{y_orig[j]*w_orig[j], j=[i..target[i]]} / w[i]</span>
+
+    <span class="s0">with nogil:</span>
+        <span class="s0">i = 0</span>
+        <span class="s0">while i &lt; n:</span>
+            <span class="s0">k = target[i] + 1</span>
+            <span class="s0">if k == n:</span>
+                <span class="s0">break</span>
+            <span class="s0">if y[i] &lt; y[k]:</span>
+                <span class="s0">i = k</span>
+                <span class="s0">continue</span>
+            <span class="s0">sum_wy = w[i] * y[i]</span>
+            <span class="s0">sum_w = w[i]</span>
+            <span class="s0">while True:</span>
+                <span class="s0"># We are within a decreasing subsequence.</span>
+                <span class="s0">prev_y = y[k]</span>
+                <span class="s0">sum_wy += w[k] * y[k]</span>
+                <span class="s0">sum_w += w[k]</span>
+                <span class="s0">k = target[k] + 1</span>
+                <span class="s0">if k == n or prev_y &lt; y[k]:</span>
+                    <span class="s0"># Non-singleton decreasing subsequence is finished,</span>
+                    <span class="s0"># update first entry.</span>
+                    <span class="s0">y[i] = sum_wy / sum_w</span>
+                    <span class="s0">w[i] = sum_w</span>
+                    <span class="s0">target[i] = k - 1</span>
+                    <span class="s0">target[k - 1] = i</span>
+                    <span class="s0">if i &gt; 0:</span>
+                        <span class="s0"># Backtrack if we can.  This makes the algorithm</span>
+                        <span class="s0"># single-pass and ensures O(n) complexity.</span>
+                        <span class="s0">i = target[i - 1]</span>
+                    <span class="s0"># Otherwise, restart from the same point.</span>
+                    <span class="s0">break</span>
+        <span class="s0"># Reconstruct the solution.</span>
+        <span class="s0">i = 0</span>
+        <span class="s0">while i &lt; n:</span>
+            <span class="s0">k = target[i] + 1</span>
+            <span class="s0">y[i + 1 : k] = y[i]</span>
+            <span class="s0">i = k</span>
+
+
+<span class="s0">def _make_unique(const floating[::1] X,</span>
+                 <span class="s0">const floating[::1] y,</span>
+                 <span class="s0">const floating[::1] sample_weights):</span>
+    <span class="s0">&quot;&quot;&quot;Average targets for duplicate X, drop duplicates.</span>
+
+    <span class="s0">Aggregates duplicate X values into a single X value where</span>
+    <span class="s0">the target y is a (sample_weighted) average of the individual</span>
+    <span class="s0">targets.</span>
+
+    <span class="s0">Assumes that X is ordered, so that all duplicates follow each other.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">unique_values = len(np.unique(X))</span>
+
+    <span class="s0">if floating is float:</span>
+        <span class="s0">dtype = np.float32</span>
+    <span class="s0">else:</span>
+        <span class="s0">dtype = np.float64</span>
+
+    <span class="s0">cdef floating[::1] y_out = np.empty(unique_values, dtype=dtype)</span>
+    <span class="s0">cdef floating[::1] x_out = np.empty_like(y_out)</span>
+    <span class="s0">cdef floating[::1] weights_out = np.empty_like(y_out)</span>
+
+    <span class="s0">cdef floating current_x = X[0]</span>
+    <span class="s0">cdef floating current_y = 0</span>
+    <span class="s0">cdef floating current_weight = 0</span>
+    <span class="s0">cdef int i = 0</span>
+    <span class="s0">cdef int j</span>
+    <span class="s0">cdef floating x</span>
+    <span class="s0">cdef int n_samples = len(X)</span>
+    <span class="s0">cdef floating eps = np.finfo(dtype).resolution</span>
+
+    <span class="s0">for j in range(n_samples):</span>
+        <span class="s0">x = X[j]</span>
+        <span class="s0">if x - current_x &gt;= eps:</span>
+            <span class="s0"># next unique value</span>
+            <span class="s0">x_out[i] = current_x</span>
+            <span class="s0">weights_out[i] = current_weight</span>
+            <span class="s0">y_out[i] = current_y / current_weight</span>
+            <span class="s0">i += 1</span>
+            <span class="s0">current_x = x</span>
+            <span class="s0">current_weight = sample_weights[j]</span>
+            <span class="s0">current_y = y[j] * sample_weights[j]</span>
+        <span class="s0">else:</span>
+            <span class="s0">current_weight += sample_weights[j]</span>
+            <span class="s0">current_y += y[j] * sample_weights[j]</span>
+
+    <span class="s0">x_out[i] = current_x</span>
+    <span class="s0">weights_out[i] = current_weight</span>
+    <span class="s0">y_out[i] = current_y / current_weight</span>
+    <span class="s0">return(</span>
+        <span class="s0">np.asarray(x_out[:i+1]),</span>
+        <span class="s0">np.asarray(y_out[:i+1]),</span>
+        <span class="s0">np.asarray(weights_out[:i+1]),</span>
+    <span class="s0">)</span>
+</pre>
+</body>
+</html>

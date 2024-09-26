@@ -1,0 +1,424 @@
+<html>
+<head>
+<title>base_conv.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #5f826b; font-style: italic;}
+.s1 { color: #bcbec4;}
+.s2 { color: #cf8e6d;}
+.s3 { color: #bcbec4;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+.s6 { color: #7a7e85;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+base_conv.py</font>
+</center></td></tr></table>
+<pre><span class="s0">&quot;&quot;&quot;Keras base class for convolution layers.&quot;&quot;&quot;</span>
+
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">activations</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">constraints</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">initializers</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">ops</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src </span><span class="s2">import </span><span class="s1">regularizers</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">backend </span><span class="s2">import </span><span class="s1">standardize_data_format</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers</span><span class="s3">.</span><span class="s1">input_spec </span><span class="s2">import </span><span class="s1">InputSpec</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">layers</span><span class="s3">.</span><span class="s1">layer </span><span class="s2">import </span><span class="s1">Layer</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">ops</span><span class="s3">.</span><span class="s1">operation_utils </span><span class="s2">import </span><span class="s1">compute_conv_output_shape</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils</span><span class="s3">.</span><span class="s1">argument_validation </span><span class="s2">import </span><span class="s1">standardize_padding</span>
+<span class="s2">from </span><span class="s1">keras</span><span class="s3">.</span><span class="s1">src</span><span class="s3">.</span><span class="s1">utils</span><span class="s3">.</span><span class="s1">argument_validation </span><span class="s2">import </span><span class="s1">standardize_tuple</span>
+
+
+<span class="s2">class </span><span class="s1">BaseConv</span><span class="s3">(</span><span class="s1">Layer</span><span class="s3">):</span>
+    <span class="s0">&quot;&quot;&quot;Abstract N-D convolution layer (private, used as implementation base). 
+ 
+    This layer creates a convolution kernel that is convolved (actually 
+    cross-correlated) with the layer input to produce a tensor of outputs. If 
+    `use_bias` is True (and a `bias_initializer` is provided), a bias vector is 
+    created and added to the outputs. Finally, if `activation` is not `None`, it 
+    is applied to the outputs as well. 
+ 
+    Note: layer attributes cannot be modified after the layer has been called 
+    once (except the `trainable` attribute). 
+ 
+    Args: 
+        rank: int, the rank of the convolution, e.g. 2 for 2D convolution. 
+        filters: int, the dimension of the output space (the number of filters 
+            in the convolution). 
+        kernel_size: int or tuple/list of `rank` integers, specifying the size 
+            of the convolution window. 
+        strides: int or tuple/list of `rank` integers, specifying the stride 
+            length of the convolution. If only one int is specified, the same 
+            stride size will be used for all dimensions. `strides &gt; 1` is 
+            incompatible with `dilation_rate &gt; 1`. 
+        padding: string, either `&quot;valid&quot;` or `&quot;same&quot;` (case-insensitive). 
+            `&quot;valid&quot;` means no padding. `&quot;same&quot;` results in padding evenly to 
+            the left/right or up/down of the input. When `padding=&quot;same&quot;` and 
+            `strides=1`, the output has the same size as the input. 
+        data_format: string, either `&quot;channels_last&quot;` or `&quot;channels_first&quot;`. 
+            The ordering of the dimensions in the inputs. `&quot;channels_last&quot;` 
+            corresponds to inputs with shape `(batch, steps, features)` 
+            while `&quot;channels_first&quot;` corresponds to inputs with shape 
+            `(batch, features, steps)`. It defaults to the `image_data_format` 
+            value found in your Keras config file at `~/.keras/keras.json`. 
+            If you never set it, then it will be `&quot;channels_last&quot;`. 
+        dilation_rate: int or tuple/list of `rank` integers, specifying the 
+            dilation rate to use for dilated convolution. If only one int is 
+            specified, the same dilation rate will be used for all dimensions. 
+        groups: A positive int specifying the number of groups in which the 
+            input is split along the channel axis. Each group is convolved 
+            separately with `filters // groups` filters. The output is the 
+            concatenation of all the `groups` results along the channel axis. 
+            Input channels and `filters` must both be divisible by `groups`. 
+        activation: Activation function. If `None`, no activation is applied. 
+        use_bias: bool, if `True`, bias will be added to the output. 
+        kernel_initializer: Initializer for the convolution kernel. If `None`, 
+            the default initializer (`&quot;glorot_uniform&quot;`) will be used. 
+        bias_initializer: Initializer for the bias vector. If `None`, the 
+            default initializer (`&quot;zeros&quot;`) will be used. 
+        kernel_regularizer: Optional regularizer for the convolution kernel. 
+        bias_regularizer: Optional regularizer for the bias vector. 
+        activity_regularizer: Optional regularizer function for the output. 
+        kernel_constraint: Optional projection function to be applied to the 
+            kernel after being updated by an `Optimizer` (e.g. used to implement 
+            norm constraints or value constraints for layer weights). The 
+            function must take as input the unprojected variable and must return 
+            the projected variable (which must have the same shape). Constraints 
+            are not safe to use when doing asynchronous distributed training. 
+        bias_constraint: Optional projection function to be applied to the 
+            bias after being updated by an `Optimizer`. 
+        lora_rank: Optional integer. If set, the layer's forward pass 
+            will implement LoRA (Low-Rank Adaptation) 
+            with the provided rank. LoRA sets the layer's kernel 
+            to non-trainable and replaces it with a delta over the 
+            original kernel, obtained via multiplying two lower-rank 
+            trainable matrices. This can be useful to reduce the 
+            computation cost of fine-tuning large dense layers. 
+            You can also enable LoRA on an existing layer by calling 
+            `layer.enable_lora(rank)`. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s2">def </span><span class="s1">__init__</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">,</span>
+        <span class="s1">rank</span><span class="s3">,</span>
+        <span class="s1">filters</span><span class="s3">,</span>
+        <span class="s1">kernel_size</span><span class="s3">,</span>
+        <span class="s1">strides</span><span class="s3">=</span><span class="s4">1</span><span class="s3">,</span>
+        <span class="s1">padding</span><span class="s3">=</span><span class="s5">&quot;valid&quot;</span><span class="s3">,</span>
+        <span class="s1">data_format</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">dilation_rate</span><span class="s3">=</span><span class="s4">1</span><span class="s3">,</span>
+        <span class="s1">groups</span><span class="s3">=</span><span class="s4">1</span><span class="s3">,</span>
+        <span class="s1">activation</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">use_bias</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+        <span class="s1">kernel_initializer</span><span class="s3">=</span><span class="s5">&quot;glorot_uniform&quot;</span><span class="s3">,</span>
+        <span class="s1">bias_initializer</span><span class="s3">=</span><span class="s5">&quot;zeros&quot;</span><span class="s3">,</span>
+        <span class="s1">kernel_regularizer</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">bias_regularizer</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">activity_regularizer</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">kernel_constraint</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">bias_constraint</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s1">lora_rank</span><span class="s3">=</span><span class="s2">None</span><span class="s3">,</span>
+        <span class="s3">**</span><span class="s1">kwargs</span><span class="s3">,</span>
+    <span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">().</span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">activity_regularizer</span><span class="s3">=</span><span class="s1">activity_regularizer</span><span class="s3">, **</span><span class="s1">kwargs</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">= </span><span class="s1">rank</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">filters </span><span class="s3">= </span><span class="s1">filters</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">groups </span><span class="s3">= </span><span class="s1">groups</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size </span><span class="s3">= </span><span class="s1">standardize_tuple</span><span class="s3">(</span><span class="s1">kernel_size</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s5">&quot;kernel_size&quot;</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">strides </span><span class="s3">= </span><span class="s1">standardize_tuple</span><span class="s3">(</span><span class="s1">strides</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s5">&quot;strides&quot;</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate </span><span class="s3">= </span><span class="s1">standardize_tuple</span><span class="s3">(</span>
+            <span class="s1">dilation_rate</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s5">&quot;dilation_rate&quot;</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">padding </span><span class="s3">= </span><span class="s1">standardize_padding</span><span class="s3">(</span><span class="s1">padding</span><span class="s3">, </span><span class="s1">allow_causal</span><span class="s3">=</span><span class="s1">rank </span><span class="s3">== </span><span class="s4">1</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">= </span><span class="s1">standardize_data_format</span><span class="s3">(</span><span class="s1">data_format</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">activation </span><span class="s3">= </span><span class="s1">activations</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">activation</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias </span><span class="s3">= </span><span class="s1">use_bias</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_initializer </span><span class="s3">= </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">kernel_initializer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_initializer </span><span class="s3">= </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">bias_initializer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_regularizer </span><span class="s3">= </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">kernel_regularizer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_regularizer </span><span class="s3">= </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">bias_regularizer</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_constraint </span><span class="s3">= </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">kernel_constraint</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_constraint </span><span class="s3">= </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">bias_constraint</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_rank </span><span class="s3">= </span><span class="s1">lora_rank</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_enabled </span><span class="s3">= </span><span class="s2">False</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">input_spec </span><span class="s3">= </span><span class="s1">InputSpec</span><span class="s3">(</span><span class="s1">min_ndim</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">+ </span><span class="s4">2</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters </span><span class="s2">is not None and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters </span><span class="s3">&lt;= </span><span class="s4">0</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;Invalid value for argument `filters`. Expected a strictly &quot;</span>
+                <span class="s5">f&quot;positive value. Received filters=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s2">}</span><span class="s5">.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups </span><span class="s3">&lt;= </span><span class="s4">0</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The number of groups must be a positive integer. &quot;</span>
+                <span class="s5">f&quot;Received: groups=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups</span><span class="s2">}</span><span class="s5">.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters </span><span class="s2">is not None and </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters </span><span class="s3">% </span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups </span><span class="s3">!= </span><span class="s4">0</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The number of filters must be evenly divisible by the &quot;</span>
+                <span class="s5">f&quot;number of groups. Received: groups=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups</span><span class="s2">}</span><span class="s5">, &quot;</span>
+                <span class="s5">f&quot;filters=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s2">}</span><span class="s5">.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if not </span><span class="s1">all</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The argument `kernel_size` cannot contain 0. Received &quot;</span>
+                <span class="s5">f&quot;kernel_size=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s2">}</span><span class="s5">.&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if not </span><span class="s1">all</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">):</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The argument `strides` cannot contains 0. Received &quot;</span>
+                <span class="s5">f&quot;strides=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+
+        <span class="s2">if </span><span class="s1">max</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">) &gt; </span><span class="s4">1 </span><span class="s2">and </span><span class="s1">max</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">) &gt; </span><span class="s4">1</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;`strides &gt; 1` not supported in conjunction with &quot;</span>
+                <span class="s5">f&quot;`dilation_rate &gt; 1`. Received: strides=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s2">} </span><span class="s5">and &quot;</span>
+                <span class="s5">f&quot;dilation_rate=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">build</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_shape</span><span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s3">:</span>
+            <span class="s1">channel_axis </span><span class="s3">= -</span><span class="s4">1</span>
+            <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">input_shape</span><span class="s3">[-</span><span class="s4">1</span><span class="s3">]</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">channel_axis </span><span class="s3">= </span><span class="s4">1</span>
+            <span class="s1">input_channel </span><span class="s3">= </span><span class="s1">input_shape</span><span class="s3">[</span><span class="s4">1</span><span class="s3">]</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">input_spec </span><span class="s3">= </span><span class="s1">InputSpec</span><span class="s3">(</span>
+            <span class="s1">min_ndim</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">+ </span><span class="s4">2</span><span class="s3">, </span><span class="s1">axes</span><span class="s3">={</span><span class="s1">channel_axis</span><span class="s3">: </span><span class="s1">input_channel</span><span class="s3">}</span>
+        <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">input_channel </span><span class="s3">% </span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups </span><span class="s3">!= </span><span class="s4">0</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;The number of input channels must be evenly divisible by &quot;</span>
+                <span class="s5">f&quot;the number of groups. Received groups=</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups</span><span class="s2">}</span><span class="s5">, but the &quot;</span>
+                <span class="s5">f&quot;input has </span><span class="s2">{</span><span class="s1">input_channel</span><span class="s2">} </span><span class="s5">channels (full input shape is &quot;</span>
+                <span class="s5">f&quot;</span><span class="s2">{</span><span class="s1">input_shape</span><span class="s2">}</span><span class="s5">).&quot;</span>
+            <span class="s3">)</span>
+        <span class="s1">kernel_shape </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size </span><span class="s3">+ (</span>
+            <span class="s1">input_channel </span><span class="s3">// </span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+        <span class="s6"># compute_output_shape contains some validation logic for the input</span>
+        <span class="s6"># shape, and make sure the output shape has all positive dimensions.</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">compute_output_shape</span><span class="s3">(</span><span class="s1">input_shape</span><span class="s3">)</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_kernel </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">add_weight</span><span class="s3">(</span>
+            <span class="s1">name</span><span class="s3">=</span><span class="s5">&quot;kernel&quot;</span><span class="s3">,</span>
+            <span class="s1">shape</span><span class="s3">=</span><span class="s1">kernel_shape</span><span class="s3">,</span>
+            <span class="s1">initializer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_initializer</span><span class="s3">,</span>
+            <span class="s1">regularizer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_regularizer</span><span class="s3">,</span>
+            <span class="s1">constraint</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_constraint</span><span class="s3">,</span>
+            <span class="s1">trainable</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+            <span class="s1">dtype</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">bias </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">add_weight</span><span class="s3">(</span>
+                <span class="s1">name</span><span class="s3">=</span><span class="s5">&quot;bias&quot;</span><span class="s3">,</span>
+                <span class="s1">shape</span><span class="s3">=(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">,),</span>
+                <span class="s1">initializer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_initializer</span><span class="s3">,</span>
+                <span class="s1">regularizer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_regularizer</span><span class="s3">,</span>
+                <span class="s1">constraint</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_constraint</span><span class="s3">,</span>
+                <span class="s1">trainable</span><span class="s3">=</span><span class="s2">True</span><span class="s3">,</span>
+                <span class="s1">dtype</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dtype</span><span class="s3">,</span>
+            <span class="s3">)</span>
+        <span class="s2">else</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">bias </span><span class="s3">= </span><span class="s2">None</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">built </span><span class="s3">= </span><span class="s2">True</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_rank</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">enable_lora</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_rank</span><span class="s3">)</span>
+
+    <span class="s3">@</span><span class="s1">property</span>
+    <span class="s2">def </span><span class="s1">kernel</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">AttributeError</span><span class="s3">(</span>
+                <span class="s5">&quot;You must build the layer before accessing `kernel`.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_enabled</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_kernel </span><span class="s3">+ </span><span class="s1">ops</span><span class="s3">.</span><span class="s1">matmul</span><span class="s3">(</span>
+                <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_a</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_b</span>
+            <span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_kernel</span>
+
+    <span class="s2">def </span><span class="s1">convolution_op</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">inputs</span><span class="s3">, </span><span class="s1">kernel</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">ops</span><span class="s3">.</span><span class="s1">conv</span><span class="s3">(</span>
+            <span class="s1">inputs</span><span class="s3">,</span>
+            <span class="s1">kernel</span><span class="s3">,</span>
+            <span class="s1">strides</span><span class="s3">=</span><span class="s1">list</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">),</span>
+            <span class="s1">padding</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">padding</span><span class="s3">,</span>
+            <span class="s1">dilation_rate</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">,</span>
+            <span class="s1">data_format</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">call</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">inputs</span><span class="s3">):</span>
+        <span class="s1">outputs </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">convolution_op</span><span class="s3">(</span>
+            <span class="s1">inputs</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">:</span>
+            <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format </span><span class="s3">== </span><span class="s5">&quot;channels_last&quot;</span><span class="s3">:</span>
+                <span class="s1">bias_shape </span><span class="s3">= (</span><span class="s4">1</span><span class="s3">,) * (</span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">) + (</span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">,)</span>
+            <span class="s2">else</span><span class="s3">:</span>
+                <span class="s1">bias_shape </span><span class="s3">= (</span><span class="s4">1</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">) + (</span><span class="s4">1</span><span class="s3">,) * </span><span class="s1">self</span><span class="s3">.</span><span class="s1">rank</span>
+            <span class="s1">bias </span><span class="s3">= </span><span class="s1">ops</span><span class="s3">.</span><span class="s1">reshape</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias</span><span class="s3">, </span><span class="s1">bias_shape</span><span class="s3">)</span>
+            <span class="s1">outputs </span><span class="s3">+= </span><span class="s1">bias</span>
+
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">activation </span><span class="s2">is not None</span><span class="s3">:</span>
+            <span class="s2">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">activation</span><span class="s3">(</span><span class="s1">outputs</span><span class="s3">)</span>
+        <span class="s2">return </span><span class="s1">outputs</span>
+
+    <span class="s2">def </span><span class="s1">compute_output_shape</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_shape</span><span class="s3">):</span>
+        <span class="s2">return </span><span class="s1">compute_conv_output_shape</span><span class="s3">(</span>
+            <span class="s1">input_shape</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">,</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s3">,</span>
+            <span class="s1">strides</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">,</span>
+            <span class="s1">padding</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">padding</span><span class="s3">,</span>
+            <span class="s1">data_format</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span><span class="s3">,</span>
+            <span class="s1">dilation_rate</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">,</span>
+        <span class="s3">)</span>
+
+    <span class="s2">def </span><span class="s1">enable_lora</span><span class="s3">(</span>
+        <span class="s1">self</span><span class="s3">, </span><span class="s1">rank</span><span class="s3">, </span><span class="s1">a_initializer</span><span class="s3">=</span><span class="s5">&quot;he_uniform&quot;</span><span class="s3">, </span><span class="s1">b_initializer</span><span class="s3">=</span><span class="s5">&quot;zeros&quot;</span>
+    <span class="s3">):</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_constraint</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;Lora is incompatible with kernel constraints. &quot;</span>
+                <span class="s5">&quot;In order to enable lora on this layer, remove the &quot;</span>
+                <span class="s5">&quot;`kernel_constraint` argument.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;Cannot enable lora on a layer that isn't yet built.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_enabled</span><span class="s3">:</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">&quot;lora is already enabled. &quot;</span>
+                <span class="s5">&quot;This can only be done once per layer.&quot;</span>
+            <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tracker</span><span class="s3">.</span><span class="s1">unlock</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_a </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">add_weight</span><span class="s3">(</span>
+            <span class="s1">name</span><span class="s3">=</span><span class="s5">&quot;lora_kernel_a&quot;</span><span class="s3">,</span>
+            <span class="s1">shape</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_kernel</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">[:-</span><span class="s4">1</span><span class="s3">] + (</span><span class="s1">rank</span><span class="s3">,),</span>
+            <span class="s1">initializer</span><span class="s3">=</span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">a_initializer</span><span class="s3">),</span>
+            <span class="s1">regularizer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_regularizer</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_b </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">add_weight</span><span class="s3">(</span>
+            <span class="s1">name</span><span class="s3">=</span><span class="s5">&quot;lora_kernel_b&quot;</span><span class="s3">,</span>
+            <span class="s1">shape</span><span class="s3">=(</span><span class="s1">rank</span><span class="s3">, </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">),</span>
+            <span class="s1">initializer</span><span class="s3">=</span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">get</span><span class="s3">(</span><span class="s1">b_initializer</span><span class="s3">),</span>
+            <span class="s1">regularizer</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_regularizer</span><span class="s3">,</span>
+        <span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_kernel</span><span class="s3">.</span><span class="s1">trainable </span><span class="s3">= </span><span class="s2">False</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">_tracker</span><span class="s3">.</span><span class="s1">lock</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_enabled </span><span class="s3">= </span><span class="s2">True</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_rank </span><span class="s3">= </span><span class="s1">rank</span>
+
+    <span class="s2">def </span><span class="s1">save_own_variables</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">store</span><span class="s3">):</span>
+        <span class="s6"># Do nothing if the layer isn't yet built</span>
+        <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+            <span class="s2">return</span>
+        <span class="s1">target_variables </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel</span><span class="s3">]</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">:</span>
+            <span class="s1">target_variables</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias</span><span class="s3">)</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s3">, </span><span class="s1">variable </span><span class="s2">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">target_variables</span><span class="s3">):</span>
+            <span class="s1">store</span><span class="s3">[</span><span class="s1">str</span><span class="s3">(</span><span class="s1">i</span><span class="s3">)] = </span><span class="s1">variable</span>
+
+    <span class="s2">def </span><span class="s1">load_own_variables</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">store</span><span class="s3">):</span>
+        <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_enabled</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">_check_load_own_variables</span><span class="s3">(</span><span class="s1">store</span><span class="s3">)</span>
+        <span class="s6"># Do nothing if the layer isn't yet built</span>
+        <span class="s2">if not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+            <span class="s2">return</span>
+        <span class="s1">target_variables </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">_kernel</span><span class="s3">]</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">:</span>
+            <span class="s1">target_variables</span><span class="s3">.</span><span class="s1">append</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias</span><span class="s3">)</span>
+        <span class="s2">for </span><span class="s1">i</span><span class="s3">, </span><span class="s1">variable </span><span class="s2">in </span><span class="s1">enumerate</span><span class="s3">(</span><span class="s1">target_variables</span><span class="s3">):</span>
+            <span class="s1">variable</span><span class="s3">.</span><span class="s1">assign</span><span class="s3">(</span><span class="s1">store</span><span class="s3">[</span><span class="s1">str</span><span class="s3">(</span><span class="s1">i</span><span class="s3">)])</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_enabled</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_a</span><span class="s3">.</span><span class="s1">assign</span><span class="s3">(</span><span class="s1">ops</span><span class="s3">.</span><span class="s1">zeros</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_a</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">))</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_b</span><span class="s3">.</span><span class="s1">assign</span><span class="s3">(</span><span class="s1">ops</span><span class="s3">.</span><span class="s1">zeros</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_kernel_b</span><span class="s3">.</span><span class="s1">shape</span><span class="s3">))</span>
+
+    <span class="s2">def </span><span class="s1">get_config</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">config </span><span class="s3">= </span><span class="s1">super</span><span class="s3">().</span><span class="s1">get_config</span><span class="s3">()</span>
+        <span class="s1">config</span><span class="s3">.</span><span class="s1">update</span><span class="s3">(</span>
+            <span class="s3">{</span>
+                <span class="s5">&quot;filters&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">filters</span><span class="s3">,</span>
+                <span class="s5">&quot;kernel_size&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_size</span><span class="s3">,</span>
+                <span class="s5">&quot;strides&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">strides</span><span class="s3">,</span>
+                <span class="s5">&quot;padding&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">padding</span><span class="s3">,</span>
+                <span class="s5">&quot;data_format&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">data_format</span><span class="s3">,</span>
+                <span class="s5">&quot;dilation_rate&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">dilation_rate</span><span class="s3">,</span>
+                <span class="s5">&quot;groups&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">groups</span><span class="s3">,</span>
+                <span class="s5">&quot;activation&quot;</span><span class="s3">: </span><span class="s1">activations</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">activation</span><span class="s3">),</span>
+                <span class="s5">&quot;use_bias&quot;</span><span class="s3">: </span><span class="s1">self</span><span class="s3">.</span><span class="s1">use_bias</span><span class="s3">,</span>
+                <span class="s5">&quot;kernel_initializer&quot;</span><span class="s3">: </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_initializer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;bias_initializer&quot;</span><span class="s3">: </span><span class="s1">initializers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_initializer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;kernel_regularizer&quot;</span><span class="s3">: </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_regularizer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;bias_regularizer&quot;</span><span class="s3">: </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">bias_regularizer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;activity_regularizer&quot;</span><span class="s3">: </span><span class="s1">regularizers</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">activity_regularizer</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;kernel_constraint&quot;</span><span class="s3">: </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span>
+                    <span class="s1">self</span><span class="s3">.</span><span class="s1">kernel_constraint</span>
+                <span class="s3">),</span>
+                <span class="s5">&quot;bias_constraint&quot;</span><span class="s3">: </span><span class="s1">constraints</span><span class="s3">.</span><span class="s1">serialize</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">bias_constraint</span><span class="s3">),</span>
+            <span class="s3">}</span>
+        <span class="s3">)</span>
+        <span class="s2">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_rank</span><span class="s3">:</span>
+            <span class="s1">config</span><span class="s3">[</span><span class="s5">&quot;lora_rank&quot;</span><span class="s3">] = </span><span class="s1">self</span><span class="s3">.</span><span class="s1">lora_rank</span>
+        <span class="s2">return </span><span class="s1">config</span>
+
+    <span class="s2">def </span><span class="s1">_check_load_own_variables</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">store</span><span class="s3">):</span>
+        <span class="s1">all_vars </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_trainable_variables </span><span class="s3">+ </span><span class="s1">self</span><span class="s3">.</span><span class="s1">_non_trainable_variables</span>
+        <span class="s2">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">store</span><span class="s3">.</span><span class="s1">keys</span><span class="s3">()) != </span><span class="s1">len</span><span class="s3">(</span><span class="s1">all_vars</span><span class="s3">):</span>
+            <span class="s2">if </span><span class="s1">len</span><span class="s3">(</span><span class="s1">all_vars</span><span class="s3">) == </span><span class="s4">0 </span><span class="s2">and not </span><span class="s1">self</span><span class="s3">.</span><span class="s1">built</span><span class="s3">:</span>
+                <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                    <span class="s5">f&quot;Layer '</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">name</span><span class="s2">}</span><span class="s5">' was never built &quot;</span>
+                    <span class="s5">&quot;and thus it doesn't have any variables. &quot;</span>
+                    <span class="s5">f&quot;However the weights file lists </span><span class="s2">{</span><span class="s1">len</span><span class="s3">(</span><span class="s1">store</span><span class="s3">.</span><span class="s1">keys</span><span class="s3">())</span><span class="s2">} </span><span class="s5">&quot;</span>
+                    <span class="s5">&quot;variables for this layer.</span><span class="s2">\n</span><span class="s5">&quot;</span>
+                    <span class="s5">&quot;In most cases, this error indicates that either:</span><span class="s2">\n\n</span><span class="s5">&quot;</span>
+                    <span class="s5">&quot;1. The layer is owned by a parent layer that &quot;</span>
+                    <span class="s5">&quot;implements a `build()` method, but calling the &quot;</span>
+                    <span class="s5">&quot;parent's `build()` method did NOT create the state of &quot;</span>
+                    <span class="s5">f&quot;the child layer '</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">name</span><span class="s2">}</span><span class="s5">'. A `build()` method &quot;</span>
+                    <span class="s5">&quot;must create ALL state for the layer, including &quot;</span>
+                    <span class="s5">&quot;the state of any children layers.</span><span class="s2">\n\n</span><span class="s5">&quot;</span>
+                    <span class="s5">&quot;2. You need to implement &quot;</span>
+                    <span class="s5">&quot;the `def build_from_config(self, config)` method &quot;</span>
+                    <span class="s5">f&quot;on layer '</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">name</span><span class="s2">}</span><span class="s5">', to specify how to rebuild &quot;</span>
+                    <span class="s5">&quot;it during loading. &quot;</span>
+                    <span class="s5">&quot;In this case, you might also want to implement the &quot;</span>
+                    <span class="s5">&quot;method that generates the build config at saving time, &quot;</span>
+                    <span class="s5">&quot;`def get_build_config(self)`. &quot;</span>
+                    <span class="s5">&quot;The method `build_from_config()` is meant &quot;</span>
+                    <span class="s5">&quot;to create the state &quot;</span>
+                    <span class="s5">&quot;of the layer (i.e. its variables) upon deserialization.&quot;</span><span class="s3">,</span>
+                <span class="s3">)</span>
+            <span class="s2">raise </span><span class="s1">ValueError</span><span class="s3">(</span>
+                <span class="s5">f&quot;Layer '</span><span class="s2">{</span><span class="s1">self</span><span class="s3">.</span><span class="s1">name</span><span class="s2">}</span><span class="s5">' expected </span><span class="s2">{</span><span class="s1">len</span><span class="s3">(</span><span class="s1">all_vars</span><span class="s3">)</span><span class="s2">} </span><span class="s5">variables, &quot;</span>
+                <span class="s5">&quot;but received &quot;</span>
+                <span class="s5">f&quot;</span><span class="s2">{</span><span class="s1">len</span><span class="s3">(</span><span class="s1">store</span><span class="s3">.</span><span class="s1">keys</span><span class="s3">())</span><span class="s2">} </span><span class="s5">variables during loading. &quot;</span>
+                <span class="s5">f&quot;Expected: </span><span class="s2">{</span><span class="s3">[</span><span class="s1">v</span><span class="s3">.</span><span class="s1">name </span><span class="s2">for </span><span class="s1">v </span><span class="s2">in </span><span class="s1">all_vars</span><span class="s3">]</span><span class="s2">}</span><span class="s5">&quot;</span>
+            <span class="s3">)</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,504 @@
+<html>
+<head>
+<title>_html5lib.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #bcbec4;}
+.s3 { color: #6aab73;}
+.s4 { color: #cf8e6d;}
+.s5 { color: #5f826b; font-style: italic;}
+.s6 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_html5lib.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># Use of this source code is governed by the MIT license.</span>
+<span class="s1">__license__ </span><span class="s2">= </span><span class="s3">&quot;MIT&quot;</span>
+
+<span class="s1">__all__ </span><span class="s2">= [</span>
+    <span class="s3">'HTML5TreeBuilder'</span><span class="s2">,</span>
+    <span class="s2">]</span>
+
+<span class="s4">import </span><span class="s1">warnings</span>
+<span class="s4">import </span><span class="s1">re</span>
+<span class="s4">from </span><span class="s1">bs4</span><span class="s2">.</span><span class="s1">builder </span><span class="s4">import </span><span class="s2">(</span>
+    <span class="s1">DetectsXMLParsedAsHTML</span><span class="s2">,</span>
+    <span class="s1">PERMISSIVE</span><span class="s2">,</span>
+    <span class="s1">HTML</span><span class="s2">,</span>
+    <span class="s1">HTML_5</span><span class="s2">,</span>
+    <span class="s1">HTMLTreeBuilder</span><span class="s2">,</span>
+    <span class="s2">)</span>
+<span class="s4">from </span><span class="s1">bs4</span><span class="s2">.</span><span class="s1">element </span><span class="s4">import </span><span class="s2">(</span>
+    <span class="s1">NamespacedAttribute</span><span class="s2">,</span>
+    <span class="s1">nonwhitespace_re</span><span class="s2">,</span>
+<span class="s2">)</span>
+<span class="s4">import </span><span class="s1">html5lib</span>
+<span class="s4">from </span><span class="s1">html5lib</span><span class="s2">.</span><span class="s1">constants </span><span class="s4">import </span><span class="s2">(</span>
+    <span class="s1">namespaces</span><span class="s2">,</span>
+    <span class="s1">prefixes</span><span class="s2">,</span>
+    <span class="s2">)</span>
+<span class="s4">from </span><span class="s1">bs4</span><span class="s2">.</span><span class="s1">element </span><span class="s4">import </span><span class="s2">(</span>
+    <span class="s1">Comment</span><span class="s2">,</span>
+    <span class="s1">Doctype</span><span class="s2">,</span>
+    <span class="s1">NavigableString</span><span class="s2">,</span>
+    <span class="s1">Tag</span><span class="s2">,</span>
+    <span class="s2">)</span>
+
+<span class="s4">try</span><span class="s2">:</span>
+    <span class="s0"># Pre-0.99999999</span>
+    <span class="s4">from </span><span class="s1">html5lib</span><span class="s2">.</span><span class="s1">treebuilders </span><span class="s4">import </span><span class="s1">_base </span><span class="s4">as </span><span class="s1">treebuilder_base</span>
+    <span class="s1">new_html5lib </span><span class="s2">= </span><span class="s4">False</span>
+<span class="s4">except </span><span class="s1">ImportError </span><span class="s4">as </span><span class="s1">e</span><span class="s2">:</span>
+    <span class="s0"># 0.99999999 and up</span>
+    <span class="s4">from </span><span class="s1">html5lib</span><span class="s2">.</span><span class="s1">treebuilders </span><span class="s4">import </span><span class="s1">base </span><span class="s4">as </span><span class="s1">treebuilder_base</span>
+    <span class="s1">new_html5lib </span><span class="s2">= </span><span class="s4">True</span>
+
+<span class="s4">class </span><span class="s1">HTML5TreeBuilder</span><span class="s2">(</span><span class="s1">HTMLTreeBuilder</span><span class="s2">):</span>
+    <span class="s5">&quot;&quot;&quot;Use html5lib to build a tree. 
+ 
+    Note that this TreeBuilder does not support some features common 
+    to HTML TreeBuilders. Some of these features could theoretically 
+    be implemented, but at the very least it's quite difficult, 
+    because html5lib moves the parse tree around as it's being built. 
+ 
+    * This TreeBuilder doesn't use different subclasses of NavigableString 
+      based on the name of the tag in which the string was found. 
+ 
+    * You can't use a SoupStrainer to parse only part of a document. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s1">NAME </span><span class="s2">= </span><span class="s3">&quot;html5lib&quot;</span>
+
+    <span class="s1">features </span><span class="s2">= [</span><span class="s1">NAME</span><span class="s2">, </span><span class="s1">PERMISSIVE</span><span class="s2">, </span><span class="s1">HTML_5</span><span class="s2">, </span><span class="s1">HTML</span><span class="s2">]</span>
+
+    <span class="s0"># html5lib can tell us which line number and position in the</span>
+    <span class="s0"># original file is the source of an element.</span>
+    <span class="s1">TRACKS_LINE_NUMBERS </span><span class="s2">= </span><span class="s4">True</span>
+    
+    <span class="s4">def </span><span class="s1">prepare_markup</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">markup</span><span class="s2">, </span><span class="s1">user_specified_encoding</span><span class="s2">,</span>
+                       <span class="s1">document_declared_encoding</span><span class="s2">=</span><span class="s4">None</span><span class="s2">, </span><span class="s1">exclude_encodings</span><span class="s2">=</span><span class="s4">None</span><span class="s2">):</span>
+        <span class="s0"># Store the user-specified encoding for use later on.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">user_specified_encoding </span><span class="s2">= </span><span class="s1">user_specified_encoding</span>
+
+        <span class="s0"># document_declared_encoding and exclude_encodings aren't used</span>
+        <span class="s0"># ATM because the html5lib TreeBuilder doesn't use</span>
+        <span class="s0"># UnicodeDammit.</span>
+        <span class="s4">if </span><span class="s1">exclude_encodings</span><span class="s2">:</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s3">&quot;You provided a value for exclude_encoding, but the html5lib tree builder doesn't support exclude_encoding.&quot;</span><span class="s2">,</span>
+                <span class="s1">stacklevel</span><span class="s2">=</span><span class="s6">3</span>
+            <span class="s2">)</span>
+
+        <span class="s0"># html5lib only parses HTML, so if it's given XML that's worth</span>
+        <span class="s0"># noting.</span>
+        <span class="s1">DetectsXMLParsedAsHTML</span><span class="s2">.</span><span class="s1">warn_if_markup_looks_like_xml</span><span class="s2">(</span>
+            <span class="s1">markup</span><span class="s2">, </span><span class="s1">stacklevel</span><span class="s2">=</span><span class="s6">3</span>
+        <span class="s2">)</span>
+
+        <span class="s4">yield </span><span class="s2">(</span><span class="s1">markup</span><span class="s2">, </span><span class="s4">None</span><span class="s2">, </span><span class="s4">None</span><span class="s2">, </span><span class="s4">False</span><span class="s2">)</span>
+
+    <span class="s0"># These methods are defined by Beautiful Soup.</span>
+    <span class="s4">def </span><span class="s1">feed</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">markup</span><span class="s2">):</span>
+        <span class="s4">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">parse_only </span><span class="s4">is not None</span><span class="s2">:</span>
+            <span class="s1">warnings</span><span class="s2">.</span><span class="s1">warn</span><span class="s2">(</span>
+                <span class="s3">&quot;You provided a value for parse_only, but the html5lib tree builder doesn't support parse_only. The entire document will be parsed.&quot;</span><span class="s2">,</span>
+                <span class="s1">stacklevel</span><span class="s2">=</span><span class="s6">4</span>
+            <span class="s2">)</span>
+        <span class="s1">parser </span><span class="s2">= </span><span class="s1">html5lib</span><span class="s2">.</span><span class="s1">HTMLParser</span><span class="s2">(</span><span class="s1">tree</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">create_treebuilder</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">underlying_builder</span><span class="s2">.</span><span class="s1">parser </span><span class="s2">= </span><span class="s1">parser</span>
+        <span class="s1">extra_kwargs </span><span class="s2">= </span><span class="s1">dict</span><span class="s2">()</span>
+        <span class="s4">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">markup</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s4">if </span><span class="s1">new_html5lib</span><span class="s2">:</span>
+                <span class="s1">extra_kwargs</span><span class="s2">[</span><span class="s3">'override_encoding'</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">user_specified_encoding</span>
+            <span class="s4">else</span><span class="s2">:</span>
+                <span class="s1">extra_kwargs</span><span class="s2">[</span><span class="s3">'encoding'</span><span class="s2">] = </span><span class="s1">self</span><span class="s2">.</span><span class="s1">user_specified_encoding</span>
+        <span class="s1">doc </span><span class="s2">= </span><span class="s1">parser</span><span class="s2">.</span><span class="s1">parse</span><span class="s2">(</span><span class="s1">markup</span><span class="s2">, **</span><span class="s1">extra_kwargs</span><span class="s2">)</span>
+        
+        <span class="s0"># Set the character encoding detected by the tokenizer.</span>
+        <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">markup</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s0"># We need to special-case this because html5lib sets</span>
+            <span class="s0"># charEncoding to UTF-8 if it gets Unicode input.</span>
+            <span class="s1">doc</span><span class="s2">.</span><span class="s1">original_encoding </span><span class="s2">= </span><span class="s4">None</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s1">original_encoding </span><span class="s2">= </span><span class="s1">parser</span><span class="s2">.</span><span class="s1">tokenizer</span><span class="s2">.</span><span class="s1">stream</span><span class="s2">.</span><span class="s1">charEncoding</span><span class="s2">[</span><span class="s6">0</span><span class="s2">]</span>
+            <span class="s4">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">original_encoding</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+                <span class="s0"># In 0.99999999 and up, the encoding is an html5lib</span>
+                <span class="s0"># Encoding object. We want to use a string for compatibility</span>
+                <span class="s0"># with other tree builders.</span>
+                <span class="s1">original_encoding </span><span class="s2">= </span><span class="s1">original_encoding</span><span class="s2">.</span><span class="s1">name</span>
+            <span class="s1">doc</span><span class="s2">.</span><span class="s1">original_encoding </span><span class="s2">= </span><span class="s1">original_encoding</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">underlying_builder</span><span class="s2">.</span><span class="s1">parser </span><span class="s2">= </span><span class="s4">None</span>
+            
+    <span class="s4">def </span><span class="s1">create_treebuilder</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">namespaceHTMLElements</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">underlying_builder </span><span class="s2">= </span><span class="s1">TreeBuilderForHtml5lib</span><span class="s2">(</span>
+            <span class="s1">namespaceHTMLElements</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">,</span>
+            <span class="s1">store_line_numbers</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">store_line_numbers</span>
+        <span class="s2">)</span>
+        <span class="s4">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">underlying_builder</span>
+
+    <span class="s4">def </span><span class="s1">test_fragment_to_document</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">fragment</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;See `TreeBuilder`.&quot;&quot;&quot;</span>
+        <span class="s4">return </span><span class="s3">'&lt;html&gt;&lt;head&gt;&lt;/head&gt;&lt;body&gt;%s&lt;/body&gt;&lt;/html&gt;' </span><span class="s2">% </span><span class="s1">fragment</span>
+
+
+<span class="s4">class </span><span class="s1">TreeBuilderForHtml5lib</span><span class="s2">(</span><span class="s1">treebuilder_base</span><span class="s2">.</span><span class="s1">TreeBuilder</span><span class="s2">):</span>
+    
+    <span class="s4">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">namespaceHTMLElements</span><span class="s2">, </span><span class="s1">soup</span><span class="s2">=</span><span class="s4">None</span><span class="s2">,</span>
+                 <span class="s1">store_line_numbers</span><span class="s2">=</span><span class="s4">True</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">):</span>
+        <span class="s4">if </span><span class="s1">soup</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">soup </span><span class="s2">= </span><span class="s1">soup</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s4">from </span><span class="s1">bs4 </span><span class="s4">import </span><span class="s1">BeautifulSoup</span>
+            <span class="s0"># TODO: Why is the parser 'html.parser' here? To avoid an</span>
+            <span class="s0"># infinite loop?</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">soup </span><span class="s2">= </span><span class="s1">BeautifulSoup</span><span class="s2">(</span>
+                <span class="s3">&quot;&quot;</span><span class="s2">, </span><span class="s3">&quot;html.parser&quot;</span><span class="s2">, </span><span class="s1">store_line_numbers</span><span class="s2">=</span><span class="s1">store_line_numbers</span><span class="s2">,</span>
+                <span class="s2">**</span><span class="s1">kwargs</span>
+            <span class="s2">)</span>
+        <span class="s0"># TODO: What are **kwargs exactly? Should they be passed in</span>
+        <span class="s0"># here in addition to/instead of being passed to the BeautifulSoup</span>
+        <span class="s0"># constructor?</span>
+        <span class="s1">super</span><span class="s2">(</span><span class="s1">TreeBuilderForHtml5lib</span><span class="s2">, </span><span class="s1">self</span><span class="s2">).</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">namespaceHTMLElements</span><span class="s2">)</span>
+
+        <span class="s0"># This will be set later to an html5lib.html5parser.HTMLParser</span>
+        <span class="s0"># object, which we can use to track the current line number.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">parser </span><span class="s2">= </span><span class="s4">None</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">store_line_numbers </span><span class="s2">= </span><span class="s1">store_line_numbers</span>
+        
+    <span class="s4">def </span><span class="s1">documentClass</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">reset</span><span class="s2">()</span>
+        <span class="s4">return </span><span class="s1">Element</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">, </span><span class="s4">None</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">insertDoctype</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">token</span><span class="s2">):</span>
+        <span class="s1">name </span><span class="s2">= </span><span class="s1">token</span><span class="s2">[</span><span class="s3">&quot;name&quot;</span><span class="s2">]</span>
+        <span class="s1">publicId </span><span class="s2">= </span><span class="s1">token</span><span class="s2">[</span><span class="s3">&quot;publicId&quot;</span><span class="s2">]</span>
+        <span class="s1">systemId </span><span class="s2">= </span><span class="s1">token</span><span class="s2">[</span><span class="s3">&quot;systemId&quot;</span><span class="s2">]</span>
+
+        <span class="s1">doctype </span><span class="s2">= </span><span class="s1">Doctype</span><span class="s2">.</span><span class="s1">for_name_and_ids</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">publicId</span><span class="s2">, </span><span class="s1">systemId</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">object_was_parsed</span><span class="s2">(</span><span class="s1">doctype</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">elementClass</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">namespace</span><span class="s2">):</span>
+        <span class="s1">kwargs </span><span class="s2">= {}</span>
+        <span class="s4">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">parser </span><span class="s4">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">store_line_numbers</span><span class="s2">:</span>
+            <span class="s0"># This represents the point immediately after the end of the</span>
+            <span class="s0"># tag. We don't know when the tag started, but we do know</span>
+            <span class="s0"># where it ended -- the character just before this one.</span>
+            <span class="s1">sourceline</span><span class="s2">, </span><span class="s1">sourcepos </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">parser</span><span class="s2">.</span><span class="s1">tokenizer</span><span class="s2">.</span><span class="s1">stream</span><span class="s2">.</span><span class="s1">position</span><span class="s2">()</span>
+            <span class="s1">kwargs</span><span class="s2">[</span><span class="s3">'sourceline'</span><span class="s2">] = </span><span class="s1">sourceline</span>
+            <span class="s1">kwargs</span><span class="s2">[</span><span class="s3">'sourcepos'</span><span class="s2">] = </span><span class="s1">sourcepos</span><span class="s2">-</span><span class="s6">1</span>
+        <span class="s1">tag </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">new_tag</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">namespace</span><span class="s2">, **</span><span class="s1">kwargs</span><span class="s2">)</span>
+
+        <span class="s4">return </span><span class="s1">Element</span><span class="s2">(</span><span class="s1">tag</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">, </span><span class="s1">namespace</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">commentClass</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">TextNode</span><span class="s2">(</span><span class="s1">Comment</span><span class="s2">(</span><span class="s1">data</span><span class="s2">), </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">fragmentClass</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">from </span><span class="s1">bs4 </span><span class="s4">import </span><span class="s1">BeautifulSoup</span>
+        <span class="s0"># TODO: Why is the parser 'html.parser' here? To avoid an</span>
+        <span class="s0"># infinite loop?</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup </span><span class="s2">= </span><span class="s1">BeautifulSoup</span><span class="s2">(</span><span class="s3">&quot;&quot;</span><span class="s2">, </span><span class="s3">&quot;html.parser&quot;</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">name </span><span class="s2">= </span><span class="s3">&quot;[document_fragment]&quot;</span>
+        <span class="s4">return </span><span class="s1">Element</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">, </span><span class="s4">None</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">appendChild</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">node</span><span class="s2">):</span>
+        <span class="s0"># XXX This code is not covered by the BS4 tests.</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">getDocument</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span>
+
+    <span class="s4">def </span><span class="s1">getFragment</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">treebuilder_base</span><span class="s2">.</span><span class="s1">TreeBuilder</span><span class="s2">.</span><span class="s1">getFragment</span><span class="s2">(</span><span class="s1">self</span><span class="s2">).</span><span class="s1">element</span>
+
+    <span class="s4">def </span><span class="s1">testSerializer</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">):</span>
+        <span class="s4">from </span><span class="s1">bs4 </span><span class="s4">import </span><span class="s1">BeautifulSoup</span>
+        <span class="s1">rv </span><span class="s2">= []</span>
+        <span class="s1">doctype_re </span><span class="s2">= </span><span class="s1">re</span><span class="s2">.</span><span class="s1">compile</span><span class="s2">(</span><span class="s3">r'^(.*?)(?: PUBLIC &quot;(.*?)&quot;(?: &quot;(.*?)&quot;)?| SYSTEM &quot;(.*?)&quot;)?$'</span><span class="s2">)</span>
+
+        <span class="s4">def </span><span class="s1">serializeElement</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">indent</span><span class="s2">=</span><span class="s6">0</span><span class="s2">):</span>
+            <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">BeautifulSoup</span><span class="s2">):</span>
+                <span class="s4">pass</span>
+            <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">Doctype</span><span class="s2">):</span>
+                <span class="s1">m </span><span class="s2">= </span><span class="s1">doctype_re</span><span class="s2">.</span><span class="s1">match</span><span class="s2">(</span><span class="s1">element</span><span class="s2">)</span>
+                <span class="s4">if </span><span class="s1">m</span><span class="s2">:</span>
+                    <span class="s1">name </span><span class="s2">= </span><span class="s1">m</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">1</span><span class="s2">)</span>
+                    <span class="s4">if </span><span class="s1">m</span><span class="s2">.</span><span class="s1">lastindex </span><span class="s2">&gt; </span><span class="s6">1</span><span class="s2">:</span>
+                        <span class="s1">publicId </span><span class="s2">= </span><span class="s1">m</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">2</span><span class="s2">) </span><span class="s4">or </span><span class="s3">&quot;&quot;</span>
+                        <span class="s1">systemId </span><span class="s2">= </span><span class="s1">m</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">3</span><span class="s2">) </span><span class="s4">or </span><span class="s1">m</span><span class="s2">.</span><span class="s1">group</span><span class="s2">(</span><span class="s6">4</span><span class="s2">) </span><span class="s4">or </span><span class="s3">&quot;&quot;</span>
+                        <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">&quot;&quot;&quot;|%s&lt;!DOCTYPE %s &quot;%s&quot; &quot;%s&quot;&gt;&quot;&quot;&quot; </span><span class="s2">%</span>
+                                  <span class="s2">(</span><span class="s3">' ' </span><span class="s2">* </span><span class="s1">indent</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">publicId</span><span class="s2">, </span><span class="s1">systemId</span><span class="s2">))</span>
+                    <span class="s4">else</span><span class="s2">:</span>
+                        <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">&quot;|%s&lt;!DOCTYPE %s&gt;&quot; </span><span class="s2">% (</span><span class="s3">' ' </span><span class="s2">* </span><span class="s1">indent</span><span class="s2">, </span><span class="s1">name</span><span class="s2">))</span>
+                <span class="s4">else</span><span class="s2">:</span>
+                    <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">&quot;|%s&lt;!DOCTYPE &gt;&quot; </span><span class="s2">% (</span><span class="s3">' ' </span><span class="s2">* </span><span class="s1">indent</span><span class="s2">,))</span>
+            <span class="s4">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">Comment</span><span class="s2">):</span>
+                <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">&quot;|%s&lt;!-- %s --&gt;&quot; </span><span class="s2">% (</span><span class="s3">' ' </span><span class="s2">* </span><span class="s1">indent</span><span class="s2">, </span><span class="s1">element</span><span class="s2">))</span>
+            <span class="s4">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s1">NavigableString</span><span class="s2">):</span>
+                <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">&quot;|%s</span><span class="s4">\&quot;</span><span class="s3">%s</span><span class="s4">\&quot;</span><span class="s3">&quot; </span><span class="s2">% (</span><span class="s3">' ' </span><span class="s2">* </span><span class="s1">indent</span><span class="s2">, </span><span class="s1">element</span><span class="s2">))</span>
+            <span class="s4">else</span><span class="s2">:</span>
+                <span class="s4">if </span><span class="s1">element</span><span class="s2">.</span><span class="s1">namespace</span><span class="s2">:</span>
+                    <span class="s1">name </span><span class="s2">= </span><span class="s3">&quot;%s %s&quot; </span><span class="s2">% (</span><span class="s1">prefixes</span><span class="s2">[</span><span class="s1">element</span><span class="s2">.</span><span class="s1">namespace</span><span class="s2">],</span>
+                                      <span class="s1">element</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+                <span class="s4">else</span><span class="s2">:</span>
+                    <span class="s1">name </span><span class="s2">= </span><span class="s1">element</span><span class="s2">.</span><span class="s1">name</span>
+                <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">&quot;|%s&lt;%s&gt;&quot; </span><span class="s2">% (</span><span class="s3">' ' </span><span class="s2">* </span><span class="s1">indent</span><span class="s2">, </span><span class="s1">name</span><span class="s2">))</span>
+                <span class="s4">if </span><span class="s1">element</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">:</span>
+                    <span class="s1">attributes </span><span class="s2">= []</span>
+                    <span class="s4">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s4">in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">element</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()):</span>
+                        <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">NamespacedAttribute</span><span class="s2">):</span>
+                            <span class="s1">name </span><span class="s2">= </span><span class="s3">&quot;%s %s&quot; </span><span class="s2">% (</span><span class="s1">prefixes</span><span class="s2">[</span><span class="s1">name</span><span class="s2">.</span><span class="s1">namespace</span><span class="s2">], </span><span class="s1">name</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+                        <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+                            <span class="s1">value </span><span class="s2">= </span><span class="s3">&quot; &quot;</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">value</span><span class="s2">)</span>
+                        <span class="s1">attributes</span><span class="s2">.</span><span class="s1">append</span><span class="s2">((</span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">))</span>
+
+                    <span class="s4">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s4">in </span><span class="s1">sorted</span><span class="s2">(</span><span class="s1">attributes</span><span class="s2">):</span>
+                        <span class="s1">rv</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s3">'|%s%s=&quot;%s&quot;' </span><span class="s2">% (</span><span class="s3">' ' </span><span class="s2">* (</span><span class="s1">indent </span><span class="s2">+ </span><span class="s6">2</span><span class="s2">), </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">))</span>
+                <span class="s1">indent </span><span class="s2">+= </span><span class="s6">2</span>
+                <span class="s4">for </span><span class="s1">child </span><span class="s4">in </span><span class="s1">element</span><span class="s2">.</span><span class="s1">children</span><span class="s2">:</span>
+                    <span class="s1">serializeElement</span><span class="s2">(</span><span class="s1">child</span><span class="s2">, </span><span class="s1">indent</span><span class="s2">)</span>
+        <span class="s1">serializeElement</span><span class="s2">(</span><span class="s1">element</span><span class="s2">, </span><span class="s6">0</span><span class="s2">)</span>
+
+        <span class="s4">return </span><span class="s3">&quot;</span><span class="s4">\n</span><span class="s3">&quot;</span><span class="s2">.</span><span class="s1">join</span><span class="s2">(</span><span class="s1">rv</span><span class="s2">)</span>
+
+<span class="s4">class </span><span class="s1">AttrList</span><span class="s2">(</span><span class="s1">object</span><span class="s2">):</span>
+    <span class="s4">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">):</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">element </span><span class="s2">= </span><span class="s1">element</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">attrs </span><span class="s2">= </span><span class="s1">dict</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">)</span>
+    <span class="s4">def </span><span class="s1">__iter__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()).</span><span class="s1">__iter__</span><span class="s2">()</span>
+    <span class="s4">def </span><span class="s1">__setitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value</span><span class="s2">):</span>
+        <span class="s0"># If this attribute is a multi-valued attribute for this element,</span>
+        <span class="s0"># turn its value into a list.</span>
+        <span class="s1">list_attr </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">cdata_list_attributes </span><span class="s4">or </span><span class="s2">{}</span>
+        <span class="s4">if </span><span class="s2">(</span><span class="s1">name </span><span class="s4">in </span><span class="s1">list_attr</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s3">'*'</span><span class="s2">, [])</span>
+            <span class="s4">or </span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">name </span><span class="s4">in </span><span class="s1">list_attr</span>
+                <span class="s4">and </span><span class="s1">name </span><span class="s4">in </span><span class="s1">list_attr</span><span class="s2">.</span><span class="s1">get</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">name</span><span class="s2">, []))):</span>
+            <span class="s0"># A node that is being cloned may have already undergone</span>
+            <span class="s0"># this procedure.</span>
+            <span class="s4">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">value</span><span class="s2">, </span><span class="s1">list</span><span class="s2">):</span>
+                <span class="s1">value </span><span class="s2">= </span><span class="s1">nonwhitespace_re</span><span class="s2">.</span><span class="s1">findall</span><span class="s2">(</span><span class="s1">value</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">value</span>
+    <span class="s4">def </span><span class="s1">items</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">items</span><span class="s2">())</span>
+    <span class="s4">def </span><span class="s1">keys</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span>
+    <span class="s4">def </span><span class="s1">__len__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">len</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">)</span>
+    <span class="s4">def </span><span class="s1">__getitem__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+    <span class="s4">def </span><span class="s1">__contains__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">name</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">name </span><span class="s4">in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">attrs</span><span class="s2">.</span><span class="s1">keys</span><span class="s2">())</span>
+
+
+<span class="s4">class </span><span class="s1">Element</span><span class="s2">(</span><span class="s1">treebuilder_base</span><span class="s2">.</span><span class="s1">Node</span><span class="s2">):</span>
+    <span class="s4">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">, </span><span class="s1">soup</span><span class="s2">, </span><span class="s1">namespace</span><span class="s2">):</span>
+        <span class="s1">treebuilder_base</span><span class="s2">.</span><span class="s1">Node</span><span class="s2">.</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">.</span><span class="s1">name</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">element </span><span class="s2">= </span><span class="s1">element</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup </span><span class="s2">= </span><span class="s1">soup</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">namespace </span><span class="s2">= </span><span class="s1">namespace</span>
+
+    <span class="s4">def </span><span class="s1">appendChild</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">node</span><span class="s2">):</span>
+        <span class="s1">string_child </span><span class="s2">= </span><span class="s1">child </span><span class="s2">= </span><span class="s4">None</span>
+        <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">node</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+            <span class="s0"># Some other piece of code decided to pass in a string</span>
+            <span class="s0"># instead of creating a TextElement object to contain the</span>
+            <span class="s0"># string.</span>
+            <span class="s1">string_child </span><span class="s2">= </span><span class="s1">child </span><span class="s2">= </span><span class="s1">node</span>
+        <span class="s4">elif </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">node</span><span class="s2">, </span><span class="s1">Tag</span><span class="s2">):</span>
+            <span class="s0"># Some other piece of code decided to pass in a Tag</span>
+            <span class="s0"># instead of creating an Element object to contain the</span>
+            <span class="s0"># Tag.</span>
+            <span class="s1">child </span><span class="s2">= </span><span class="s1">node</span>
+        <span class="s4">elif </span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">__class__ </span><span class="s2">== </span><span class="s1">NavigableString</span><span class="s2">:</span>
+            <span class="s1">string_child </span><span class="s2">= </span><span class="s1">child </span><span class="s2">= </span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span>
+            <span class="s1">node</span><span class="s2">.</span><span class="s1">parent </span><span class="s2">= </span><span class="s1">self</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s1">child </span><span class="s2">= </span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span>
+            <span class="s1">node</span><span class="s2">.</span><span class="s1">parent </span><span class="s2">= </span><span class="s1">self</span>
+
+        <span class="s4">if not </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">child</span><span class="s2">, </span><span class="s1">str</span><span class="s2">) </span><span class="s4">and </span><span class="s1">child</span><span class="s2">.</span><span class="s1">parent </span><span class="s4">is not None</span><span class="s2">:</span>
+            <span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">extract</span><span class="s2">()</span>
+
+        <span class="s4">if </span><span class="s2">(</span><span class="s1">string_child </span><span class="s4">is not None and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span>
+            <span class="s4">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">].</span><span class="s1">__class__ </span><span class="s2">== </span><span class="s1">NavigableString</span><span class="s2">):</span>
+            <span class="s0"># We are appending a string onto another string.</span>
+            <span class="s0"># TODO This has O(n^2) performance, for input like</span>
+            <span class="s0"># &quot;a&lt;/a&gt;a&lt;/a&gt;a&lt;/a&gt;...&quot;</span>
+            <span class="s1">old_element </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">]</span>
+            <span class="s1">new_element </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">new_string</span><span class="s2">(</span><span class="s1">old_element </span><span class="s2">+ </span><span class="s1">string_child</span><span class="s2">)</span>
+            <span class="s1">old_element</span><span class="s2">.</span><span class="s1">replace_with</span><span class="s2">(</span><span class="s1">new_element</span><span class="s2">)</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">_most_recent_element </span><span class="s2">= </span><span class="s1">new_element</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">node</span><span class="s2">, </span><span class="s1">str</span><span class="s2">):</span>
+                <span class="s0"># Create a brand new NavigableString from this string.</span>
+                <span class="s1">child </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">new_string</span><span class="s2">(</span><span class="s1">node</span><span class="s2">)</span>
+
+            <span class="s0"># Tell Beautiful Soup to act as if it parsed this element</span>
+            <span class="s0"># immediately after the parent's last descendant. (Or</span>
+            <span class="s0"># immediately after the parent, if it has no children.)</span>
+            <span class="s4">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">:</span>
+                <span class="s1">most_recent_element </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">_last_descendant</span><span class="s2">(</span><span class="s4">False</span><span class="s2">)</span>
+            <span class="s4">elif </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">next_element </span><span class="s4">is not None</span><span class="s2">:</span>
+                <span class="s0"># Something from further ahead in the parse tree is</span>
+                <span class="s0"># being inserted into this earlier element. This is</span>
+                <span class="s0"># very annoying because it means an expensive search</span>
+                <span class="s0"># for the last element in the tree.</span>
+                <span class="s1">most_recent_element </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">_last_descendant</span><span class="s2">()</span>
+            <span class="s4">else</span><span class="s2">:</span>
+                <span class="s1">most_recent_element </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span>
+
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">object_was_parsed</span><span class="s2">(</span>
+                <span class="s1">child</span><span class="s2">, </span><span class="s1">parent</span><span class="s2">=</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">,</span>
+                <span class="s1">most_recent_element</span><span class="s2">=</span><span class="s1">most_recent_element</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">getAttributes</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">, </span><span class="s1">Comment</span><span class="s2">):</span>
+            <span class="s4">return </span><span class="s2">{}</span>
+        <span class="s4">return </span><span class="s1">AttrList</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">setAttributes</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">attributes</span><span class="s2">):</span>
+        <span class="s4">if </span><span class="s1">attributes </span><span class="s4">is not None and </span><span class="s1">len</span><span class="s2">(</span><span class="s1">attributes</span><span class="s2">) &gt; </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s1">converted_attributes </span><span class="s2">= []</span>
+            <span class="s4">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s4">in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">attributes</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()):</span>
+                <span class="s4">if </span><span class="s1">isinstance</span><span class="s2">(</span><span class="s1">name</span><span class="s2">, </span><span class="s1">tuple</span><span class="s2">):</span>
+                    <span class="s1">new_name </span><span class="s2">= </span><span class="s1">NamespacedAttribute</span><span class="s2">(*</span><span class="s1">name</span><span class="s2">)</span>
+                    <span class="s4">del </span><span class="s1">attributes</span><span class="s2">[</span><span class="s1">name</span><span class="s2">]</span>
+                    <span class="s1">attributes</span><span class="s2">[</span><span class="s1">new_name</span><span class="s2">] = </span><span class="s1">value</span>
+
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">builder</span><span class="s2">.</span><span class="s1">_replace_cdata_list_attribute_values</span><span class="s2">(</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">name</span><span class="s2">, </span><span class="s1">attributes</span><span class="s2">)</span>
+            <span class="s4">for </span><span class="s1">name</span><span class="s2">, </span><span class="s1">value </span><span class="s4">in </span><span class="s1">list</span><span class="s2">(</span><span class="s1">attributes</span><span class="s2">.</span><span class="s1">items</span><span class="s2">()):</span>
+                <span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">[</span><span class="s1">name</span><span class="s2">] = </span><span class="s1">value</span>
+
+            <span class="s0"># The attributes may contain variables that need substitution.</span>
+            <span class="s0"># Call set_up_substitutions manually.</span>
+            <span class="s0">#</span>
+            <span class="s0"># The Tag constructor called this method when the Tag was created,</span>
+            <span class="s0"># but we just set/changed the attributes, so call it again.</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">builder</span><span class="s2">.</span><span class="s1">set_up_substitutions</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">)</span>
+    <span class="s1">attributes </span><span class="s2">= </span><span class="s1">property</span><span class="s2">(</span><span class="s1">getAttributes</span><span class="s2">, </span><span class="s1">setAttributes</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">insertText</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">data</span><span class="s2">, </span><span class="s1">insertBefore</span><span class="s2">=</span><span class="s4">None</span><span class="s2">):</span>
+        <span class="s1">text </span><span class="s2">= </span><span class="s1">TextNode</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">new_string</span><span class="s2">(</span><span class="s1">data</span><span class="s2">), </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">)</span>
+        <span class="s4">if </span><span class="s1">insertBefore</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">insertBefore</span><span class="s2">(</span><span class="s1">text</span><span class="s2">, </span><span class="s1">insertBefore</span><span class="s2">)</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">appendChild</span><span class="s2">(</span><span class="s1">text</span><span class="s2">)</span>
+
+    <span class="s4">def </span><span class="s1">insertBefore</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">node</span><span class="s2">, </span><span class="s1">refNode</span><span class="s2">):</span>
+        <span class="s1">index </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">index</span><span class="s2">(</span><span class="s1">refNode</span><span class="s2">.</span><span class="s1">element</span><span class="s2">)</span>
+        <span class="s4">if </span><span class="s2">(</span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">__class__ </span><span class="s2">== </span><span class="s1">NavigableString </span><span class="s4">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span>
+            <span class="s4">and </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">[</span><span class="s1">index</span><span class="s2">-</span><span class="s6">1</span><span class="s2">].</span><span class="s1">__class__ </span><span class="s2">== </span><span class="s1">NavigableString</span><span class="s2">):</span>
+            <span class="s0"># (See comments in appendChild)</span>
+            <span class="s1">old_node </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">[</span><span class="s1">index</span><span class="s2">-</span><span class="s6">1</span><span class="s2">]</span>
+            <span class="s1">new_str </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">new_string</span><span class="s2">(</span><span class="s1">old_node </span><span class="s2">+ </span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">)</span>
+            <span class="s1">old_node</span><span class="s2">.</span><span class="s1">replace_with</span><span class="s2">(</span><span class="s1">new_str</span><span class="s2">)</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">insert</span><span class="s2">(</span><span class="s1">index</span><span class="s2">, </span><span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">)</span>
+            <span class="s1">node</span><span class="s2">.</span><span class="s1">parent </span><span class="s2">= </span><span class="s1">self</span>
+
+    <span class="s4">def </span><span class="s1">removeChild</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">node</span><span class="s2">):</span>
+        <span class="s1">node</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">extract</span><span class="s2">()</span>
+
+    <span class="s4">def </span><span class="s1">reparentChildren</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">new_parent</span><span class="s2">):</span>
+        <span class="s5">&quot;&quot;&quot;Move all of this tag's children into another tag.&quot;&quot;&quot;</span>
+        <span class="s0"># print(&quot;MOVE&quot;, self.element.contents)</span>
+        <span class="s0"># print(&quot;FROM&quot;, self.element)</span>
+        <span class="s0"># print(&quot;TO&quot;, new_parent.element)</span>
+
+        <span class="s1">element </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span>
+        <span class="s1">new_parent_element </span><span class="s2">= </span><span class="s1">new_parent</span><span class="s2">.</span><span class="s1">element</span>
+        <span class="s0"># Determine what this tag's next_element will be once all the children</span>
+        <span class="s0"># are removed.</span>
+        <span class="s1">final_next_element </span><span class="s2">= </span><span class="s1">element</span><span class="s2">.</span><span class="s1">next_sibling</span>
+
+        <span class="s1">new_parents_last_descendant </span><span class="s2">= </span><span class="s1">new_parent_element</span><span class="s2">.</span><span class="s1">_last_descendant</span><span class="s2">(</span><span class="s4">False</span><span class="s2">, </span><span class="s4">False</span><span class="s2">)</span>
+        <span class="s4">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">new_parent_element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">) &gt; </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s0"># The new parent already contains children. We will be</span>
+            <span class="s0"># appending this tag's children to the end.</span>
+            <span class="s1">new_parents_last_child </span><span class="s2">= </span><span class="s1">new_parent_element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">]</span>
+            <span class="s1">new_parents_last_descendant_next_element </span><span class="s2">= </span><span class="s1">new_parents_last_descendant</span><span class="s2">.</span><span class="s1">next_element</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s0"># The new parent contains no children.</span>
+            <span class="s1">new_parents_last_child </span><span class="s2">= </span><span class="s4">None</span>
+            <span class="s1">new_parents_last_descendant_next_element </span><span class="s2">= </span><span class="s1">new_parent_element</span><span class="s2">.</span><span class="s1">next_element</span>
+
+        <span class="s1">to_append </span><span class="s2">= </span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span>
+        <span class="s4">if </span><span class="s1">len</span><span class="s2">(</span><span class="s1">to_append</span><span class="s2">) &gt; </span><span class="s6">0</span><span class="s2">:</span>
+            <span class="s0"># Set the first child's previous_element and previous_sibling</span>
+            <span class="s0"># to elements within the new parent</span>
+            <span class="s1">first_child </span><span class="s2">= </span><span class="s1">to_append</span><span class="s2">[</span><span class="s6">0</span><span class="s2">]</span>
+            <span class="s4">if </span><span class="s1">new_parents_last_descendant </span><span class="s4">is not None</span><span class="s2">:</span>
+                <span class="s1">first_child</span><span class="s2">.</span><span class="s1">previous_element </span><span class="s2">= </span><span class="s1">new_parents_last_descendant</span>
+            <span class="s4">else</span><span class="s2">:</span>
+                <span class="s1">first_child</span><span class="s2">.</span><span class="s1">previous_element </span><span class="s2">= </span><span class="s1">new_parent_element</span>
+            <span class="s1">first_child</span><span class="s2">.</span><span class="s1">previous_sibling </span><span class="s2">= </span><span class="s1">new_parents_last_child</span>
+            <span class="s4">if </span><span class="s1">new_parents_last_descendant </span><span class="s4">is not None</span><span class="s2">:</span>
+                <span class="s1">new_parents_last_descendant</span><span class="s2">.</span><span class="s1">next_element </span><span class="s2">= </span><span class="s1">first_child</span>
+            <span class="s4">else</span><span class="s2">:</span>
+                <span class="s1">new_parent_element</span><span class="s2">.</span><span class="s1">next_element </span><span class="s2">= </span><span class="s1">first_child</span>
+            <span class="s4">if </span><span class="s1">new_parents_last_child </span><span class="s4">is not None</span><span class="s2">:</span>
+                <span class="s1">new_parents_last_child</span><span class="s2">.</span><span class="s1">next_sibling </span><span class="s2">= </span><span class="s1">first_child</span>
+
+            <span class="s0"># Find the very last element being moved. It is now the</span>
+            <span class="s0"># parent's last descendant. It has no .next_sibling and</span>
+            <span class="s0"># its .next_element is whatever the previous last</span>
+            <span class="s0"># descendant had.</span>
+            <span class="s1">last_childs_last_descendant </span><span class="s2">= </span><span class="s1">to_append</span><span class="s2">[-</span><span class="s6">1</span><span class="s2">].</span><span class="s1">_last_descendant</span><span class="s2">(</span><span class="s4">False</span><span class="s2">, </span><span class="s4">True</span><span class="s2">)</span>
+
+            <span class="s1">last_childs_last_descendant</span><span class="s2">.</span><span class="s1">next_element </span><span class="s2">= </span><span class="s1">new_parents_last_descendant_next_element</span>
+            <span class="s4">if </span><span class="s1">new_parents_last_descendant_next_element </span><span class="s4">is not None</span><span class="s2">:</span>
+                <span class="s0"># TODO: This code has no test coverage and I'm not sure</span>
+                <span class="s0"># how to get html5lib to go through this path, but it's</span>
+                <span class="s0"># just the other side of the previous line.</span>
+                <span class="s1">new_parents_last_descendant_next_element</span><span class="s2">.</span><span class="s1">previous_element </span><span class="s2">= </span><span class="s1">last_childs_last_descendant</span>
+            <span class="s1">last_childs_last_descendant</span><span class="s2">.</span><span class="s1">next_sibling </span><span class="s2">= </span><span class="s4">None</span>
+
+        <span class="s4">for </span><span class="s1">child </span><span class="s4">in </span><span class="s1">to_append</span><span class="s2">:</span>
+            <span class="s1">child</span><span class="s2">.</span><span class="s1">parent </span><span class="s2">= </span><span class="s1">new_parent_element</span>
+            <span class="s1">new_parent_element</span><span class="s2">.</span><span class="s1">contents</span><span class="s2">.</span><span class="s1">append</span><span class="s2">(</span><span class="s1">child</span><span class="s2">)</span>
+
+        <span class="s0"># Now that this element has no children, change its .next_element.</span>
+        <span class="s1">element</span><span class="s2">.</span><span class="s1">contents </span><span class="s2">= []</span>
+        <span class="s1">element</span><span class="s2">.</span><span class="s1">next_element </span><span class="s2">= </span><span class="s1">final_next_element</span>
+
+        <span class="s0"># print(&quot;DONE WITH MOVE&quot;)</span>
+        <span class="s0"># print(&quot;FROM&quot;, self.element)</span>
+        <span class="s0"># print(&quot;TO&quot;, new_parent_element)</span>
+
+    <span class="s4">def </span><span class="s1">cloneNode</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s1">tag </span><span class="s2">= </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">.</span><span class="s1">new_tag</span><span class="s2">(</span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">name</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">namespace</span><span class="s2">)</span>
+        <span class="s1">node </span><span class="s2">= </span><span class="s1">Element</span><span class="s2">(</span><span class="s1">tag</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">soup</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">namespace</span><span class="s2">)</span>
+        <span class="s4">for </span><span class="s1">key</span><span class="s2">,</span><span class="s1">value </span><span class="s4">in </span><span class="s1">self</span><span class="s2">.</span><span class="s1">attributes</span><span class="s2">:</span>
+            <span class="s1">node</span><span class="s2">.</span><span class="s1">attributes</span><span class="s2">[</span><span class="s1">key</span><span class="s2">] = </span><span class="s1">value</span>
+        <span class="s4">return </span><span class="s1">node</span>
+
+    <span class="s4">def </span><span class="s1">hasContent</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">element</span><span class="s2">.</span><span class="s1">contents</span>
+
+    <span class="s4">def </span><span class="s1">getNameTuple</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">if </span><span class="s1">self</span><span class="s2">.</span><span class="s1">namespace </span><span class="s2">== </span><span class="s4">None</span><span class="s2">:</span>
+            <span class="s4">return </span><span class="s1">namespaces</span><span class="s2">[</span><span class="s3">&quot;html&quot;</span><span class="s2">], </span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span>
+        <span class="s4">else</span><span class="s2">:</span>
+            <span class="s4">return </span><span class="s1">self</span><span class="s2">.</span><span class="s1">namespace</span><span class="s2">, </span><span class="s1">self</span><span class="s2">.</span><span class="s1">name</span>
+
+    <span class="s1">nameTuple </span><span class="s2">= </span><span class="s1">property</span><span class="s2">(</span><span class="s1">getNameTuple</span><span class="s2">)</span>
+
+<span class="s4">class </span><span class="s1">TextNode</span><span class="s2">(</span><span class="s1">Element</span><span class="s2">):</span>
+    <span class="s4">def </span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s1">element</span><span class="s2">, </span><span class="s1">soup</span><span class="s2">):</span>
+        <span class="s1">treebuilder_base</span><span class="s2">.</span><span class="s1">Node</span><span class="s2">.</span><span class="s1">__init__</span><span class="s2">(</span><span class="s1">self</span><span class="s2">, </span><span class="s4">None</span><span class="s2">)</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">element </span><span class="s2">= </span><span class="s1">element</span>
+        <span class="s1">self</span><span class="s2">.</span><span class="s1">soup </span><span class="s2">= </span><span class="s1">soup</span>
+
+    <span class="s4">def </span><span class="s1">cloneNode</span><span class="s2">(</span><span class="s1">self</span><span class="s2">):</span>
+        <span class="s4">raise </span><span class="s1">NotImplementedError</span>
+</pre>
+</body>
+</html>

@@ -1,0 +1,825 @@
+<html>
+<head>
+<title>group.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #7a7e85;}
+.s1 { color: #bcbec4;}
+.s2 { color: #5f826b; font-style: italic;}
+.s3 { color: #cf8e6d;}
+.s4 { color: #bcbec4;}
+.s5 { color: #6aab73;}
+.s6 { color: #a5c261;}
+.s7 { color: #2aacb8;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+group.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># This file is part of h5py, a Python interface to the HDF5 library.</span>
+<span class="s0">#</span>
+<span class="s0"># http://www.h5py.org</span>
+<span class="s0">#</span>
+<span class="s0"># Copyright 2008-2013 Andrew Collette and contributors</span>
+<span class="s0">#</span>
+<span class="s0"># License:  Standard 3-clause BSD; see &quot;license.txt&quot; for full license terms</span>
+<span class="s0">#           and contributor agreement.</span>
+
+<span class="s2">&quot;&quot;&quot; 
+    Implements support for high-level access to HDF5 groups. 
+&quot;&quot;&quot;</span>
+
+<span class="s3">from </span><span class="s1">contextlib </span><span class="s3">import </span><span class="s1">contextmanager</span>
+<span class="s3">import </span><span class="s1">posixpath </span><span class="s3">as </span><span class="s1">pp</span>
+<span class="s3">import </span><span class="s1">numpy</span>
+
+
+<span class="s3">from </span><span class="s4">.</span><span class="s1">compat </span><span class="s3">import </span><span class="s1">filename_decode</span><span class="s4">, </span><span class="s1">filename_encode</span>
+
+<span class="s3">from </span><span class="s4">.. </span><span class="s3">import </span><span class="s1">h5</span><span class="s4">, </span><span class="s1">h5g</span><span class="s4">, </span><span class="s1">h5i</span><span class="s4">, </span><span class="s1">h5o</span><span class="s4">, </span><span class="s1">h5r</span><span class="s4">, </span><span class="s1">h5t</span><span class="s4">, </span><span class="s1">h5l</span><span class="s4">, </span><span class="s1">h5p</span>
+<span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">base</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">base </span><span class="s3">import </span><span class="s1">HLObject</span><span class="s4">, </span><span class="s1">MutableMappingHDF5</span><span class="s4">, </span><span class="s1">phil</span><span class="s4">, </span><span class="s1">with_phil</span>
+<span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">dataset</span>
+<span class="s3">from </span><span class="s4">. </span><span class="s3">import </span><span class="s1">datatype</span>
+<span class="s3">from </span><span class="s4">.</span><span class="s1">vds </span><span class="s3">import </span><span class="s1">vds_support</span>
+
+
+<span class="s3">class </span><span class="s1">Group</span><span class="s4">(</span><span class="s1">HLObject</span><span class="s4">, </span><span class="s1">MutableMappingHDF5</span><span class="s4">):</span>
+
+    <span class="s2">&quot;&quot;&quot; Represents an HDF5 group. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">bind</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create a new Group object by binding to a low-level GroupID. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">bind</span><span class="s4">, </span><span class="s1">h5g</span><span class="s4">.</span><span class="s1">GroupID</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">&quot;%s is not a GroupID&quot; </span><span class="s4">% </span><span class="s1">bind</span><span class="s4">)</span>
+            <span class="s1">super</span><span class="s4">().</span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">bind</span><span class="s4">)</span>
+
+    <span class="s1">_gcpl_crt_order </span><span class="s4">= </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">GROUP_CREATE</span><span class="s4">)</span>
+    <span class="s1">_gcpl_crt_order</span><span class="s4">.</span><span class="s1">set_link_creation_order</span><span class="s4">(</span>
+        <span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_TRACKED </span><span class="s4">| </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_INDEXED</span><span class="s4">)</span>
+    <span class="s1">_gcpl_crt_order</span><span class="s4">.</span><span class="s1">set_attr_creation_order</span><span class="s4">(</span>
+        <span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_TRACKED </span><span class="s4">| </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">CRT_ORDER_INDEXED</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">create_group</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">track_order</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create and return a new subgroup. 
+ 
+        Name may be absolute or relative.  Fails if the target name already 
+        exists. 
+ 
+        track_order 
+            Track dataset/group/attribute creation order under this group 
+            if True. If None use global default h5.get_config().track_order. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">track_order </span><span class="s3">is None</span><span class="s4">:</span>
+            <span class="s1">track_order </span><span class="s4">= </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">track_order</span>
+
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+            <span class="s1">gcpl </span><span class="s4">= </span><span class="s1">Group</span><span class="s4">.</span><span class="s1">_gcpl_crt_order </span><span class="s3">if </span><span class="s1">track_order </span><span class="s3">else None</span>
+            <span class="s1">gid </span><span class="s4">= </span><span class="s1">h5g</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s1">lcpl</span><span class="s4">, </span><span class="s1">gcpl</span><span class="s4">=</span><span class="s1">gcpl</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">Group</span><span class="s4">(</span><span class="s1">gid</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">create_dataset</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">data</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create a new HDF5 dataset 
+ 
+        name 
+            Name of the dataset (absolute or relative).  Provide None to make 
+            an anonymous dataset. 
+        shape 
+            Dataset shape.  Use &quot;()&quot; for scalar datasets.  Required if &quot;data&quot; 
+            isn't provided. 
+        dtype 
+            Numpy dtype or string.  If omitted, dtype('f') will be used. 
+            Required if &quot;data&quot; isn't provided; otherwise, overrides data 
+            array's dtype. 
+        data 
+            Provide data to initialize the dataset.  If used, you can omit 
+            shape and dtype arguments. 
+ 
+        Keyword-only arguments: 
+ 
+        chunks 
+            (Tuple or int) Chunk shape, or True to enable auto-chunking. Integers can 
+            be used for 1D shape. 
+ 
+        maxshape 
+            (Tuple or int) Make the dataset resizable up to this shape. Use None for 
+            axes you want to be unlimited. Integers can be used for 1D shape. 
+        compression 
+            (String or int) Compression strategy.  Legal values are 'gzip', 
+            'szip', 'lzf'.  If an integer in range(10), this indicates gzip 
+            compression level. Otherwise, an integer indicates the number of a 
+            dynamically loaded compression filter. 
+        compression_opts 
+            Compression settings.  This is an integer for gzip, 2-tuple for 
+            szip, etc. If specifying a dynamically loaded compression filter 
+            number, this must be a tuple of values. 
+        scaleoffset 
+            (Integer) Enable scale/offset filter for (usually) lossy 
+            compression of integer or floating-point data. For integer 
+            data, the value of scaleoffset is the number of bits to 
+            retain (pass 0 to let HDF5 determine the minimum number of 
+            bits necessary for lossless compression). For floating point 
+            data, scaleoffset is the number of digits after the decimal 
+            place to retain; stored values thus have absolute error 
+            less than 0.5*10**(-scaleoffset). 
+        shuffle 
+            (T/F) Enable shuffle filter. 
+        fletcher32 
+            (T/F) Enable fletcher32 error detection. Not permitted in 
+            conjunction with the scale/offset filter. 
+        fillvalue 
+            (Scalar) Use this value for uninitialized parts of the dataset. 
+        track_times 
+            (T/F) Enable dataset creation timestamps. 
+        track_order 
+            (T/F) Track attribute creation order if True. If omitted use 
+            global default h5.get_config().track_order. 
+        external 
+            (Iterable of tuples) Sets the external storage property, thus 
+            designating that the dataset will be stored in one or more 
+            non-HDF5 files external to the HDF5 file.  Adds each tuple 
+            of (name, offset, size) to the dataset's list of external files. 
+            Each name must be a str, bytes, or os.PathLike; each offset and 
+            size, an integer.  If only a name is given instead of an iterable 
+            of tuples, it is equivalent to [(name, 0, h5py.h5f.UNLIMITED)]. 
+        efile_prefix 
+            (String) External dataset file prefix for dataset access property 
+            list. Does not persist in the file. 
+        virtual_prefix 
+            (String) Virtual dataset file prefix for dataset access property 
+            list. Does not persist in the file. 
+        allow_unknown_filter 
+            (T/F) Do not check that the requested filter is available for use. 
+            This should only be used with ``write_direct_chunk``, where the caller 
+            compresses the data before handing it to h5py. 
+        rdcc_nbytes 
+            Total size of the dataset's chunk cache in bytes. The default size 
+            is 1024**2 (1 MiB). 
+        rdcc_w0 
+            The chunk preemption policy for this dataset.  This must be 
+            between 0 and 1 inclusive and indicates the weighting according to 
+            which chunks which have been fully read or written are penalized 
+            when determining which chunks to flush from cache.  A value of 0 
+            means fully read or written chunks are treated no differently than 
+            other chunks (the preemption is strictly LRU) while a value of 1 
+            means fully read or written chunks are always preempted before 
+            other chunks.  If your application only reads or writes data once, 
+            this can be safely set to 1.  Otherwise, this should be set lower 
+            depending on how often you re-read or re-write the same data.  The 
+            default value is 0.75. 
+        rdcc_nslots 
+            The number of chunk slots in the dataset's chunk cache. Increasing 
+            this value reduces the number of cache collisions, but slightly 
+            increases the memory used. Due to the hashing strategy, this value 
+            should ideally be a prime number. As a rule of thumb, this value 
+            should be at least 10 times the number of chunks that can fit in 
+            rdcc_nbytes bytes. For maximum performance, this value should be set 
+            approximately 100 times that number of chunks. The default value is 
+            521. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s5">'track_order' </span><span class="s3">not in </span><span class="s1">kwds</span><span class="s4">:</span>
+            <span class="s1">kwds</span><span class="s4">[</span><span class="s5">'track_order'</span><span class="s4">] = </span><span class="s1">h5</span><span class="s4">.</span><span class="s1">get_config</span><span class="s4">().</span><span class="s1">track_order</span>
+
+        <span class="s3">if </span><span class="s5">'efile_prefix' </span><span class="s3">in </span><span class="s1">kwds</span><span class="s4">:</span>
+            <span class="s1">kwds</span><span class="s4">[</span><span class="s5">'efile_prefix'</span><span class="s4">] = </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">kwds</span><span class="s4">[</span><span class="s5">'efile_prefix'</span><span class="s4">])</span>
+
+        <span class="s3">if </span><span class="s5">'virtual_prefix' </span><span class="s3">in </span><span class="s1">kwds</span><span class="s4">:</span>
+            <span class="s1">kwds</span><span class="s4">[</span><span class="s5">'virtual_prefix'</span><span class="s4">] = </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">kwds</span><span class="s4">[</span><span class="s5">'virtual_prefix'</span><span class="s4">])</span>
+
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s1">group </span><span class="s4">= </span><span class="s1">self</span>
+            <span class="s3">if </span><span class="s1">name</span><span class="s4">:</span>
+                <span class="s1">name </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+                <span class="s3">if </span><span class="s6">b'/' </span><span class="s3">in </span><span class="s1">name</span><span class="s4">.</span><span class="s1">lstrip</span><span class="s4">(</span><span class="s6">b'/'</span><span class="s4">):</span>
+                    <span class="s1">parent_path</span><span class="s4">, </span><span class="s1">name </span><span class="s4">= </span><span class="s1">name</span><span class="s4">.</span><span class="s1">rsplit</span><span class="s4">(</span><span class="s6">b'/'</span><span class="s4">, </span><span class="s7">1</span><span class="s4">)</span>
+                    <span class="s1">group </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">require_group</span><span class="s4">(</span><span class="s1">parent_path</span><span class="s4">)</span>
+
+            <span class="s1">dsid </span><span class="s4">= </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">make_new_dset</span><span class="s4">(</span><span class="s1">group</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">data</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">)</span>
+            <span class="s1">dset </span><span class="s4">= </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">Dataset</span><span class="s4">(</span><span class="s1">dsid</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">dset</span>
+
+    <span class="s3">if </span><span class="s1">vds_support</span><span class="s4">:</span>
+        <span class="s3">def </span><span class="s1">create_virtual_dataset</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">layout</span><span class="s4">, </span><span class="s1">fillvalue</span><span class="s4">=</span><span class="s3">None</span><span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot;Create a new virtual dataset in this group. 
+ 
+            See virtual datasets in the docs for more information. 
+ 
+            name 
+                (str) Name of the new dataset 
+ 
+            layout 
+                (VirtualLayout) Defines the sources for the virtual dataset 
+ 
+            fillvalue 
+                The value to use where there is no data. 
+ 
+            &quot;&quot;&quot;</span>
+            <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+                <span class="s1">group </span><span class="s4">= </span><span class="s1">self</span>
+
+                <span class="s3">if </span><span class="s1">name</span><span class="s4">:</span>
+                    <span class="s1">name </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+                    <span class="s3">if </span><span class="s6">b'/' </span><span class="s3">in </span><span class="s1">name</span><span class="s4">.</span><span class="s1">lstrip</span><span class="s4">(</span><span class="s6">b'/'</span><span class="s4">):</span>
+                        <span class="s1">parent_path</span><span class="s4">, </span><span class="s1">name </span><span class="s4">= </span><span class="s1">name</span><span class="s4">.</span><span class="s1">rsplit</span><span class="s4">(</span><span class="s6">b'/'</span><span class="s4">, </span><span class="s7">1</span><span class="s4">)</span>
+                        <span class="s1">group </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">require_group</span><span class="s4">(</span><span class="s1">parent_path</span><span class="s4">)</span>
+
+                <span class="s1">dsid </span><span class="s4">= </span><span class="s1">layout</span><span class="s4">.</span><span class="s1">make_dataset</span><span class="s4">(</span>
+                    <span class="s1">group</span><span class="s4">, </span><span class="s1">name</span><span class="s4">=</span><span class="s1">name</span><span class="s4">, </span><span class="s1">fillvalue</span><span class="s4">=</span><span class="s1">fillvalue</span><span class="s4">,</span>
+                <span class="s4">)</span>
+                <span class="s1">dset </span><span class="s4">= </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">Dataset</span><span class="s4">(</span><span class="s1">dsid</span><span class="s4">)</span>
+
+            <span class="s3">return </span><span class="s1">dset</span>
+
+        <span class="s4">@</span><span class="s1">contextmanager</span>
+        <span class="s3">def </span><span class="s1">build_virtual_dataset</span><span class="s4">(</span>
+                <span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">maxshape</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">fillvalue</span><span class="s4">=</span><span class="s3">None</span>
+        <span class="s4">):</span>
+            <span class="s2">&quot;&quot;&quot;Assemble a virtual dataset in this group. 
+ 
+            This is used as a context manager:: 
+ 
+                with f.build_virtual_dataset('virt', (10, 1000), np.uint32) as layout: 
+                    layout[0] = h5py.VirtualSource('foo.h5', 'data', (1000,)) 
+ 
+            name 
+                (str) Name of the new dataset 
+            shape 
+                (tuple) Shape of the dataset 
+            dtype 
+                A numpy dtype for data read from the virtual dataset 
+            maxshape 
+                (tuple, optional) Maximum dimensions if the dataset can grow. 
+                Use None for unlimited dimensions. 
+            fillvalue 
+                The value used where no data is available. 
+            &quot;&quot;&quot;</span>
+            <span class="s3">from </span><span class="s4">.</span><span class="s1">vds </span><span class="s3">import </span><span class="s1">VirtualLayout</span>
+            <span class="s1">layout </span><span class="s4">= </span><span class="s1">VirtualLayout</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">maxshape</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">file</span><span class="s4">.</span><span class="s1">filename</span><span class="s4">)</span>
+            <span class="s3">yield </span><span class="s1">layout</span>
+
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">create_virtual_dataset</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">layout</span><span class="s4">, </span><span class="s1">fillvalue</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">require_dataset</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">exact</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, **</span><span class="s1">kwds</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Open a dataset, creating it if it doesn't exist. 
+ 
+        If keyword &quot;exact&quot; is False (default), an existing dataset must have 
+        the same shape and a conversion-compatible dtype to be returned.  If 
+        True, the shape and dtype must match exactly. 
+ 
+        If keyword &quot;maxshape&quot; is given, the maxshape and dtype must match 
+        instead. 
+ 
+        If any of the keywords &quot;rdcc_nslots&quot;, &quot;rdcc_nbytes&quot;, or &quot;rdcc_w0&quot; are 
+        given, they will be used to configure the dataset's chunk cache. 
+ 
+        Other dataset keywords (see create_dataset) may be provided, but are 
+        only used if a new dataset is to be created. 
+ 
+        Raises TypeError if an incompatible object already exists, or if the 
+        shape, maxshape or dtype don't match according to the above rules. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s5">'efile_prefix' </span><span class="s3">in </span><span class="s1">kwds</span><span class="s4">:</span>
+            <span class="s1">kwds</span><span class="s4">[</span><span class="s5">'efile_prefix'</span><span class="s4">] = </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">kwds</span><span class="s4">[</span><span class="s5">'efile_prefix'</span><span class="s4">])</span>
+
+        <span class="s3">if </span><span class="s5">'virtual_prefix' </span><span class="s3">in </span><span class="s1">kwds</span><span class="s4">:</span>
+            <span class="s1">kwds</span><span class="s4">[</span><span class="s5">'virtual_prefix'</span><span class="s4">] = </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">kwds</span><span class="s4">[</span><span class="s5">'virtual_prefix'</span><span class="s4">])</span>
+
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">name </span><span class="s3">not in </span><span class="s1">self</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">create_dataset</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, *(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">), **</span><span class="s1">kwds</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">int</span><span class="s4">):</span>
+                <span class="s1">shape </span><span class="s4">= (</span><span class="s1">shape</span><span class="s4">,)</span>
+
+            <span class="s3">try</span><span class="s4">:</span>
+                <span class="s1">dsid </span><span class="s4">= </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">open_dset</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), **</span><span class="s1">kwds</span><span class="s4">)</span>
+                <span class="s1">dset </span><span class="s4">= </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">Dataset</span><span class="s4">(</span><span class="s1">dsid</span><span class="s4">)</span>
+            <span class="s3">except </span><span class="s1">KeyError</span><span class="s4">:</span>
+                <span class="s1">dset </span><span class="s4">= </span><span class="s1">self</span><span class="s4">[</span><span class="s1">name</span><span class="s4">]</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Incompatible object (%s) already exists&quot; </span><span class="s4">% </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">.</span><span class="s1">__name__</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">shape </span><span class="s4">!= </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">:</span>
+                <span class="s3">if </span><span class="s5">&quot;maxshape&quot; </span><span class="s3">not in </span><span class="s1">kwds</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Shapes do not match (existing %s vs new %s)&quot; </span><span class="s4">% (</span><span class="s1">dset</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">, </span><span class="s1">shape</span><span class="s4">))</span>
+                <span class="s3">elif </span><span class="s1">kwds</span><span class="s4">[</span><span class="s5">&quot;maxshape&quot;</span><span class="s4">] != </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">maxshape</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Max shapes do not match (existing %s vs new %s)&quot; </span><span class="s4">% (</span><span class="s1">dset</span><span class="s4">.</span><span class="s1">maxshape</span><span class="s4">, </span><span class="s1">kwds</span><span class="s4">[</span><span class="s5">&quot;maxshape&quot;</span><span class="s4">]))</span>
+
+            <span class="s3">if </span><span class="s1">exact</span><span class="s4">:</span>
+                <span class="s3">if </span><span class="s1">dtype </span><span class="s4">!= </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Datatypes do not exactly match (existing %s vs new %s)&quot; </span><span class="s4">% (</span><span class="s1">dset</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">))</span>
+            <span class="s3">elif not </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">can_cast</span><span class="s4">(</span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">dset</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Datatypes cannot be safely cast (existing %s vs new %s)&quot; </span><span class="s4">% (</span><span class="s1">dset</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">, </span><span class="s1">dtype</span><span class="s4">))</span>
+
+            <span class="s3">return </span><span class="s1">dset</span>
+
+    <span class="s3">def </span><span class="s1">create_dataset_like</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">other</span><span class="s4">, **</span><span class="s1">kwupdate</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Create a dataset similar to `other`. 
+ 
+        name 
+            Name of the dataset (absolute or relative).  Provide None to make 
+            an anonymous dataset. 
+        other 
+            The dataset which the new dataset should mimic. All properties, such 
+            as shape, dtype, chunking, ... will be taken from it, but no data 
+            or attributes are being copied. 
+ 
+        Any dataset keywords (see create_dataset) may be provided, including 
+        shape and dtype, in which case the provided values take precedence over 
+        those from `other`. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">k </span><span class="s3">in </span><span class="s4">(</span><span class="s5">'shape'</span><span class="s4">, </span><span class="s5">'dtype'</span><span class="s4">, </span><span class="s5">'chunks'</span><span class="s4">, </span><span class="s5">'compression'</span><span class="s4">,</span>
+                  <span class="s5">'compression_opts'</span><span class="s4">, </span><span class="s5">'scaleoffset'</span><span class="s4">, </span><span class="s5">'shuffle'</span><span class="s4">, </span><span class="s5">'fletcher32'</span><span class="s4">,</span>
+                  <span class="s5">'fillvalue'</span><span class="s4">):</span>
+            <span class="s1">kwupdate</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s1">k</span><span class="s4">, </span><span class="s1">getattr</span><span class="s4">(</span><span class="s1">other</span><span class="s4">, </span><span class="s1">k</span><span class="s4">))</span>
+        <span class="s0"># TODO: more elegant way to pass these (dcpl to create_dataset?)</span>
+        <span class="s1">dcpl </span><span class="s4">= </span><span class="s1">other</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_create_plist</span><span class="s4">()</span>
+        <span class="s1">kwupdate</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s5">'track_times'</span><span class="s4">, </span><span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_obj_track_times</span><span class="s4">())</span>
+        <span class="s1">kwupdate</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s5">'track_order'</span><span class="s4">, </span><span class="s1">dcpl</span><span class="s4">.</span><span class="s1">get_attr_creation_order</span><span class="s4">() &gt; </span><span class="s7">0</span><span class="s4">)</span>
+
+        <span class="s0"># Special case: the maxshape property always exists, but if we pass it</span>
+        <span class="s0"># to create_dataset, the new dataset will automatically get chunked</span>
+        <span class="s0"># layout. So we copy it only if it is different from shape.</span>
+        <span class="s3">if </span><span class="s1">other</span><span class="s4">.</span><span class="s1">maxshape </span><span class="s4">!= </span><span class="s1">other</span><span class="s4">.</span><span class="s1">shape</span><span class="s4">:</span>
+            <span class="s1">kwupdate</span><span class="s4">.</span><span class="s1">setdefault</span><span class="s4">(</span><span class="s5">'maxshape'</span><span class="s4">, </span><span class="s1">other</span><span class="s4">.</span><span class="s1">maxshape</span><span class="s4">)</span>
+
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">create_dataset</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, **</span><span class="s1">kwupdate</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">require_group</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">):</span>
+        <span class="s0"># TODO: support kwargs like require_dataset</span>
+        <span class="s2">&quot;&quot;&quot;Return a group, creating it if it doesn't exist. 
+ 
+        TypeError is raised if something with that name already exists that 
+        isn't a group. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">name </span><span class="s3">not in </span><span class="s1">self</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">create_group</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+            <span class="s1">grp </span><span class="s4">= </span><span class="s1">self</span><span class="s4">[</span><span class="s1">name</span><span class="s4">]</span>
+            <span class="s3">if not </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">grp</span><span class="s4">, </span><span class="s1">Group</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Incompatible object (%s) already exists&quot; </span><span class="s4">% </span><span class="s1">grp</span><span class="s4">.</span><span class="s1">__class__</span><span class="s4">.</span><span class="s1">__name__</span><span class="s4">)</span>
+            <span class="s3">return </span><span class="s1">grp</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__getitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Open an object in the file &quot;&quot;&quot;</span>
+
+        <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">Reference</span><span class="s4">):</span>
+            <span class="s1">oid </span><span class="s4">= </span><span class="s1">h5r</span><span class="s4">.</span><span class="s1">dereference</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">)</span>
+            <span class="s3">if </span><span class="s1">oid </span><span class="s3">is None</span><span class="s4">:</span>
+                <span class="s3">raise </span><span class="s1">ValueError</span><span class="s4">(</span><span class="s5">&quot;Invalid HDF5 object reference&quot;</span><span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, (</span><span class="s1">bytes</span><span class="s4">, </span><span class="s1">str</span><span class="s4">)):</span>
+            <span class="s1">oid </span><span class="s4">= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">open</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Accessing a group is done with bytes or str, &quot;</span>
+                            <span class="s5">&quot;not {}&quot;</span><span class="s4">.</span><span class="s1">format</span><span class="s4">(</span><span class="s1">type</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)))</span>
+
+        <span class="s1">otype </span><span class="s4">= </span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">get_type</span><span class="s4">(</span><span class="s1">oid</span><span class="s4">)</span>
+        <span class="s3">if </span><span class="s1">otype </span><span class="s4">== </span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">GROUP</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">Group</span><span class="s4">(</span><span class="s1">oid</span><span class="s4">)</span>
+        <span class="s3">elif </span><span class="s1">otype </span><span class="s4">== </span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">DATASET</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">Dataset</span><span class="s4">(</span><span class="s1">oid</span><span class="s4">, </span><span class="s1">readonly</span><span class="s4">=(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">file</span><span class="s4">.</span><span class="s1">mode </span><span class="s4">== </span><span class="s5">'r'</span><span class="s4">))</span>
+        <span class="s3">elif </span><span class="s1">otype </span><span class="s4">== </span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">DATATYPE</span><span class="s4">:</span>
+            <span class="s3">return </span><span class="s1">datatype</span><span class="s4">.</span><span class="s1">Datatype</span><span class="s4">(</span><span class="s1">oid</span><span class="s4">)</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Unknown object type&quot;</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">get</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">default</span><span class="s4">=</span><span class="s3">None</span><span class="s4">, </span><span class="s1">getclass</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">getlink</span><span class="s4">=</span><span class="s3">False</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Retrieve an item or other information. 
+ 
+        &quot;name&quot; given only: 
+            Return the item, or &quot;default&quot; if it doesn't exist 
+ 
+        &quot;getclass&quot; is True: 
+            Return the class of object (Group, Dataset, etc.), or &quot;default&quot; 
+            if nothing with that name exists 
+ 
+        &quot;getlink&quot; is True: 
+            Return HardLink, SoftLink or ExternalLink instances.  Return 
+            &quot;default&quot; if nothing with that name exists. 
+ 
+        &quot;getlink&quot; and &quot;getclass&quot; are True: 
+            Return HardLink, SoftLink and ExternalLink classes.  Return 
+            &quot;default&quot; if nothing with that name exists. 
+ 
+        Example: 
+ 
+        &gt;&gt;&gt; cls = group.get('foo', getclass=True) 
+        &gt;&gt;&gt; if cls == SoftLink: 
+        &quot;&quot;&quot;</span>
+        <span class="s0"># pylint: disable=arguments-differ</span>
+
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if not </span><span class="s4">(</span><span class="s1">getclass </span><span class="s3">or </span><span class="s1">getlink</span><span class="s4">):</span>
+                <span class="s3">try</span><span class="s4">:</span>
+                    <span class="s3">return </span><span class="s1">self</span><span class="s4">[</span><span class="s1">name</span><span class="s4">]</span>
+                <span class="s3">except </span><span class="s1">KeyError</span><span class="s4">:</span>
+                    <span class="s3">return </span><span class="s1">default</span>
+
+            <span class="s3">if </span><span class="s1">name </span><span class="s3">not in </span><span class="s1">self</span><span class="s4">:</span>
+                <span class="s3">return </span><span class="s1">default</span>
+
+            <span class="s3">elif </span><span class="s1">getclass </span><span class="s3">and not </span><span class="s1">getlink</span><span class="s4">:</span>
+                <span class="s1">typecode </span><span class="s4">= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">get_info</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">).</span><span class="s1">type</span>
+
+                <span class="s3">try</span><span class="s4">:</span>
+                    <span class="s3">return </span><span class="s4">{</span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">TYPE_GROUP</span><span class="s4">: </span><span class="s1">Group</span><span class="s4">,</span>
+                            <span class="s1">h5o</span><span class="s4">.</span><span class="s1">TYPE_DATASET</span><span class="s4">: </span><span class="s1">dataset</span><span class="s4">.</span><span class="s1">Dataset</span><span class="s4">,</span>
+                            <span class="s1">h5o</span><span class="s4">.</span><span class="s1">TYPE_NAMED_DATATYPE</span><span class="s4">: </span><span class="s1">datatype</span><span class="s4">.</span><span class="s1">Datatype</span><span class="s4">}[</span><span class="s1">typecode</span><span class="s4">]</span>
+                <span class="s3">except </span><span class="s1">KeyError</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Unknown object type&quot;</span><span class="s4">)</span>
+
+            <span class="s3">elif </span><span class="s1">getlink</span><span class="s4">:</span>
+                <span class="s1">typecode </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">get_info</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">).</span><span class="s1">type</span>
+
+                <span class="s3">if </span><span class="s1">typecode </span><span class="s4">== </span><span class="s1">h5l</span><span class="s4">.</span><span class="s1">TYPE_SOFT</span><span class="s4">:</span>
+                    <span class="s3">if </span><span class="s1">getclass</span><span class="s4">:</span>
+                        <span class="s3">return </span><span class="s1">SoftLink</span>
+                    <span class="s1">linkbytes </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">get_val</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+                    <span class="s3">return </span><span class="s1">SoftLink</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">linkbytes</span><span class="s4">))</span>
+
+                <span class="s3">elif </span><span class="s1">typecode </span><span class="s4">== </span><span class="s1">h5l</span><span class="s4">.</span><span class="s1">TYPE_EXTERNAL</span><span class="s4">:</span>
+                    <span class="s3">if </span><span class="s1">getclass</span><span class="s4">:</span>
+                        <span class="s3">return </span><span class="s1">ExternalLink</span>
+                    <span class="s1">filebytes</span><span class="s4">, </span><span class="s1">linkbytes </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">get_val</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+                    <span class="s3">return </span><span class="s1">ExternalLink</span><span class="s4">(</span>
+                        <span class="s1">filename_decode</span><span class="s4">(</span><span class="s1">filebytes</span><span class="s4">), </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">linkbytes</span><span class="s4">)</span>
+                    <span class="s4">)</span>
+
+                <span class="s3">elif </span><span class="s1">typecode </span><span class="s4">== </span><span class="s1">h5l</span><span class="s4">.</span><span class="s1">TYPE_HARD</span><span class="s4">:</span>
+                    <span class="s3">return </span><span class="s1">HardLink </span><span class="s3">if </span><span class="s1">getclass </span><span class="s3">else </span><span class="s1">HardLink</span><span class="s4">()</span>
+
+                <span class="s3">else</span><span class="s4">:</span>
+                    <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Unknown link type&quot;</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__setitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">obj</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Add an object to the group.  The name must not already be in use. 
+ 
+        The action taken depends on the type of object assigned: 
+ 
+        Named HDF5 object (Dataset, Group, Datatype) 
+            A hard link is created at &quot;name&quot; which points to the 
+            given object. 
+ 
+        SoftLink or ExternalLink 
+            Create the corresponding link. 
+ 
+        Numpy ndarray 
+            The array is converted to a dataset object, with default 
+            settings (contiguous storage, etc.). 
+ 
+        Numpy dtype 
+            Commit a copy of the datatype as a named datatype in the file. 
+ 
+        Anything else 
+            Attempt to convert it to an ndarray and store it.  Scalar 
+            values are stored as scalar datasets. Raise ValueError if we 
+            can't understand the resulting array dtype. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">HLObject</span><span class="s4">):</span>
+                <span class="s1">h5o</span><span class="s4">.</span><span class="s1">link</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s1">lcpl</span><span class="s4">, </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+
+            <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">SoftLink</span><span class="s4">):</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">create_soft</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">.</span><span class="s1">path</span><span class="s4">), </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s1">lcpl</span><span class="s4">, </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+
+            <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">ExternalLink</span><span class="s4">):</span>
+                <span class="s1">fn </span><span class="s4">= </span><span class="s1">filename_encode</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">.</span><span class="s1">filename</span><span class="s4">)</span>
+                <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">create_external</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">fn</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">.</span><span class="s1">path</span><span class="s4">),</span>
+                                              <span class="s1">lcpl</span><span class="s4">=</span><span class="s1">lcpl</span><span class="s4">, </span><span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+
+            <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">numpy</span><span class="s4">.</span><span class="s1">dtype</span><span class="s4">):</span>
+                <span class="s1">htype </span><span class="s4">= </span><span class="s1">h5t</span><span class="s4">.</span><span class="s1">py_create</span><span class="s4">(</span><span class="s1">obj</span><span class="s4">, </span><span class="s1">logical</span><span class="s4">=</span><span class="s3">True</span><span class="s4">)</span>
+                <span class="s1">htype</span><span class="s4">.</span><span class="s1">commit</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s1">lcpl</span><span class="s4">)</span>
+
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">ds </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">create_dataset</span><span class="s4">(</span><span class="s3">None</span><span class="s4">, </span><span class="s1">data</span><span class="s4">=</span><span class="s1">obj</span><span class="s4">)</span>
+                <span class="s1">h5o</span><span class="s4">.</span><span class="s1">link</span><span class="s4">(</span><span class="s1">ds</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">name</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s1">lcpl</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__delitem__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Delete (unlink) an item from this group. &quot;&quot;&quot;</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">unlink</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">))</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__len__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Number of members attached to this group &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">get_num_objs</span><span class="s4">()</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__iter__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Iterate over member names &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">__iter__</span><span class="s4">():</span>
+            <span class="s3">yield </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">x</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__reversed__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Iterate over member names in reverse order. &quot;&quot;&quot;</span>
+        <span class="s3">for </span><span class="s1">x </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">__reversed__</span><span class="s4">():</span>
+            <span class="s3">yield </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">x</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__contains__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">name</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Test if a member name exists &quot;&quot;&quot;</span>
+        <span class="s3">if </span><span class="s1">hasattr</span><span class="s4">(</span><span class="s1">h5g</span><span class="s4">, </span><span class="s5">&quot;_path_valid&quot;</span><span class="s4">):</span>
+            <span class="s3">if not </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">:</span>
+                <span class="s3">return False</span>
+            <span class="s3">return </span><span class="s1">h5g</span><span class="s4">.</span><span class="s1">_path_valid</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">), </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">)</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">name</span><span class="s4">) </span><span class="s3">in </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span>
+
+    <span class="s3">def </span><span class="s1">copy</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source</span><span class="s4">, </span><span class="s1">dest</span><span class="s4">, </span><span class="s1">name</span><span class="s4">=</span><span class="s3">None</span><span class="s4">,</span>
+             <span class="s1">shallow</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">expand_soft</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">expand_external</span><span class="s4">=</span><span class="s3">False</span><span class="s4">,</span>
+             <span class="s1">expand_refs</span><span class="s4">=</span><span class="s3">False</span><span class="s4">, </span><span class="s1">without_attrs</span><span class="s4">=</span><span class="s3">False</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot;Copy an object or group. 
+ 
+        The source can be a path, Group, Dataset, or Datatype object.  The 
+        destination can be either a path or a Group object.  The source and 
+        destinations need not be in the same file. 
+ 
+        If the source is a Group object, all objects contained in that group 
+        will be copied recursively. 
+ 
+        When the destination is a Group object, by default the target will 
+        be created in that group with its current name (basename of obj.name). 
+        You can override that by setting &quot;name&quot; to a string. 
+ 
+        There are various options which all default to &quot;False&quot;: 
+ 
+         - shallow: copy only immediate members of a group. 
+ 
+         - expand_soft: expand soft links into new objects. 
+ 
+         - expand_external: expand external links into new objects. 
+ 
+         - expand_refs: copy objects that are pointed to by references. 
+ 
+         - without_attrs: copy object without copying attributes. 
+ 
+       Example: 
+ 
+        &gt;&gt;&gt; f = File('myfile.hdf5', 'w') 
+        &gt;&gt;&gt; f.create_group(&quot;MyGroup&quot;) 
+        &gt;&gt;&gt; list(f.keys()) 
+        ['MyGroup'] 
+        &gt;&gt;&gt; f.copy('MyGroup', 'MyCopy') 
+        &gt;&gt;&gt; list(f.keys()) 
+        ['MyGroup', 'MyCopy'] 
+ 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">source</span><span class="s4">, </span><span class="s1">HLObject</span><span class="s4">):</span>
+                <span class="s1">source_path </span><span class="s4">= </span><span class="s5">'.'</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s0"># Interpret source as a path relative to this group</span>
+                <span class="s1">source_path </span><span class="s4">= </span><span class="s1">source</span>
+                <span class="s1">source </span><span class="s4">= </span><span class="s1">self</span>
+
+            <span class="s3">if </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">dest</span><span class="s4">, </span><span class="s1">Group</span><span class="s4">):</span>
+                <span class="s3">if </span><span class="s1">name </span><span class="s3">is not None</span><span class="s4">:</span>
+                    <span class="s1">dest_path </span><span class="s4">= </span><span class="s1">name</span>
+                <span class="s3">elif </span><span class="s1">source_path </span><span class="s4">== </span><span class="s5">'.'</span><span class="s4">:</span>
+                    <span class="s1">dest_path </span><span class="s4">= </span><span class="s1">pp</span><span class="s4">.</span><span class="s1">basename</span><span class="s4">(</span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">get_name</span><span class="s4">(</span><span class="s1">source</span><span class="s4">.</span><span class="s1">id</span><span class="s4">))</span>
+                <span class="s3">else</span><span class="s4">:</span>
+                    <span class="s0"># copy source into dest group: dest_name/source_name</span>
+                    <span class="s1">dest_path </span><span class="s4">= </span><span class="s1">pp</span><span class="s4">.</span><span class="s1">basename</span><span class="s4">(</span><span class="s1">h5i</span><span class="s4">.</span><span class="s1">get_name</span><span class="s4">(</span><span class="s1">source</span><span class="s4">[</span><span class="s1">source_path</span><span class="s4">].</span><span class="s1">id</span><span class="s4">))</span>
+
+            <span class="s3">elif </span><span class="s1">isinstance</span><span class="s4">(</span><span class="s1">dest</span><span class="s4">, </span><span class="s1">HLObject</span><span class="s4">):</span>
+                <span class="s3">raise </span><span class="s1">TypeError</span><span class="s4">(</span><span class="s5">&quot;Destination must be path or Group object&quot;</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s0"># Interpret destination as a path relative to this group</span>
+                <span class="s1">dest_path </span><span class="s4">= </span><span class="s1">dest</span>
+                <span class="s1">dest </span><span class="s4">= </span><span class="s1">self</span>
+
+            <span class="s1">flags </span><span class="s4">= </span><span class="s7">0</span>
+            <span class="s3">if </span><span class="s1">shallow</span><span class="s4">:</span>
+                <span class="s1">flags </span><span class="s4">|= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">COPY_SHALLOW_HIERARCHY_FLAG</span>
+            <span class="s3">if </span><span class="s1">expand_soft</span><span class="s4">:</span>
+                <span class="s1">flags </span><span class="s4">|= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">COPY_EXPAND_SOFT_LINK_FLAG</span>
+            <span class="s3">if </span><span class="s1">expand_external</span><span class="s4">:</span>
+                <span class="s1">flags </span><span class="s4">|= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">COPY_EXPAND_EXT_LINK_FLAG</span>
+            <span class="s3">if </span><span class="s1">expand_refs</span><span class="s4">:</span>
+                <span class="s1">flags </span><span class="s4">|= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">COPY_EXPAND_REFERENCE_FLAG</span>
+            <span class="s3">if </span><span class="s1">without_attrs</span><span class="s4">:</span>
+                <span class="s1">flags </span><span class="s4">|= </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">COPY_WITHOUT_ATTR_FLAG</span>
+            <span class="s3">if </span><span class="s1">flags</span><span class="s4">:</span>
+                <span class="s1">copypl </span><span class="s4">= </span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">create</span><span class="s4">(</span><span class="s1">h5p</span><span class="s4">.</span><span class="s1">OBJECT_COPY</span><span class="s4">)</span>
+                <span class="s1">copypl</span><span class="s4">.</span><span class="s1">set_copy_object</span><span class="s4">(</span><span class="s1">flags</span><span class="s4">)</span>
+            <span class="s3">else</span><span class="s4">:</span>
+                <span class="s1">copypl </span><span class="s4">= </span><span class="s3">None</span>
+
+            <span class="s1">h5o</span><span class="s4">.</span><span class="s1">copy</span><span class="s4">(</span><span class="s1">source</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">source_path</span><span class="s4">), </span><span class="s1">dest</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">dest_path</span><span class="s4">),</span>
+                     <span class="s1">copypl</span><span class="s4">, </span><span class="s1">base</span><span class="s4">.</span><span class="s1">dlcpl</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">move</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">source</span><span class="s4">, </span><span class="s1">dest</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Move a link to a new location in the file. 
+ 
+        If &quot;source&quot; is a hard link, this effectively renames the object.  If 
+        &quot;source&quot; is a soft or external link, the link itself is moved, with its 
+        value unmodified. 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">if </span><span class="s1">source </span><span class="s4">== </span><span class="s1">dest</span><span class="s4">:</span>
+                <span class="s3">return</span>
+            <span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">move</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">source</span><span class="s4">), </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_e</span><span class="s4">(</span><span class="s1">dest</span><span class="s4">),</span>
+                               <span class="s1">lapl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lapl</span><span class="s4">, </span><span class="s1">lcpl</span><span class="s4">=</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_lcpl</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">visit</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">func</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Recursively visit all names in this group and subgroups. 
+ 
+        Note: visit ignores soft and external links. To visit those, use 
+        visit_links. 
+ 
+        You supply a callable (function, method or callable object); it 
+        will be called exactly once for each link in this group and every 
+        group below it. Your callable must conform to the signature: 
+ 
+            func(&lt;member name&gt;) =&gt; &lt;None or return value&gt; 
+ 
+        Returning None continues iteration, returning anything else stops 
+        and immediately returns that value from the visit method.  No 
+        particular order of iteration within groups is guaranteed. 
+ 
+        Example: 
+ 
+        &gt;&gt;&gt; # List the entire contents of the file 
+        &gt;&gt;&gt; f = File(&quot;foo.hdf5&quot;) 
+        &gt;&gt;&gt; list_of_names = [] 
+        &gt;&gt;&gt; f.visit(list_of_names.append) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">def </span><span class="s1">proxy</span><span class="s4">(</span><span class="s1">name</span><span class="s4">):</span>
+                <span class="s2">&quot;&quot;&quot; Call the function with the text name, not bytes &quot;&quot;&quot;</span>
+                <span class="s3">return </span><span class="s1">func</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">name</span><span class="s4">))</span>
+            <span class="s3">return </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">proxy</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">visititems</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">func</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Recursively visit names and objects in this group. 
+ 
+        Note: visititems ignores soft and external links. To visit those, use 
+        visititems_links. 
+ 
+        You supply a callable (function, method or callable object); it 
+        will be called exactly once for each link in this group and every 
+        group below it. Your callable must conform to the signature: 
+ 
+            func(&lt;member name&gt;, &lt;object&gt;) =&gt; &lt;None or return value&gt; 
+ 
+        Returning None continues iteration, returning anything else stops 
+        and immediately returns that value from the visit method.  No 
+        particular order of iteration within groups is guaranteed. 
+ 
+        Example: 
+ 
+        # Get a list of all datasets in the file 
+        &gt;&gt;&gt; mylist = [] 
+        &gt;&gt;&gt; def func(name, obj): 
+        ...     if isinstance(obj, Dataset): 
+        ...         mylist.append(name) 
+        ... 
+        &gt;&gt;&gt; f = File('foo.hdf5') 
+        &gt;&gt;&gt; f.visititems(func) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">def </span><span class="s1">proxy</span><span class="s4">(</span><span class="s1">name</span><span class="s4">):</span>
+                <span class="s2">&quot;&quot;&quot; Use the text name of the object, not bytes &quot;&quot;&quot;</span>
+                <span class="s1">name </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+                <span class="s3">return </span><span class="s1">func</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">self</span><span class="s4">[</span><span class="s1">name</span><span class="s4">])</span>
+            <span class="s3">return </span><span class="s1">h5o</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">, </span><span class="s1">proxy</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">visit_links</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">func</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Recursively visit all names in this group and subgroups. 
+        Each link will be visited exactly once, regardless of its target. 
+ 
+        You supply a callable (function, method or callable object); it 
+        will be called exactly once for each link in this group and every 
+        group below it. Your callable must conform to the signature: 
+ 
+            func(&lt;member name&gt;) =&gt; &lt;None or return value&gt; 
+ 
+        Returning None continues iteration, returning anything else stops 
+        and immediately returns that value from the visit method.  No 
+        particular order of iteration within groups is guaranteed. 
+ 
+        Example: 
+ 
+        &gt;&gt;&gt; # List the entire contents of the file 
+        &gt;&gt;&gt; f = File(&quot;foo.hdf5&quot;) 
+        &gt;&gt;&gt; list_of_names = [] 
+        &gt;&gt;&gt; f.visit_links(list_of_names.append) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">def </span><span class="s1">proxy</span><span class="s4">(</span><span class="s1">name</span><span class="s4">):</span>
+                <span class="s2">&quot;&quot;&quot; Call the function with the text name, not bytes &quot;&quot;&quot;</span>
+                <span class="s3">return </span><span class="s1">func</span><span class="s4">(</span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">name</span><span class="s4">))</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">proxy</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">visititems_links</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">func</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Recursively visit links in this group. 
+        Each link will be visited exactly once, regardless of its target. 
+ 
+        You supply a callable (function, method or callable object); it 
+        will be called exactly once for each link in this group and every 
+        group below it. Your callable must conform to the signature: 
+ 
+            func(&lt;member name&gt;, &lt;link&gt;) =&gt; &lt;None or return value&gt; 
+ 
+        Returning None continues iteration, returning anything else stops 
+        and immediately returns that value from the visit method.  No 
+        particular order of iteration within groups is guaranteed. 
+ 
+        Example: 
+ 
+        # Get a list of all softlinks in the file 
+        &gt;&gt;&gt; mylist = [] 
+        &gt;&gt;&gt; def func(name, link): 
+        ...     if isinstance(link, SoftLink): 
+        ...         mylist.append(name) 
+        ... 
+        &gt;&gt;&gt; f = File('foo.hdf5') 
+        &gt;&gt;&gt; f.visititems_links(func) 
+        &quot;&quot;&quot;</span>
+        <span class="s3">with </span><span class="s1">phil</span><span class="s4">:</span>
+            <span class="s3">def </span><span class="s1">proxy</span><span class="s4">(</span><span class="s1">name</span><span class="s4">):</span>
+                <span class="s2">&quot;&quot;&quot; Use the text name of the object, not bytes &quot;&quot;&quot;</span>
+                <span class="s1">name </span><span class="s4">= </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_d</span><span class="s4">(</span><span class="s1">name</span><span class="s4">)</span>
+                <span class="s3">return </span><span class="s1">func</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">self</span><span class="s4">.</span><span class="s1">get</span><span class="s4">(</span><span class="s1">name</span><span class="s4">, </span><span class="s1">getlink</span><span class="s4">=</span><span class="s3">True</span><span class="s4">))</span>
+            <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">id</span><span class="s4">.</span><span class="s1">links</span><span class="s4">.</span><span class="s1">visit</span><span class="s4">(</span><span class="s1">proxy</span><span class="s4">)</span>
+
+    <span class="s4">@</span><span class="s1">with_phil</span>
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">if not </span><span class="s1">self</span><span class="s4">:</span>
+            <span class="s1">r </span><span class="s4">= </span><span class="s5">u&quot;&lt;Closed HDF5 group&gt;&quot;</span>
+        <span class="s3">else</span><span class="s4">:</span>
+            <span class="s1">namestr </span><span class="s4">= (</span>
+                <span class="s5">'&quot;%s&quot;' </span><span class="s4">% </span><span class="s1">self</span><span class="s4">.</span><span class="s1">name</span>
+            <span class="s4">) </span><span class="s3">if </span><span class="s1">self</span><span class="s4">.</span><span class="s1">name </span><span class="s3">is not None else </span><span class="s5">u&quot;(anonymous)&quot;</span>
+            <span class="s1">r </span><span class="s4">= </span><span class="s5">'&lt;HDF5 group %s (%d members)&gt;' </span><span class="s4">% (</span><span class="s1">namestr</span><span class="s4">, </span><span class="s1">len</span><span class="s4">(</span><span class="s1">self</span><span class="s4">))</span>
+
+        <span class="s3">return </span><span class="s1">r</span>
+
+
+<span class="s3">class </span><span class="s1">HardLink</span><span class="s4">:</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Represents a hard link in an HDF5 file.  Provided only so that 
+        Group.get works in a sensible way.  Has no other function. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s3">pass</span>
+
+
+<span class="s3">class </span><span class="s1">SoftLink</span><span class="s4">:</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Represents a symbolic (&quot;soft&quot;) link in an HDF5 file.  The path 
+        may be absolute or relative.  No checking is performed to ensure 
+        that the target actually exists. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">path</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Soft link value.  Not guaranteed to be a valid path. &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_path</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">path</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_path </span><span class="s4">= </span><span class="s1">str</span><span class="s4">(</span><span class="s1">path</span><span class="s4">)</span>
+
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s5">'&lt;SoftLink to &quot;%s&quot;&gt;' </span><span class="s4">% </span><span class="s1">self</span><span class="s4">.</span><span class="s1">path</span>
+
+
+<span class="s3">class </span><span class="s1">ExternalLink</span><span class="s4">:</span>
+
+    <span class="s2">&quot;&quot;&quot; 
+        Represents an HDF5 external link.  Paths may be absolute or relative. 
+        No checking is performed to ensure either the target or file exists. 
+    &quot;&quot;&quot;</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">path</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Soft link path, i.e. the part inside the HDF5 file. &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_path</span>
+
+    <span class="s4">@</span><span class="s1">property</span>
+    <span class="s3">def </span><span class="s1">filename</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s2">&quot;&quot;&quot; Path to the external HDF5 file in the filesystem. &quot;&quot;&quot;</span>
+        <span class="s3">return </span><span class="s1">self</span><span class="s4">.</span><span class="s1">_filename</span>
+
+    <span class="s3">def </span><span class="s1">__init__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">, </span><span class="s1">filename</span><span class="s4">, </span><span class="s1">path</span><span class="s4">):</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_filename </span><span class="s4">= </span><span class="s1">filename_decode</span><span class="s4">(</span><span class="s1">filename_encode</span><span class="s4">(</span><span class="s1">filename</span><span class="s4">))</span>
+        <span class="s1">self</span><span class="s4">.</span><span class="s1">_path </span><span class="s4">= </span><span class="s1">path</span>
+
+    <span class="s3">def </span><span class="s1">__repr__</span><span class="s4">(</span><span class="s1">self</span><span class="s4">):</span>
+        <span class="s3">return </span><span class="s5">'&lt;ExternalLink to &quot;%s&quot; in file &quot;%s&quot;' </span><span class="s4">% (</span><span class="s1">self</span><span class="s4">.</span><span class="s1">path</span><span class="s4">,</span>
+                                                       <span class="s1">self</span><span class="s4">.</span><span class="s1">filename</span><span class="s4">)</span>
+</pre>
+</body>
+</html>

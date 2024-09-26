@@ -1,0 +1,816 @@
+<html>
+<head>
+<title>_tree.pyx</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #bcbec4;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+_tree.pyx</font>
+</center></td></tr></table>
+<pre><span class="s0"># Tree handling (condensing, finding stable clusters) for hdbscan</span>
+<span class="s0"># Authors: Leland McInnes</span>
+<span class="s0"># Copyright (c) 2015, Leland McInnes</span>
+<span class="s0"># All rights reserved.</span>
+
+<span class="s0"># Redistribution and use in source and binary forms, with or without</span>
+<span class="s0"># modification, are permitted provided that the following conditions are met:</span>
+
+<span class="s0"># 1. Redistributions of source code must retain the above copyright notice,</span>
+<span class="s0"># this list of conditions and the following disclaimer.</span>
+
+<span class="s0"># 2. Redistributions in binary form must reproduce the above copyright notice,</span>
+<span class="s0"># this list of conditions and the following disclaimer in the documentation</span>
+<span class="s0"># and/or other materials provided with the distribution.</span>
+
+<span class="s0"># 3. Neither the name of the copyright holder nor the names of its contributors</span>
+<span class="s0"># may be used to endorse or promote products derived from this software without</span>
+<span class="s0"># specific prior written permission.</span>
+
+<span class="s0"># THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="s0"># AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="s0"># IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="s0"># ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE</span>
+<span class="s0"># LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="s0"># CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="s0"># SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="s0"># INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="s0"># CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="s0"># ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="s0"># POSSIBILITY OF SUCH DAMAGE.</span>
+
+
+<span class="s0">cimport numpy as cnp</span>
+<span class="s0">from libc.math cimport isinf</span>
+<span class="s0">import cython</span>
+
+<span class="s0">import numpy as np</span>
+
+<span class="s0">cnp.import_array()</span>
+
+<span class="s0">cdef extern from &quot;numpy/arrayobject.h&quot;:</span>
+    <span class="s0">intp_t * PyArray_SHAPE(cnp.PyArrayObject *)</span>
+
+<span class="s0">cdef cnp.float64_t INFTY = np.inf</span>
+<span class="s0">cdef cnp.intp_t NOISE = -1</span>
+
+<span class="s0">HIERARCHY_dtype = np.dtype([</span>
+    <span class="s0">(&quot;left_node&quot;, np.intp),</span>
+    <span class="s0">(&quot;right_node&quot;, np.intp),</span>
+    <span class="s0">(&quot;value&quot;, np.float64),</span>
+    <span class="s0">(&quot;cluster_size&quot;, np.intp),</span>
+<span class="s0">])</span>
+
+<span class="s0">CONDENSED_dtype = np.dtype([</span>
+    <span class="s0">(&quot;parent&quot;, np.intp),</span>
+    <span class="s0">(&quot;child&quot;, np.intp),</span>
+    <span class="s0">(&quot;value&quot;, np.float64),</span>
+    <span class="s0">(&quot;cluster_size&quot;, np.intp),</span>
+<span class="s0">])</span>
+
+<span class="s0">cpdef tuple tree_to_labels(</span>
+    <span class="s0">const HIERARCHY_t[::1] single_linkage_tree,</span>
+    <span class="s0">cnp.intp_t min_cluster_size=10,</span>
+    <span class="s0">cluster_selection_method=&quot;eom&quot;,</span>
+    <span class="s0">bint allow_single_cluster=False,</span>
+    <span class="s0">cnp.float64_t cluster_selection_epsilon=0.0,</span>
+    <span class="s0">max_cluster_size=None,</span>
+<span class="s0">):</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] labels</span>
+        <span class="s0">cnp.ndarray[cnp.float64_t, ndim=1, mode='c'] probabilities</span>
+
+    <span class="s0">condensed_tree = _condense_tree(single_linkage_tree, min_cluster_size)</span>
+    <span class="s0">labels, probabilities = _get_clusters(</span>
+        <span class="s0">condensed_tree,</span>
+        <span class="s0">_compute_stability(condensed_tree),</span>
+        <span class="s0">cluster_selection_method,</span>
+        <span class="s0">allow_single_cluster,</span>
+        <span class="s0">cluster_selection_epsilon,</span>
+        <span class="s0">max_cluster_size,</span>
+    <span class="s0">)</span>
+
+    <span class="s0">return (labels, probabilities)</span>
+
+<span class="s0">cdef list bfs_from_hierarchy(</span>
+    <span class="s0">const HIERARCHY_t[::1] hierarchy,</span>
+    <span class="s0">cnp.intp_t bfs_root</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">Perform a breadth first search on a tree in scipy hclust format.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef list process_queue, next_queue, result</span>
+    <span class="s0">cdef cnp.intp_t n_samples = hierarchy.shape[0] + 1</span>
+    <span class="s0">cdef cnp.intp_t node</span>
+    <span class="s0">process_queue = [bfs_root]</span>
+    <span class="s0">result = []</span>
+
+    <span class="s0">while process_queue:</span>
+        <span class="s0">result.extend(process_queue)</span>
+        <span class="s0"># By construction, node i is formed by the union of nodes</span>
+        <span class="s0"># hierarchy[i - n_samples, 0] and hierarchy[i - n_samples, 1]</span>
+        <span class="s0">process_queue = [</span>
+            <span class="s0">x - n_samples</span>
+            <span class="s0">for x in process_queue</span>
+            <span class="s0">if x &gt;= n_samples</span>
+        <span class="s0">]</span>
+        <span class="s0">if process_queue:</span>
+            <span class="s0">next_queue = []</span>
+            <span class="s0">for node in process_queue:</span>
+                <span class="s0">next_queue.extend(</span>
+                    <span class="s0">[</span>
+                        <span class="s0">hierarchy[node].left_node,</span>
+                        <span class="s0">hierarchy[node].right_node,</span>
+                    <span class="s0">]</span>
+                <span class="s0">)</span>
+            <span class="s0">process_queue = next_queue</span>
+    <span class="s0">return result</span>
+
+
+<span class="s0">cpdef cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] _condense_tree(</span>
+    <span class="s0">const HIERARCHY_t[::1] hierarchy,</span>
+    <span class="s0">cnp.intp_t min_cluster_size=10</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Condense a tree according to a minimum cluster size. This is akin</span>
+    <span class="s0">to the runt pruning procedure of Stuetzle. The result is a much simpler</span>
+    <span class="s0">tree that is easier to visualize. We include extra information on the</span>
+    <span class="s0">lambda value at which individual points depart clusters for later</span>
+    <span class="s0">analysis and computation.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">hierarchy : ndarray of shape (n_samples,), dtype=HIERARCHY_dtype</span>
+        <span class="s0">A single linkage hierarchy in scipy.cluster.hierarchy format.</span>
+
+    <span class="s0">min_cluster_size : int, optional (default 10)</span>
+        <span class="s0">The minimum size of clusters to consider. Clusters smaller than this</span>
+        <span class="s0">are pruned from the tree.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">condensed_tree : ndarray of shape (n_samples,), dtype=CONDENSED_dtype</span>
+        <span class="s0">Effectively an edgelist encoding a parent/child pair, along with a</span>
+        <span class="s0">value and the corresponding cluster_size in each row providing a tree</span>
+        <span class="s0">structure.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.intp_t root = 2 * hierarchy.shape[0]</span>
+        <span class="s0">cnp.intp_t n_samples = hierarchy.shape[0] + 1</span>
+        <span class="s0">cnp.intp_t next_label = n_samples + 1</span>
+        <span class="s0">list result_list, node_list = bfs_from_hierarchy(hierarchy, root)</span>
+
+        <span class="s0">cnp.intp_t[::1] relabel</span>
+        <span class="s0">cnp.uint8_t[::1] ignore</span>
+
+        <span class="s0">cnp.intp_t node, sub_node, left, right</span>
+        <span class="s0">cnp.float64_t lambda_value, distance</span>
+        <span class="s0">cnp.intp_t left_count, right_count</span>
+        <span class="s0">HIERARCHY_t children</span>
+
+    <span class="s0">relabel = np.empty(root + 1, dtype=np.intp)</span>
+    <span class="s0">relabel[root] = n_samples</span>
+    <span class="s0">result_list = []</span>
+    <span class="s0">ignore = np.zeros(len(node_list), dtype=bool)</span>
+
+    <span class="s0">for node in node_list:</span>
+        <span class="s0">if ignore[node] or node &lt; n_samples:</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">children = hierarchy[node - n_samples]</span>
+        <span class="s0">left = children.left_node</span>
+        <span class="s0">right = children.right_node</span>
+        <span class="s0">distance = children.value</span>
+        <span class="s0">if distance &gt; 0.0:</span>
+            <span class="s0">lambda_value = 1.0 / distance</span>
+        <span class="s0">else:</span>
+            <span class="s0">lambda_value = INFTY</span>
+
+        <span class="s0">if left &gt;= n_samples:</span>
+            <span class="s0">left_count = hierarchy[left - n_samples].cluster_size</span>
+        <span class="s0">else:</span>
+            <span class="s0">left_count = 1</span>
+
+        <span class="s0">if right &gt;= n_samples:</span>
+            <span class="s0">right_count = &lt;cnp.intp_t&gt; hierarchy[right - n_samples].cluster_size</span>
+        <span class="s0">else:</span>
+            <span class="s0">right_count = 1</span>
+
+        <span class="s0">if left_count &gt;= min_cluster_size and right_count &gt;= min_cluster_size:</span>
+            <span class="s0">relabel[left] = next_label</span>
+            <span class="s0">next_label += 1</span>
+            <span class="s0">result_list.append(</span>
+                <span class="s0">(relabel[node], relabel[left], lambda_value, left_count)</span>
+            <span class="s0">)</span>
+
+            <span class="s0">relabel[right] = next_label</span>
+            <span class="s0">next_label += 1</span>
+            <span class="s0">result_list.append(</span>
+                <span class="s0">(relabel[node], relabel[right], lambda_value, right_count)</span>
+            <span class="s0">)</span>
+
+        <span class="s0">elif left_count &lt; min_cluster_size and right_count &lt; min_cluster_size:</span>
+            <span class="s0">for sub_node in bfs_from_hierarchy(hierarchy, left):</span>
+                <span class="s0">if sub_node &lt; n_samples:</span>
+                    <span class="s0">result_list.append(</span>
+                        <span class="s0">(relabel[node], sub_node, lambda_value, 1)</span>
+                    <span class="s0">)</span>
+                <span class="s0">ignore[sub_node] = True</span>
+
+            <span class="s0">for sub_node in bfs_from_hierarchy(hierarchy, right):</span>
+                <span class="s0">if sub_node &lt; n_samples:</span>
+                    <span class="s0">result_list.append(</span>
+                        <span class="s0">(relabel[node], sub_node, lambda_value, 1)</span>
+                    <span class="s0">)</span>
+                <span class="s0">ignore[sub_node] = True</span>
+
+        <span class="s0">elif left_count &lt; min_cluster_size:</span>
+            <span class="s0">relabel[right] = relabel[node]</span>
+            <span class="s0">for sub_node in bfs_from_hierarchy(hierarchy, left):</span>
+                <span class="s0">if sub_node &lt; n_samples:</span>
+                    <span class="s0">result_list.append(</span>
+                        <span class="s0">(relabel[node], sub_node, lambda_value, 1)</span>
+                    <span class="s0">)</span>
+                <span class="s0">ignore[sub_node] = True</span>
+
+        <span class="s0">else:</span>
+            <span class="s0">relabel[left] = relabel[node]</span>
+            <span class="s0">for sub_node in bfs_from_hierarchy(hierarchy, right):</span>
+                <span class="s0">if sub_node &lt; n_samples:</span>
+                    <span class="s0">result_list.append(</span>
+                        <span class="s0">(relabel[node], sub_node, lambda_value, 1)</span>
+                    <span class="s0">)</span>
+                <span class="s0">ignore[sub_node] = True</span>
+
+    <span class="s0">return np.array(result_list, dtype=CONDENSED_dtype)</span>
+
+
+<span class="s0">cdef dict _compute_stability(</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree</span>
+<span class="s0">):</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.float64_t[::1] result, births</span>
+        <span class="s0">cnp.intp_t[:] parents = condensed_tree['parent']</span>
+
+        <span class="s0">cnp.intp_t parent, cluster_size, result_index, idx</span>
+        <span class="s0">cnp.float64_t lambda_val</span>
+        <span class="s0">CONDENSED_t condensed_node</span>
+        <span class="s0">cnp.intp_t largest_child = condensed_tree['child'].max()</span>
+        <span class="s0">cnp.intp_t smallest_cluster = np.min(parents)</span>
+        <span class="s0">cnp.intp_t num_clusters = np.max(parents) - smallest_cluster + 1</span>
+        <span class="s0">dict stability_dict = {}</span>
+
+    <span class="s0">largest_child = max(largest_child, smallest_cluster)</span>
+    <span class="s0">births = np.full(largest_child + 1, np.nan, dtype=np.float64)</span>
+
+    <span class="s0">for idx in range(PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; condensed_tree)[0]):</span>
+        <span class="s0">condensed_node = condensed_tree[idx]</span>
+        <span class="s0">births[condensed_node.child] = condensed_node.value</span>
+
+    <span class="s0">births[smallest_cluster] = 0.0</span>
+
+    <span class="s0">result = np.zeros(num_clusters, dtype=np.float64)</span>
+    <span class="s0">for idx in range(PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; condensed_tree)[0]):</span>
+        <span class="s0">condensed_node = condensed_tree[idx]</span>
+        <span class="s0">parent = condensed_node.parent</span>
+        <span class="s0">lambda_val = condensed_node.value</span>
+        <span class="s0">cluster_size = condensed_node.cluster_size</span>
+
+        <span class="s0">result_index = parent - smallest_cluster</span>
+        <span class="s0">result[result_index] += (lambda_val - births[parent]) * cluster_size</span>
+
+    <span class="s0">for idx in range(num_clusters):</span>
+        <span class="s0">stability_dict[idx + smallest_cluster] = result[idx]</span>
+
+    <span class="s0">return stability_dict</span>
+
+
+<span class="s0">cdef list bfs_from_cluster_tree(</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree,</span>
+    <span class="s0">cnp.intp_t bfs_root</span>
+<span class="s0">):</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">list result = []</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1] process_queue = (</span>
+            <span class="s0">np.array([bfs_root], dtype=np.intp)</span>
+        <span class="s0">)</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1] children = condensed_tree['child']</span>
+        <span class="s0">cnp.intp_t[:] parents = condensed_tree['parent']</span>
+
+    <span class="s0">while len(process_queue) &gt; 0:</span>
+        <span class="s0">result.extend(process_queue.tolist())</span>
+        <span class="s0">process_queue = children[np.isin(parents, process_queue)]</span>
+
+    <span class="s0">return result</span>
+
+
+<span class="s0">cdef cnp.float64_t[::1] max_lambdas(cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree):</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.intp_t parent, current_parent, idx</span>
+        <span class="s0">cnp.float64_t lambda_val, max_lambda</span>
+        <span class="s0">cnp.float64_t[::1] deaths</span>
+        <span class="s0">cnp.intp_t largest_parent = condensed_tree['parent'].max()</span>
+
+    <span class="s0">deaths = np.zeros(largest_parent + 1, dtype=np.float64)</span>
+    <span class="s0">current_parent = condensed_tree[0].parent</span>
+    <span class="s0">max_lambda = condensed_tree[0].value</span>
+
+    <span class="s0">for idx in range(1, PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; condensed_tree)[0]):</span>
+        <span class="s0">parent = condensed_tree[idx].parent</span>
+        <span class="s0">lambda_val = condensed_tree[idx].value</span>
+
+        <span class="s0">if parent == current_parent:</span>
+            <span class="s0">max_lambda = max(max_lambda, lambda_val)</span>
+        <span class="s0">else:</span>
+            <span class="s0">deaths[current_parent] = max_lambda</span>
+            <span class="s0">current_parent = parent</span>
+            <span class="s0">max_lambda = lambda_val</span>
+
+    <span class="s0">deaths[current_parent] = max_lambda  # value for last parent</span>
+    <span class="s0">return deaths</span>
+
+
+<span class="s0">@cython.final</span>
+<span class="s0">cdef class TreeUnionFind:</span>
+
+    <span class="s0">cdef cnp.intp_t[:, ::1] data</span>
+    <span class="s0">cdef cnp.uint8_t[::1] is_component</span>
+
+    <span class="s0">def __init__(self, size):</span>
+        <span class="s0">cdef cnp.intp_t idx</span>
+        <span class="s0">self.data = np.zeros((size, 2), dtype=np.intp)</span>
+        <span class="s0">for idx in range(size):</span>
+            <span class="s0">self.data[idx, 0] = idx</span>
+        <span class="s0">self.is_component = np.ones(size, dtype=np.uint8)</span>
+
+    <span class="s0">cdef void union(self, cnp.intp_t x, cnp.intp_t y):</span>
+        <span class="s0">cdef cnp.intp_t x_root = self.find(x)</span>
+        <span class="s0">cdef cnp.intp_t y_root = self.find(y)</span>
+
+        <span class="s0">if self.data[x_root, 1] &lt; self.data[y_root, 1]:</span>
+            <span class="s0">self.data[x_root, 0] = y_root</span>
+        <span class="s0">elif self.data[x_root, 1] &gt; self.data[y_root, 1]:</span>
+            <span class="s0">self.data[y_root, 0] = x_root</span>
+        <span class="s0">else:</span>
+            <span class="s0">self.data[y_root, 0] = x_root</span>
+            <span class="s0">self.data[x_root, 1] += 1</span>
+        <span class="s0">return</span>
+
+    <span class="s0">cdef cnp.intp_t find(self, cnp.intp_t x):</span>
+        <span class="s0">if self.data[x, 0] != x:</span>
+            <span class="s0">self.data[x, 0] = self.find(self.data[x, 0])</span>
+            <span class="s0">self.is_component[x] = False</span>
+        <span class="s0">return self.data[x, 0]</span>
+
+
+<span class="s0">cpdef cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] labelling_at_cut(</span>
+        <span class="s0">const HIERARCHY_t[::1] linkage,</span>
+        <span class="s0">cnp.float64_t cut,</span>
+        <span class="s0">cnp.intp_t min_cluster_size</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Given a single linkage tree and a cut value, return the</span>
+    <span class="s0">vector of cluster labels at that cut value. This is useful</span>
+    <span class="s0">for Robust Single Linkage, and extracting DBSCAN results</span>
+    <span class="s0">from a single HDBSCAN run.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">linkage : ndarray of shape (n_samples,), dtype=HIERARCHY_dtype</span>
+        <span class="s0">The single linkage tree in scipy.cluster.hierarchy format.</span>
+
+    <span class="s0">cut : double</span>
+        <span class="s0">The cut value at which to find clusters.</span>
+
+    <span class="s0">min_cluster_size : int</span>
+        <span class="s0">The minimum cluster size; clusters below this size at</span>
+        <span class="s0">the cut will be considered noise.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">labels : ndarray of shape (n_samples,)</span>
+        <span class="s0">The cluster labels for each point in the data set;</span>
+        <span class="s0">a label of -1 denotes a noise assignment.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.intp_t n, cluster, root, n_samples, cluster_label</span>
+        <span class="s0">cnp.intp_t[::1] unique_labels, cluster_size</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] result</span>
+        <span class="s0">TreeUnionFind union_find</span>
+        <span class="s0">dict cluster_label_map</span>
+        <span class="s0">HIERARCHY_t node</span>
+
+    <span class="s0">root = 2 * linkage.shape[0]</span>
+    <span class="s0">n_samples = root // 2 + 1</span>
+    <span class="s0">result = np.empty(n_samples, dtype=np.intp)</span>
+    <span class="s0">union_find = TreeUnionFind(root + 1)</span>
+
+    <span class="s0">cluster = n_samples</span>
+    <span class="s0">for node in linkage:</span>
+        <span class="s0">if node.value &lt; cut:</span>
+            <span class="s0">union_find.union(node.left_node, cluster)</span>
+            <span class="s0">union_find.union(node.right_node, cluster)</span>
+        <span class="s0">cluster += 1</span>
+
+    <span class="s0">cluster_size = np.zeros(cluster, dtype=np.intp)</span>
+    <span class="s0">for n in range(n_samples):</span>
+        <span class="s0">cluster = union_find.find(n)</span>
+        <span class="s0">cluster_size[cluster] += 1</span>
+        <span class="s0">result[n] = cluster</span>
+
+    <span class="s0">cluster_label_map = {-1: NOISE}</span>
+    <span class="s0">cluster_label = 0</span>
+    <span class="s0">unique_labels = np.unique(result)</span>
+
+    <span class="s0">for cluster in unique_labels:</span>
+        <span class="s0">if cluster_size[cluster] &lt; min_cluster_size:</span>
+            <span class="s0">cluster_label_map[cluster] = NOISE</span>
+        <span class="s0">else:</span>
+            <span class="s0">cluster_label_map[cluster] = cluster_label</span>
+            <span class="s0">cluster_label += 1</span>
+
+    <span class="s0">for n in range(n_samples):</span>
+        <span class="s0">result[n] = cluster_label_map[result[n]]</span>
+
+    <span class="s0">return result</span>
+
+
+<span class="s0">cpdef cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] _do_labelling(</span>
+        <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree,</span>
+        <span class="s0">set clusters,</span>
+        <span class="s0">dict cluster_label_map,</span>
+        <span class="s0">cnp.intp_t allow_single_cluster,</span>
+        <span class="s0">cnp.float64_t cluster_selection_epsilon</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Given a condensed tree, clusters and a labeling map for the clusters,</span>
+    <span class="s0">return an array containing the labels of each point based on cluster</span>
+    <span class="s0">membership. Note that this is where points may be marked as noisy</span>
+    <span class="s0">outliers. The determination of some points as noise is in large, single-</span>
+    <span class="s0">cluster datasets is controlled by the `allow_single_cluster` and</span>
+    <span class="s0">`cluster_selection_epsilon` parameters.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">condensed_tree : ndarray of shape (n_samples,), dtype=CONDENSED_dtype</span>
+        <span class="s0">Effectively an edgelist encoding a parent/child pair, along with a</span>
+        <span class="s0">value and the corresponding cluster_size in each row providing a tree</span>
+        <span class="s0">structure.</span>
+
+    <span class="s0">clusters : set</span>
+        <span class="s0">The set of nodes corresponding to identified clusters. These node</span>
+        <span class="s0">values should be the same as those present in `condensed_tree`.</span>
+
+    <span class="s0">cluster_label_map : dict</span>
+        <span class="s0">A mapping from the node values present in `clusters` to the labels</span>
+        <span class="s0">which will be returned.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">labels : ndarray of shape (n_samples,)</span>
+        <span class="s0">The cluster labels for each point in the data set;</span>
+        <span class="s0">a label of -1 denotes a noise assignment.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.intp_t root_cluster</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] result</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1] parent_array, child_array</span>
+        <span class="s0">cnp.ndarray[cnp.float64_t, ndim=1] lambda_array</span>
+        <span class="s0">TreeUnionFind union_find</span>
+        <span class="s0">cnp.intp_t n, parent, child, cluster</span>
+        <span class="s0">cnp.float64_t threshold</span>
+
+    <span class="s0">child_array = condensed_tree['child']</span>
+    <span class="s0">parent_array = condensed_tree['parent']</span>
+    <span class="s0">lambda_array = condensed_tree['value']</span>
+
+    <span class="s0">root_cluster = np.min(parent_array)</span>
+    <span class="s0">result = np.empty(root_cluster, dtype=np.intp)</span>
+    <span class="s0">union_find = TreeUnionFind(np.max(parent_array) + 1)</span>
+
+    <span class="s0">for n in range(PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; condensed_tree)[0]):</span>
+        <span class="s0">child = child_array[n]</span>
+        <span class="s0">parent = parent_array[n]</span>
+        <span class="s0">if child not in clusters:</span>
+            <span class="s0">union_find.union(parent, child)</span>
+
+    <span class="s0">for n in range(root_cluster):</span>
+        <span class="s0">cluster = union_find.find(n)</span>
+        <span class="s0">label = NOISE</span>
+        <span class="s0">if cluster != root_cluster:</span>
+            <span class="s0">label = cluster_label_map[cluster]</span>
+        <span class="s0">elif len(clusters) == 1 and allow_single_cluster:</span>
+            <span class="s0"># There can only be one edge with this particular child hence this</span>
+            <span class="s0"># expression extracts a unique, scalar lambda value.</span>
+            <span class="s0">parent_lambda = lambda_array[child_array == n]</span>
+            <span class="s0">if cluster_selection_epsilon != 0.0:</span>
+                <span class="s0">threshold = 1 / cluster_selection_epsilon</span>
+            <span class="s0">else:</span>
+                <span class="s0"># The threshold should be calculated per-sample based on the</span>
+                <span class="s0"># largest lambda of any simbling node.</span>
+                <span class="s0">threshold = lambda_array[parent_array == cluster].max()</span>
+            <span class="s0">if parent_lambda &gt;= threshold:</span>
+                <span class="s0">label = cluster_label_map[cluster]</span>
+
+        <span class="s0">result[n] = label</span>
+
+    <span class="s0">return result</span>
+
+
+<span class="s0">cdef cnp.ndarray[cnp.float64_t, ndim=1, mode='c'] get_probabilities(</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree,</span>
+    <span class="s0">dict cluster_map,</span>
+    <span class="s0">cnp.intp_t[::1] labels</span>
+<span class="s0">):</span>
+
+    <span class="s0">cdef:</span>
+        <span class="s0">cnp.ndarray[cnp.float64_t, ndim=1, mode='c'] result</span>
+        <span class="s0">cnp.float64_t[:] lambda_array</span>
+        <span class="s0">cnp.float64_t[::1] deaths</span>
+        <span class="s0">cnp.intp_t[:] child_array, parent_array</span>
+        <span class="s0">cnp.intp_t root_cluster, n, point, cluster_num, cluster</span>
+        <span class="s0">cnp.float64_t max_lambda, lambda_val</span>
+
+    <span class="s0">child_array = condensed_tree['child']</span>
+    <span class="s0">parent_array = condensed_tree['parent']</span>
+    <span class="s0">lambda_array = condensed_tree['value']</span>
+
+    <span class="s0">result = np.zeros(labels.shape[0])</span>
+    <span class="s0">deaths = max_lambdas(condensed_tree)</span>
+    <span class="s0">root_cluster = np.min(parent_array)</span>
+
+    <span class="s0">for n in range(PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; condensed_tree)[0]):</span>
+        <span class="s0">point = child_array[n]</span>
+        <span class="s0">if point &gt;= root_cluster:</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">cluster_num = labels[point]</span>
+        <span class="s0">if cluster_num == -1:</span>
+            <span class="s0">continue</span>
+
+        <span class="s0">cluster = cluster_map[cluster_num]</span>
+        <span class="s0">max_lambda = deaths[cluster]</span>
+        <span class="s0">if max_lambda == 0.0 or isinf(lambda_array[n]):</span>
+            <span class="s0">result[point] = 1.0</span>
+        <span class="s0">else:</span>
+            <span class="s0">lambda_val = min(lambda_array[n], max_lambda)</span>
+            <span class="s0">result[point] = lambda_val / max_lambda</span>
+
+    <span class="s0">return result</span>
+
+
+<span class="s0">cpdef list recurse_leaf_dfs(</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] cluster_tree,</span>
+    <span class="s0">cnp.intp_t current_node</span>
+<span class="s0">):</span>
+    <span class="s0">cdef cnp.intp_t[:] children</span>
+    <span class="s0">cdef cnp.intp_t child</span>
+
+    <span class="s0">children = cluster_tree[cluster_tree['parent'] == current_node]['child']</span>
+    <span class="s0">if children.shape[0] == 0:</span>
+        <span class="s0">return [current_node,]</span>
+    <span class="s0">else:</span>
+        <span class="s0">return sum([recurse_leaf_dfs(cluster_tree, child) for child in children], [])</span>
+
+
+<span class="s0">cpdef list get_cluster_tree_leaves(cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] cluster_tree):</span>
+    <span class="s0">cdef cnp.intp_t root</span>
+    <span class="s0">if PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; cluster_tree)[0] == 0:</span>
+        <span class="s0">return []</span>
+    <span class="s0">root = cluster_tree['parent'].min()</span>
+    <span class="s0">return recurse_leaf_dfs(cluster_tree, root)</span>
+
+<span class="s0">cdef cnp.intp_t traverse_upwards(</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] cluster_tree,</span>
+    <span class="s0">cnp.float64_t cluster_selection_epsilon,</span>
+    <span class="s0">cnp.intp_t leaf,</span>
+    <span class="s0">cnp.intp_t allow_single_cluster</span>
+<span class="s0">):</span>
+    <span class="s0">cdef cnp.intp_t root, parent</span>
+    <span class="s0">cdef cnp.float64_t parent_eps</span>
+
+    <span class="s0">root = cluster_tree['parent'].min()</span>
+    <span class="s0">parent = cluster_tree[cluster_tree['child'] == leaf]['parent']</span>
+    <span class="s0">if parent == root:</span>
+        <span class="s0">if allow_single_cluster:</span>
+            <span class="s0">return parent</span>
+        <span class="s0">else:</span>
+            <span class="s0">return leaf  # return node closest to root</span>
+
+    <span class="s0">parent_eps = 1 / cluster_tree[cluster_tree['child'] == parent]['value']</span>
+    <span class="s0">if parent_eps &gt; cluster_selection_epsilon:</span>
+        <span class="s0">return parent</span>
+    <span class="s0">else:</span>
+        <span class="s0">return traverse_upwards(</span>
+            <span class="s0">cluster_tree,</span>
+            <span class="s0">cluster_selection_epsilon,</span>
+            <span class="s0">parent,</span>
+            <span class="s0">allow_single_cluster</span>
+        <span class="s0">)</span>
+
+<span class="s0">cdef set epsilon_search(</span>
+    <span class="s0">set leaves,</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] cluster_tree,</span>
+    <span class="s0">cnp.float64_t cluster_selection_epsilon,</span>
+    <span class="s0">cnp.intp_t allow_single_cluster</span>
+<span class="s0">):</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">list selected_clusters = list()</span>
+        <span class="s0">list processed = list()</span>
+        <span class="s0">cnp.intp_t leaf, epsilon_child, sub_node</span>
+        <span class="s0">cnp.float64_t eps</span>
+        <span class="s0">cnp.uint8_t[:] leaf_nodes</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1] children = cluster_tree['child']</span>
+        <span class="s0">cnp.ndarray[cnp.float64_t, ndim=1] distances = cluster_tree['value']</span>
+
+    <span class="s0">for leaf in leaves:</span>
+        <span class="s0">leaf_nodes = children == leaf</span>
+        <span class="s0">eps = 1 / distances[leaf_nodes][0]</span>
+        <span class="s0">if eps &lt; cluster_selection_epsilon:</span>
+            <span class="s0">if leaf not in processed:</span>
+                <span class="s0">epsilon_child = traverse_upwards(</span>
+                    <span class="s0">cluster_tree,</span>
+                    <span class="s0">cluster_selection_epsilon,</span>
+                    <span class="s0">leaf,</span>
+                    <span class="s0">allow_single_cluster</span>
+                <span class="s0">)</span>
+                <span class="s0">selected_clusters.append(epsilon_child)</span>
+
+                <span class="s0">for sub_node in bfs_from_cluster_tree(cluster_tree, epsilon_child):</span>
+                    <span class="s0">if sub_node != epsilon_child:</span>
+                        <span class="s0">processed.append(sub_node)</span>
+        <span class="s0">else:</span>
+            <span class="s0">selected_clusters.append(leaf)</span>
+
+    <span class="s0">return set(selected_clusters)</span>
+
+
+<span class="s0">@cython.wraparound(True)</span>
+<span class="s0">cdef tuple _get_clusters(</span>
+    <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] condensed_tree,</span>
+    <span class="s0">dict stability,</span>
+    <span class="s0">cluster_selection_method='eom',</span>
+    <span class="s0">cnp.uint8_t allow_single_cluster=False,</span>
+    <span class="s0">cnp.float64_t cluster_selection_epsilon=0.0,</span>
+    <span class="s0">max_cluster_size=None</span>
+<span class="s0">):</span>
+    <span class="s0">&quot;&quot;&quot;Given a tree and stability dict, produce the cluster labels</span>
+    <span class="s0">(and probabilities) for a flat clustering based on the chosen</span>
+    <span class="s0">cluster selection method.</span>
+
+    <span class="s0">Parameters</span>
+    <span class="s0">----------</span>
+    <span class="s0">condensed_tree : ndarray of shape (n_samples,), dtype=CONDENSED_dtype</span>
+        <span class="s0">Effectively an edgelist encoding a parent/child pair, along with a</span>
+        <span class="s0">value and the corresponding cluster_size in each row providing a tree</span>
+        <span class="s0">structure.</span>
+
+    <span class="s0">stability : dict</span>
+        <span class="s0">A dictionary mapping cluster_ids to stability values</span>
+
+    <span class="s0">cluster_selection_method : string, optional (default 'eom')</span>
+        <span class="s0">The method of selecting clusters. The default is the</span>
+        <span class="s0">Excess of Mass algorithm specified by 'eom'. The alternate</span>
+        <span class="s0">option is 'leaf'.</span>
+
+    <span class="s0">allow_single_cluster : boolean, optional (default False)</span>
+        <span class="s0">Whether to allow a single cluster to be selected by the</span>
+        <span class="s0">Excess of Mass algorithm.</span>
+
+    <span class="s0">cluster_selection_epsilon: double, optional (default 0.0)</span>
+        <span class="s0">A distance threshold for cluster splits.</span>
+
+    <span class="s0">max_cluster_size: int, default=None</span>
+        <span class="s0">The maximum size for clusters located by the EOM clusterer. Can</span>
+        <span class="s0">be overridden by the cluster_selection_epsilon parameter in</span>
+        <span class="s0">rare cases.</span>
+
+    <span class="s0">Returns</span>
+    <span class="s0">-------</span>
+    <span class="s0">labels : ndarray of shape (n_samples,)</span>
+        <span class="s0">An integer array of cluster labels, with -1 denoting noise.</span>
+
+    <span class="s0">probabilities : ndarray (n_samples,)</span>
+        <span class="s0">The cluster membership strength of each sample.</span>
+
+    <span class="s0">stabilities : ndarray (n_clusters,)</span>
+        <span class="s0">The cluster coherence strengths of each cluster.</span>
+    <span class="s0">&quot;&quot;&quot;</span>
+    <span class="s0">cdef:</span>
+        <span class="s0">list node_list</span>
+        <span class="s0">cnp.ndarray[CONDENSED_t, ndim=1, mode='c'] cluster_tree</span>
+        <span class="s0">cnp.uint8_t[::1] child_selection</span>
+        <span class="s0">cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] labels</span>
+        <span class="s0">dict is_cluster, cluster_sizes</span>
+        <span class="s0">cnp.float64_t subtree_stability</span>
+        <span class="s0">cnp.intp_t node, sub_node, cluster, n_samples</span>
+        <span class="s0">cnp.ndarray[cnp.float64_t, ndim=1, mode='c'] probs</span>
+
+    <span class="s0"># Assume clusters are ordered by numeric id equivalent to</span>
+    <span class="s0"># a topological sort of the tree; This is valid given the</span>
+    <span class="s0"># current implementation above, so don't change that ... or</span>
+    <span class="s0"># if you do, change this accordingly!</span>
+    <span class="s0">if allow_single_cluster:</span>
+        <span class="s0">node_list = sorted(stability.keys(), reverse=True)</span>
+    <span class="s0">else:</span>
+        <span class="s0">node_list = sorted(stability.keys(), reverse=True)[:-1]</span>
+        <span class="s0"># (exclude root)</span>
+
+    <span class="s0">cluster_tree = condensed_tree[condensed_tree['cluster_size'] &gt; 1]</span>
+    <span class="s0">is_cluster = {cluster: True for cluster in node_list}</span>
+    <span class="s0">n_samples = np.max(condensed_tree[condensed_tree['cluster_size'] == 1]['child']) + 1</span>
+
+    <span class="s0">if max_cluster_size is None:</span>
+        <span class="s0">max_cluster_size = n_samples + 1  # Set to a value that will never be triggered</span>
+    <span class="s0">cluster_sizes = {</span>
+        <span class="s0">child: cluster_size for child, cluster_size</span>
+        <span class="s0">in zip(cluster_tree['child'], cluster_tree['cluster_size'])</span>
+    <span class="s0">}</span>
+    <span class="s0">if allow_single_cluster:</span>
+        <span class="s0"># Compute cluster size for the root node</span>
+        <span class="s0">cluster_sizes[node_list[-1]] = np.sum(</span>
+            <span class="s0">cluster_tree[cluster_tree['parent'] == node_list[-1]]['cluster_size'])</span>
+
+    <span class="s0">if cluster_selection_method == 'eom':</span>
+        <span class="s0">for node in node_list:</span>
+            <span class="s0">child_selection = (cluster_tree['parent'] == node)</span>
+            <span class="s0">subtree_stability = np.sum([</span>
+                <span class="s0">stability[child] for</span>
+                <span class="s0">child in cluster_tree['child'][child_selection]])</span>
+            <span class="s0">if subtree_stability &gt; stability[node] or cluster_sizes[node] &gt; max_cluster_size:</span>
+                <span class="s0">is_cluster[node] = False</span>
+                <span class="s0">stability[node] = subtree_stability</span>
+            <span class="s0">else:</span>
+                <span class="s0">for sub_node in bfs_from_cluster_tree(cluster_tree, node):</span>
+                    <span class="s0">if sub_node != node:</span>
+                        <span class="s0">is_cluster[sub_node] = False</span>
+
+        <span class="s0">if cluster_selection_epsilon != 0.0 and PyArray_SHAPE(&lt;cnp.PyArrayObject*&gt; cluster_tree)[0] &gt; 0:</span>
+            <span class="s0">eom_clusters = [c for c in is_cluster if is_cluster[c]]</span>
+            <span class="s0">selected_clusters = []</span>
+            <span class="s0"># first check if eom_clusters only has root node, which skips epsilon check.</span>
+            <span class="s0">if (len(eom_clusters) == 1 and eom_clusters[0] == cluster_tree['parent'].min()):</span>
+                <span class="s0">if allow_single_cluster:</span>
+                    <span class="s0">selected_clusters = eom_clusters</span>
+            <span class="s0">else:</span>
+                <span class="s0">selected_clusters = epsilon_search(</span>
+                    <span class="s0">set(eom_clusters),</span>
+                    <span class="s0">cluster_tree,</span>
+                    <span class="s0">cluster_selection_epsilon,</span>
+                    <span class="s0">allow_single_cluster</span>
+                <span class="s0">)</span>
+            <span class="s0">for c in is_cluster:</span>
+                <span class="s0">if c in selected_clusters:</span>
+                    <span class="s0">is_cluster[c] = True</span>
+                <span class="s0">else:</span>
+                    <span class="s0">is_cluster[c] = False</span>
+
+    <span class="s0">elif cluster_selection_method == 'leaf':</span>
+        <span class="s0">leaves = set(get_cluster_tree_leaves(cluster_tree))</span>
+        <span class="s0">if len(leaves) == 0:</span>
+            <span class="s0">for c in is_cluster:</span>
+                <span class="s0">is_cluster[c] = False</span>
+            <span class="s0">is_cluster[condensed_tree['parent'].min()] = True</span>
+
+        <span class="s0">if cluster_selection_epsilon != 0.0:</span>
+            <span class="s0">selected_clusters = epsilon_search(</span>
+                <span class="s0">leaves,</span>
+                <span class="s0">cluster_tree,</span>
+                <span class="s0">cluster_selection_epsilon,</span>
+                <span class="s0">allow_single_cluster</span>
+            <span class="s0">)</span>
+        <span class="s0">else:</span>
+            <span class="s0">selected_clusters = leaves</span>
+
+        <span class="s0">for c in is_cluster:</span>
+            <span class="s0">if c in selected_clusters:</span>
+                <span class="s0">is_cluster[c] = True</span>
+            <span class="s0">else:</span>
+                <span class="s0">is_cluster[c] = False</span>
+
+    <span class="s0">clusters = set([c for c in is_cluster if is_cluster[c]])</span>
+    <span class="s0">cluster_map = {c: n for n, c in enumerate(sorted(list(clusters)))}</span>
+    <span class="s0">reverse_cluster_map = {n: c for c, n in cluster_map.items()}</span>
+
+    <span class="s0">labels = _do_labelling(</span>
+        <span class="s0">condensed_tree,</span>
+        <span class="s0">clusters,</span>
+        <span class="s0">cluster_map,</span>
+        <span class="s0">allow_single_cluster,</span>
+        <span class="s0">cluster_selection_epsilon</span>
+    <span class="s0">)</span>
+    <span class="s0">probs = get_probabilities(condensed_tree, reverse_cluster_map, labels)</span>
+
+    <span class="s0">return (labels, probs)</span>
+</pre>
+</body>
+</html>
